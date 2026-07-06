@@ -1,0 +1,59 @@
+# LOCAL DEVELOPMENT compose only (Vault in dev mode, no Caddy). The full
+# production compose — Raft storage + GCP KMS auto-unseal + Caddy TLS
+# reverse proxy (arch doc section 9.2-9.3) — is a separate, deferred
+# artifact for actual VM deployment; do not conflate the two.
+
+services:
+  postgres:
+    image: postgres:18.1
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=facturacion
+      - POSTGRES_USER=fractall
+      - POSTGRES_PASSWORD=fractall
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fractall"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  vault:
+    image: hashicorp/vault:latest
+    restart: unless-stopped
+    cap_add:
+      - IPC_LOCK
+    command: server -dev -dev-listen-address=0.0.0.0:8200
+    ports:
+      - "8200:8200"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8200/v1/sys/health?standbyok=true"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=facturacion
+      - DB_USER=fractall
+      - DB_PASSWORD=fractall
+      - VAULT_ADDR=http://vault:8200
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      vault:
+        condition: service_healthy
+
+volumes:
+  postgres_data:

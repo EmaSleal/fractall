@@ -1,0 +1,55 @@
+spring:
+  config:
+    import: optional:file:.env[.properties]
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/fractall}
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:postgres}
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    # Ver el comentario equivalente en el application.yaml principal: OSIV abre un
+    # EntityManager antes de que el controlador pueda fijar TenantContext.
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+    show-sql: false
+  data:
+    jpa:
+      repositories:
+        # Ver el comentario equivalente en el application.yaml principal: sin esto, CUALQUIER
+        # repositorio con un método de consulta derivada dispara resolución de tenant durante
+        # el refresh del contexto, antes de que exista un tenant en contexto.
+        bootstrap-mode: lazy
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    baseline-version: 0
+
+application:
+  security:
+    jwt:
+      secret: ${JWT_SECRET:NO-USAR-EN-PRODUCCION-este-es-un-secreto-de-desarrollo-local-cambiar-siempre}
+  vault:
+    # Cualquier arranque completo de contexto (@SpringBootTest) necesita un Vault real y ya
+    # bootstrapeado (scripts/vault-setup-local.sh), igual que ya necesita Postgres -- ver
+    # VaultConfig para el porqué (SmartLifecycle de AbstractVaultConfiguration). Sin
+    # fallback para role-id/secret-id por la misma razón que en producción: no hay un valor
+    # adivinable seguro.
+    addr: ${VAULT_ADDR:http://localhost:8200}
+    role-id: ${VAULT_ROLE_ID}
+    secret-id: ${VAULT_SECRET_ID}
+  notificaciones:
+    resend:
+      # Sin default en producción a propósito (ver application.yaml principal y
+      # ResendEmailClient) -- una API key real de Resend no tiene un valor de desarrollo
+      # seguro. Acá sí se provee un default de solo pruebas: ResendEmailClient es un bean
+      # que se construye de forma ansiosa, así que sin esto CUALQUIER @SpringBootTest del
+      # proyecto (incluyendo pruebas de Fase 1-3 que nunca tocan correo) fallaría al
+      # arrancar el contexto completo. El valor nunca llega a usarse contra la API real de
+      # Resend -- solo pruebas que expresamente configuran un stub HTTP (ver
+      # AuthFlujoRegistroYVerificacionTest) ejercitan un envío real.
+      api-key: ${RESEND_API_KEY:test-resend-api-key-placeholder}
+      remitente: ${RESEND_FROM_EMAIL:onboarding@resend.dev}

@@ -1,0 +1,6 @@
+target/
+.git/
+docs/proyecto-referencia/
+.idea/
+*.iml
+.vscode/

@@ -1,0 +1,11 @@
+-- Corrige un defecto latente de V1__esquema_base.sql: usuario.estado se declaró
+-- VARCHAR(20), pero uno de los propios valores permitidos por su CHECK
+-- ('PENDIENTE_VERIFICACION') tiene 22 caracteres. Nunca se manifestó antes porque ningún
+-- flujo previo a la Fase 4 dejaba estado sin asignar explícitamente (confiando en el
+-- DEFAULT de la columna) -- Postgres no valida el DEFAULT contra el ancho de la columna al
+-- crear la tabla, solo al insertarlo realmente.
+--
+-- Ensanchar un VARCHAR(n) a VARCHAR(m) con m > n es una operación de solo metadatos en
+-- Postgres moderno (no reescribe la tabla) y no afecta el CHECK existente, que valida
+-- valores, no longitud -- por eso no hace falta recrear la restricción.
+ALTER TABLE usuario ALTER COLUMN estado TYPE VARCHAR(30);

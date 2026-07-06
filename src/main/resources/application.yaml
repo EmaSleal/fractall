@@ -1,0 +1,65 @@
+spring:
+  config:
+    import: optional:file:.env[.properties]
+  application:
+    name: fractall
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:facturacion}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    # Fase 4: Open-Session-In-View abriría un EntityManager en el HandlerInterceptor de
+    # Spring MVC, ANTES de que el método del controlador se ejecute -- es decir, antes de
+    # que /auth/** (público, sin JWT) tenga oportunidad de fijar TenantContext vía
+    # TenantContextDescartable. Contra un resolutor de tenant fail-closed, eso revienta
+    # cualquier endpoint público que toque JPA. Además de resolver esto, es la práctica ya
+    # recomendada para una API REST pura (sin vistas que perezosamente carguen asociaciones).
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+    show-sql: false
+  data:
+    jpa:
+      repositories:
+        # Fase 4: cualquier método de consulta derivada (ej. UsuarioRepository#findByEmail,
+        # ColaReintentoEmailRepository#findByEstadoAndProximoIntentoLessThanEqual) hace que
+        # Spring Data JPA verifique la existencia de named queries al construir el bean del
+        # repositorio -- lo cual abre un EntityManager real y dispara la resolución de
+        # tenant (fail-closed) DURANTE el refresh del contexto, antes de que cualquier
+        # request/servicio haya podido fijar TenantContext. bootstrap-mode: lazy difiere esa
+        # inicialización real hasta la PRIMERA invocación efectiva de cada repositorio, momento
+        # en el que el llamador (filtro JWT o TenantContextDescartable) ya fijó el contexto.
+        bootstrap-mode: lazy
+  flyway:
+    enabled: true
+
+application:
+  security:
+    jwt:
+      # Access token de vida corta (15 min, ver sección 2 del documento de arquitectura).
+      # El valor por defecto es SOLO para desarrollo local y NO es seguro para producción
+      # -- en producción, JWT_SECRET debe venir del gestor de secretos (Vault, Fase 4).
+      secret: ${JWT_SECRET:NO-USAR-EN-PRODUCCION-este-es-un-secreto-de-desarrollo-local-cambiar-siempre}
+  vault:
+    # Cliente de Vault (Fase 3, sección 6 del documento de arquitectura). VAULT_ROLE_ID y
+    # VAULT_SECRET_ID NO tienen fallback inseguro: deben venir siempre de la salida real de
+    # scripts/vault-setup-local.sh (ejecutado una vez contra el Vault local en modo dev),
+    # nunca de un valor adivinable en el código fuente.
+    addr: ${VAULT_ADDR:http://localhost:8200}
+    role-id: ${VAULT_ROLE_ID}
+    secret-id: ${VAULT_SECRET_ID}
+  notificaciones:
+    resend:
+      # Proveedor de correo transaccional ya decidido (Fase 4, sección 2 y 3.1 del
+      # documento de arquitectura). RESEND_API_KEY NO tiene fallback inseguro: igual que
+      # VAULT_ROLE_ID/VAULT_SECRET_ID, una API key real de un proveedor de correo no tiene
+      # un valor de desarrollo seguro -- debe fallar el arranque si falta, no enviar en
+      # silencio con una clave adivinable.
+      api-key: ${RESEND_API_KEY}
+      # onboarding@resend.dev es la dirección sandbox de Resend: funciona sin verificar
+      # dominio propio, segura como valor por defecto solo para desarrollo local.
+      remitente: ${RESEND_FROM_EMAIL:onboarding@resend.dev}
