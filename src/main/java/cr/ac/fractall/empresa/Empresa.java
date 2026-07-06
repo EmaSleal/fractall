@@ -60,6 +60,24 @@ public class Empresa extends EntidadBase {
     @Column(name = "certificado_referencia", length = 255)
     private String certificadoReferencia;
 
+    /**
+     * Blob del certificado {@code .p12} cifrado vía envelope encryption (sección 6.4 de
+     * {@code arquitectura-facturacion-electronica-cr.md}) -- NUNCA el {@code .p12} en claro.
+     * Se escribe siempre junto con {@link #certificadoDekCifrada} y
+     * {@link #certificadoReferencia} en la misma transacción (ver
+     * {@code EmpresaService#cargarCertificado}).
+     */
+    @Column(name = "certificado_p12_cifrado")
+    private byte[] certificadoP12Cifrado;
+
+    /**
+     * DEK que cifró {@link #certificadoP12Cifrado}, ya cifrada por la KEK de Transit (sección
+     * 6.1) -- el texto plano de esta DEK se descarta inmediatamente después de usarse, nunca
+     * se persiste.
+     */
+    @Column(name = "certificado_dek_cifrada")
+    private byte[] certificadoDekCifrada;
+
     @Column(name = "status", nullable = false, length = 35)
     private String status;
 
