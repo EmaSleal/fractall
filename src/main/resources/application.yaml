@@ -62,6 +62,19 @@ application:
     cabys:
       url: ${HACIENDA_CABYS_URL:https://api.hacienda.go.cr/fe/cabys}
     timeout: ${HACIENDA_API_TIMEOUT:10}
+    # Cliente OAuth2 + recepción de comprobantes de Hacienda (Fase 8, Categoría A portada de
+    # HaciendaApiServiceImpl del ERP de referencia). client-id/secret de sandbox son públicos
+    # (documentados por Hacienda para el ambiente de pruebas, sin autenticación adicional) -- por
+    # eso sí tienen fallback seguro, a diferencia de VAULT_ROLE_ID/RESEND_API_KEY. Las URLs por
+    # defecto son los endpoints reales de Hacienda (sandbox y producción).
+    oauth:
+      client-id: ${HACIENDA_OAUTH_CLIENT_ID:api-stag}
+      sandbox:
+        token-url: ${HACIENDA_OAUTH_SANDBOX_TOKEN_URL:https://idp.comprobanteselectronicos.go.cr/auth/realms/rut-stag/protocol/openid-connect/token}
+        api-url: ${HACIENDA_OAUTH_SANDBOX_API_URL:https://api-sandbox.comprobanteselectronicos.go.cr}
+      produccion:
+        token-url: ${HACIENDA_OAUTH_PRODUCCION_TOKEN_URL:https://idp.comprobanteselectronicos.go.cr/auth/realms/rut/protocol/openid-connect/token}
+        api-url: ${HACIENDA_OAUTH_PRODUCCION_API_URL:https://api.comprobanteselectronicos.go.cr}
   notificaciones:
     resend:
       # Proveedor de correo transaccional ya decidido (Fase 4, sección 2 y 3.1 del

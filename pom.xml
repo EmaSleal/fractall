@@ -69,6 +69,43 @@
 			<scope>compile</scope>
 		</dependency>
 
+		<!-- Fase 8: HaciendaComprobanteApiServiceImpl usa @CircuitBreaker/@Retry (resilience4j) para
+		     enviarComprobante/consultarComprobante. resilience4j-spring-boot4 (Dec 2025) es el
+		     módulo dedicado a Spring Boot 4/Spring Framework 7; resilience4j-spring-boot3 NO
+		     autoconfigura correctamente sobre Boot 4 (mismo patrón de "starter equivocado" ya visto
+		     con Flyway/AutoConfigureMockMvc/RestClientAutoConfiguration en fases anteriores). -->
+		<dependency>
+			<groupId>io.github.resilience4j</groupId>
+			<artifactId>resilience4j-spring-boot4</artifactId>
+			<version>2.4.0</version>
+		</dependency>
+
+		<!-- Pin explícito: oci-java-sdk-common (más abajo en este mismo pom) arrastra
+		     transitivamente oci-java-sdk-circuitbreaker -> resilience4j-core:1.7.1 (una versión
+		     ANTIGUA, sin io.github.resilience4j.core.functions.Either). Maven resuelve conflictos
+		     de versión por "declaración más cercana gana", y como oci-java-sdk-common es una
+		     dependencia directa de este pom, esa 1.7.1 transitiva le ganaba a la 2.4.0 que en
+		     realidad necesita resilience4j-circuitbreaker:2.4.0 (usado por
+		     resilience4j-spring-boot4, arriba); sin este pin explícito, cualquier
+		     @SpringBootTest fallaba al arrancar con
+		     NoClassDefFoundError: io/github/resilience4j/core/functions/Either. Una dependencia
+		     directa en el POM siempre gana la mediación sobre una transitiva, sin importar la
+		     profundidad del árbol, así que declararla aquí explícitamente fuerza la 2.4.0. -->
+		<dependency>
+			<groupId>io.github.resilience4j</groupId>
+			<artifactId>resilience4j-core</artifactId>
+			<version>2.4.0</version>
+		</dependency>
+
+		<!-- Fase 8: @Cacheable(value = "haciendaToken", ...) en
+		     HaciendaComprobanteApiServiceImpl#autenticar necesita spring-boot-starter-cache
+		     (autoconfiguración de @EnableCaching / CacheManager); ver
+		     cr.ac.fractall.config.CacheConfig para el bean ConcurrentMapCacheManager. -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-cache</artifactId>
+		</dependency>
+
 		<dependency>
 			<groupId>org.postgresql</groupId>
 			<artifactId>postgresql</artifactId>
@@ -191,6 +228,18 @@
 			<artifactId>vault</artifactId>
 			<version>1.21.4</version>
 			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>com.oracle.oci.sdk</groupId>
+			<artifactId>oci-java-sdk-objectstorage</artifactId>
+			<version>3.91.0</version>
+			<scope>compile</scope>
+		</dependency>
+		<dependency>
+			<groupId>com.oracle.oci.sdk</groupId>
+			<artifactId>oci-java-sdk-common</artifactId>
+			<version>3.91.0</version>
+			<scope>compile</scope>
 		</dependency>
 	</dependencies>
 
