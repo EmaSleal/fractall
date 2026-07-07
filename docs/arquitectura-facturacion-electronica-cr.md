@@ -20,6 +20,7 @@ Aplicación nueva e independiente (no es una extensión del ERP original de una 
 |---|---|
 | Origen del código | Repositorio nuevo e independiente. El proyecto original (mono-tenant) queda como referencia de solo lectura. |
 | Reutilización de código | **Categoría A (se porta tal cual):** firma digital XML-DSig, generador XML v4.4, cliente OAuth de Hacienda, búsqueda CABYS. **Categoría B (se rediseña):** modelo de datos, consecutivos, validaciones pre-envío. |
+| Firma digital XML-DSig | Sin dependencia externa: se construye sobre `javax.xml.crypto.dsig.*` (JSR 105), API estándar del JDK desde Java 6 — la implementación de referencia (Apache Santuario embebido) viene incluida en el propio JDK, no como artefacto Maven gestionado. El armado de XAdES-BES se hace con DOM puro, sin librería XAdES de terceros. Fuera del alcance del pendiente de compatibilidad Jakarta EE 11/Jackson 3 (sección 10): `javax.xml.crypto` y `org.w3c.dom` son API de Java SE, no de Jakarta EE — nunca migraron de espacio de nombres. Contrapartida documentada: actualizar el algoritmo de firma queda atado al ciclo de versiones del JDK, no a una librería independiente actualizable por separado. |
 | Estrategia multi-tenant | Esquema compartido (*shared schema*) con `empresa_id` como discriminador por fila. Descartado esquema-por-tenant por sobre-ingeniería para el volumen esperado. |
 | Identificadores | UUID v7 en todas las tablas. Ordenable a nivel de índice B-tree, no adivinable entre tenants (a diferencia de IDs incrementales), sin la fragmentación de índice de UUID v4 puro. |
 | Motor de base de datos | **PostgreSQL 18+** (requerido específicamente por soporte nativo de `uuidv7()`; versiones anteriores no lo tienen). Autoalojado en la misma VM de cómputo. |
@@ -44,6 +45,8 @@ Aplicación nueva e independiente (no es una extensión del ERP original de una 
 | Convención de secretos en Vault | Una sola llave maestra en Transit (envelope encryption vía `datakey`, no una llave por tenant) + namespacing explícito por empresa en KV v2 (`secret/data/empresas/{empresa_id}/...`). Control de acceso centralizado en una sola identidad de aplicación (AppRole), no una política de Vault por tenant — ver sección 6. |
 | Versión de stack | Java 21 LTS (`eclipse-temurin`) + Spring Boot 4.1.x. Descartado continuar sobre Spring Boot 3.x: esa rama llegó a fin de soporte de código abierto el 30 de junio de 2026. Prioriza madurez de ecosistema sobre el horizonte de soporte más largo de Java 25 LTS, dado el manejo de obligaciones fiscales reales. |
 | Contenerización | Docker Compose con `app` + `postgres` + `vault` + `Caddy` (proxy inverso con TLS automático vía Let's Encrypt) en la VM Ampere A1. Red interna aislada (`internal: true`) para PostgreSQL y Vault — inalcanzables desde internet. Backend de Vault: Raft integrado, no `file`. Versionado de esquema vía Flyway, no aplicación manual de SQL. Sin pgAdmin permanente — acceso administrativo vía túnel SSH o perfil bajo demanda — ver sección 9. |
+| Dependencias Maven del backend | Apache PDFBox (Apache 2.0) en lugar de iText (AGPLv3 — exige divulgar el código fuente de la aplicación bajo despliegue en red, o licencia comercial de costo no publicado). TOTP implementado sobre `javax.crypto` (RFC 6238) en lugar de `dev.samstevens.totp` (sin publicaciones desde 2021); ZXing solo para la imagen QR de enrolamiento. `spring-vault-core` y los starters `-test` de Spring Boot 4.x verificados contra Maven Central antes de incluirlos — ver sección 9.7. |
+| Almacenamiento de documentos | `.p12` como blob cifrado en PostgreSQL (mismo patrón que el secreto MFA). XML/PDF de comprobantes en Oracle Object Storage (Always Free, 20 GB, sin fecha de expiración) — no en la base de datos, dado su crecimiento sin límite. Cifrado propio vía Transit antes de subir, independiente del cifrado del proveedor. Acceso vía SDK nativo de OCI con autenticación por Instance Principal (sin credenciales estáticas adicionales), aislado det| Impuesto de producto y exoneraciones | `producto.porcentaje_impuesto` se deriva del campo `impuesto` de la API de CABYS de Hacienda, nunca tecleado a mano. Exoneraciones modeladas como autorización reutilizable por cliente (`cliente_exoneracion`), no como campo de producto/factura — snapshot congelado en `linea_factura` al aplicarse. Catálogo oficial de 12 tipos (Nota 10.1, Anexos v4.4); los códigos 01/05/06/07 quedan bloqueados a nivel de trigger para Factura Electrónica por ser exclusivos de Nota de Crédito/Débito — ver sección 4.15. |
 | Autenticación de usuario | Argon2id para hash de contraseña (recomendación vigente de OWASP). Registro bloqueado hasta verificación de correo (`usuario.estado = PENDIENTE_VERIFICACION`) — sin acceso funcional parcial antes de verificar. MFA (TOTP) obligatorio para `ADMIN_EMPRESA`, opcional para los demás roles; secreto cifrado a nivel de columna vía Transit, no consultado a Vault en cada login. Bloqueo temporal automático tras intentos fallidos consecutivos. Ver sección 3. |
 | Proveedor de correo transaccional | **Resend** (nivel gratuito: 3,000/mes, tope 100/día, costo cero verificado incluyendo tráfico de red saliente). Descartados: Amazon SES (nivel gratuito solo aplica desde EC2, no desde esta VM), SendGrid (nivel gratuito permanente retirado), Gmail SMTP (no apto para envío desde aplicación). Preferido sobre Brevo/Mailtrap (topes diarios más altos) por ser infraestructura 100% transaccional, sin riesgo de reputación de IP compartida con tráfico de marketing ajeno. Mailgun documentado como alternativa de reemplazo de mismo perfil de riesgo si el tope diario resulta insuficiente en la práctica. Exige subdominio dedicado + SPF/DKIM/DMARC y un mecanismo de reintento propio ante el tope diario — ver sección 3.1. |
 
@@ -466,6 +469,8 @@ CREATE TABLE producto (
 
 Simplificado frente al proyecto original: se elimina la distinción `precioInstitucional`/`precioMayorista` (propia de distribución al por mayor, sin valor para el mercado objetivo de persona individual/pequeño negocio) en favor de un único `precio_venta`. `codigo_cabys` sin `DEFAULT` hace imposible, a nivel de motor, insertar un producto sin CABYS explícito — corrige de raíz el fallback genérico (`8522000000000`) documentado en la bitácora de riesgos.
 
+**`porcentaje_impuesto` se deriva del campo `impuesto` que devuelve la propia API de Hacienda al validar el CABYS** — nunca tecleado a mano, mismo principio que ya rige `codigo_cabys`/`descripcion_cabys`. El servicio de alta de producto debe rechazar la creación si ese campo llega vacío o nulo en la respuesta de Hacienda, en lugar de asumir un porcentaje por defecto silencioso. Este valor es la tarifa *por defecto* del producto — no necesariamente la tarifa final de cada venta: una exoneración autorizada aplicada a una línea de factura específica (sección 4.15) la sobrescribe puntualmente, sin alterar este campo del catálogo.
+
 ### 4.11 `cliente`
 
 ```sql
@@ -533,8 +538,9 @@ CREATE TABLE comprobante_electronico (
     consecutivo       VARCHAR(20) NOT NULL,
     clave_numerica    VARCHAR(50) NOT NULL UNIQUE,
     estado            VARCHAR(20) NOT NULL DEFAULT 'GENERADO',
-    xml_comprobante   TEXT,
-    xml_respuesta     TEXT,
+    xml_comprobante_referencia VARCHAR(255),  -- ruta en Oracle Object Storage; el XML viaja cifrado, nunca en esta columna
+    xml_respuesta_referencia  VARCHAR(255),
+    pdf_referencia            VARCHAR(255),
     codigo_respuesta  VARCHAR(10),
     mensaje_respuesta VARCHAR(500),
     intentos_envio    INT NOT NULL DEFAULT 0,
@@ -544,7 +550,7 @@ CREATE TABLE comprobante_electronico (
 );
 ```
 
-`ambiente_hacienda` como snapshot, no como lectura en vivo de `empresa.ambiente_hacienda`, es obligatorio dado que ya permitimos que una empresa retroceda de producción a sandbox sin intervención de `SUPER_ADMIN` (sección 2): sin este snapshot, alternar el ambiente reescribiría retroactivamente el ambiente de todo el historial de facturación ya aceptado por Hacienda. `xml_comprobante`/`xml_respuesta` como `TEXT` quedan como implementación provisional, coherente con el pendiente de estrategia de almacenamiento de archivos (sección 9).
+`ambiente_hacienda` como snapshot, no como lectura en vivo de `empresa.ambiente_hacienda`, es obligatorio dado que ya permitimos que una empresa retroceda de producción a sandbox sin intervención de `SUPER_ADMIN` (sección 2): sin este snapshot, alternar el ambiente reescribiría retroactivamente el ambiente de todo el historial de facturación ya aceptado por Hacienda. `xml_comprobante_referencia`, `xml_respuesta_referencia` y `pdf_referencia` apuntan a Oracle Object Storage, no a contenido embebido — resolución de la estrategia de almacenamiento documentada en la sección 6.4.
 
 ### 4.14 `linea_factura`
 
@@ -561,13 +567,107 @@ CREATE TABLE linea_factura (
     codigo_cabys_aplicado  VARCHAR(13) NOT NULL,   -- snapshot del producto al momento de la venta
     gravado_aplicado       BOOLEAN NOT NULL,        -- snapshot
     porcentaje_impuesto_aplicado NUMERIC(5,2) NOT NULL,  -- snapshot
-    UNIQUE (factura_id, numero_linea)
+    exoneracion_id                    UUID REFERENCES cliente_exoneracion(id),  -- sección 4.15
+    porcentaje_exoneracion_aplicado   NUMERIC(5,2),  -- snapshot de la autorización al momento de la venta
+    monto_exoneracion_aplicado        NUMERIC(14,5),
+    UNIQUE (factura_id, numero_linea),
+    CHECK (
+        (exoneracion_id IS NULL AND porcentaje_exoneracion_aplicado IS NULL AND monto_exoneracion_aplicado IS NULL)
+        OR
+        (exoneracion_id IS NOT NULL AND porcentaje_exoneracion_aplicado IS NOT NULL AND monto_exoneracion_aplicado IS NOT NULL)
+    )
 );
 ```
 
 Los campos `_aplicado` son copias congeladas del producto al momento de la venta, no referencias recalculadas contra `producto` en vivo — una corrección posterior al catálogo de productos no puede alterar retroactivamente el impuesto ya declarado ante Hacienda en una factura pasada. `empresa_id` presente directamente en esta tabla, aunque derivable por join a través de `factura_id`, es un requisito técnico del mecanismo de la sección 5: `@TenantId` filtra por columna propia de la entidad, no a través de relaciones.
 
-### 4.15 Integridad cruzada entre tenants
+Los tres campos de exoneración siguen el mismo principio de "todo o nada" que ya aplicamos al bloque de ubicación de `cliente`: o los tres están presentes, o ninguno lo está — un estado parcial (una exoneración referenciada sin su porcentaje aplicado) no puede existir a nivel de motor. `porcentaje_exoneracion_aplicado` y `monto_exoneracion_aplicado` son snapshots, no referencias en vivo a `cliente_exoneracion`, por la misma razón de integridad histórica que ya rige el resto de los campos `_aplicado`: si la autorización se revoca o cambia después, las facturas ya emitidas bajo ella no se reescriben retroactivamente.
+
+### 4.15 `cliente_exoneracion` — autorizaciones de exoneración por cliente
+
+La exoneración no es una propiedad del producto ni de la factura — es una autorización que Hacienda le otorga a un cliente específico, con vigencia y respaldo documental propios, potencialmente reutilizable en múltiples facturas durante su periodo de validez.
+
+```sql
+CREATE TABLE cliente_exoneracion (
+    id                       UUID PRIMARY KEY DEFAULT uuidv7(),
+    empresa_id               UUID NOT NULL REFERENCES empresa(id),  -- @TenantId
+    cliente_id               UUID NOT NULL REFERENCES cliente(id),
+    tipo_documento           VARCHAR(2) NOT NULL,   -- catálogo oficial de Hacienda, sección 4.15.1
+    numero_documento         VARCHAR(40) NOT NULL,
+    nombre_institucion       VARCHAR(160) NOT NULL,
+    numero_articulo          VARCHAR(10) NOT NULL,
+    inciso                   VARCHAR(10),
+    nombre_institucion_otros VARCHAR(160),           -- obligatorio únicamente si tipo_documento = '99'
+    fecha_emision            TIMESTAMP NOT NULL,
+    fecha_vencimiento        TIMESTAMP,              -- NULL si la autorización no vence
+    porcentaje_exoneracion   NUMERIC(5,2) NOT NULL CHECK (porcentaje_exoneracion > 0 AND porcentaje_exoneracion <= 100),
+    activo                   BOOLEAN NOT NULL DEFAULT true,
+    create_date              TIMESTAMP NOT NULL DEFAULT now(),
+    update_date              TIMESTAMP NOT NULL DEFAULT now(),
+    UNIQUE (cliente_id, numero_documento),
+    CHECK (tipo_documento IN ('01','02','03','04','05','06','07','08','09','10','11','99')),
+    CHECK (tipo_documento <> '99' OR nombre_institucion_otros IS NOT NULL)
+);
+```
+
+#### 4.15.1 Catálogo oficial (Nota 10.1, Anexos y Estructuras v4.4)
+
+| Código | Tipo de documento | Aplicable a Factura Electrónica |
+|---|---|---|
+| 01 | Compras autorizadas por la Dirección General de Tributación | **No** — exclusivo de Nota de Crédito/Débito |
+| 02 | Ventas exentas a diplomáticos | Sí |
+| 03 | Autorizado por Ley especial | Sí |
+| 04 | Exenciones DGH — Autorización Local Genérica | Sí |
+| 05 | Exenciones DGH — Transitorio V (ingeniería, arquitectura, topografía, obra civil) | **No** — exclusivo de Nota de Crédito/Débito |
+| 06 | Servicios turísticos inscritos ante el ICT | **No** — exclusivo de Nota de Crédito/Débito |
+| 07 | Transitorio XVII (reciclaje/reutilizable) | **No** — exclusivo de Nota de Crédito/Débito |
+| 08 | Exoneración a Zona Franca | Sí |
+| 09 | Servicios complementarios para exportación (art. 11 RLIVA) | Sí |
+| 10 | Órgano de las corporaciones municipales | Sí |
+| 11 | Exenciones DGH — Autorización de Impuesto Local Concreta | Sí |
+| 99 | Otros (exige `nombre_institucion_otros`) | Sí |
+
+Los códigos 01, 05, 06 y 07 están marcados como no aplicables a Factura Electrónica **por regla explícita de Hacienda** (notas 38-41 del propio documento oficial), no por relevancia estimada para el mercado objetivo — la restricción se aplica en el trigger de la sección 4.15.2, no en el `CHECK` de captura, porque el documento de exoneración en sí puede ser de cualquiera de los doce tipos; lo que Hacienda restringe es su aplicación a un tipo de comprobante específico.
+
+**Nota de producto, no de motor:** dado el mercado objetivo de persona individual/pequeño negocio, los códigos 08 (Zona Franca), 10 (municipalidades) y 99 (Otros) son los de mayor probabilidad de uso real — la interfaz de captura puede priorizarlos visualmente sin que eso implique restringirlos a nivel de base de datos.
+
+#### 4.15.2 Validaciones a nivel de motor
+
+```sql
+CREATE OR REPLACE FUNCTION fn_validar_exoneracion_vigente()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_vencimiento TIMESTAMP;
+    v_activo BOOLEAN;
+    v_tipo_documento VARCHAR(2);
+BEGIN
+    IF NEW.exoneracion_id IS NOT NULL THEN
+        SELECT fecha_vencimiento, activo, tipo_documento
+        INTO v_vencimiento, v_activo, v_tipo_documento
+        FROM cliente_exoneracion WHERE id = NEW.exoneracion_id;
+
+        IF NOT v_activo THEN
+            RAISE EXCEPTION 'La exoneración referenciada está inactiva';
+        END IF;
+
+        IF v_vencimiento IS NOT NULL AND v_vencimiento < now() THEN
+            RAISE EXCEPTION 'La exoneración referenciada venció el %', v_vencimiento;
+        END IF;
+
+        IF v_tipo_documento IN ('01', '05', '06', '07') THEN
+            RAISE EXCEPTION 'El tipo de exoneración % es exclusivo de Nota de Crédito/Débito, no aplica a Factura Electrónica', v_tipo_documento;
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_validar_exoneracion_vigente
+    BEFORE INSERT OR UPDATE ON linea_factura
+    FOR EACH ROW EXECUTE FUNCTION fn_validar_exoneracion_vigente();
+```
+
+### 4.16 Integridad cruzada entre tenants
 
 Ninguna llave foránea, por sí sola, impide que una `factura` de la Empresa A referencie un `cliente_id` que en realidad pertenece a la Empresa B — la FK solo garantiza que el registro existe, no que existe dentro del mismo tenant. Se cierra a nivel de motor, no solo de aplicación:
 
@@ -576,11 +676,23 @@ CREATE OR REPLACE FUNCTION fn_validar_mismo_tenant()
 RETURNS TRIGGER AS $$
 DECLARE
     v_empresa_referencia UUID;
+    v_cliente_exoneracion UUID;
+    v_cliente_factura UUID;
 BEGIN
     IF TG_TABLE_NAME = 'factura' THEN
         SELECT empresa_id INTO v_empresa_referencia FROM cliente WHERE id = NEW.cliente_id;
     ELSIF TG_TABLE_NAME = 'linea_factura' THEN
         SELECT empresa_id INTO v_empresa_referencia FROM producto WHERE id = NEW.producto_id;
+
+        IF NEW.exoneracion_id IS NOT NULL THEN
+            SELECT ce.cliente_id, f.cliente_id INTO v_cliente_exoneracion, v_cliente_factura
+            FROM cliente_exoneracion ce, factura f
+            WHERE ce.id = NEW.exoneracion_id AND f.id = NEW.factura_id;
+
+            IF v_cliente_exoneracion IS DISTINCT FROM v_cliente_factura THEN
+                RAISE EXCEPTION 'La exoneración referenciada no pertenece al cliente de esta factura';
+            END IF;
+        END IF;
     END IF;
 
     IF v_empresa_referencia IS DISTINCT FROM NEW.empresa_id THEN
@@ -723,6 +835,18 @@ Una política de Vault distinta por cada empresa fue considerada y descartada: a
 
 Diseño: una sola identidad de aplicación autenticada contra Vault (AppRole), con política amplia sobre `secret/data/empresas/*` y `transit/*`. El propio código, anclado al `TenantContext` activo, es responsable de nunca construir una ruta fuera del `empresa_id` de la sesión — nunca se expone un token de Vault directamente a un usuario final ni a un `ADMIN_EMPRESA`.
 
+### 6.4 Almacenamiento de documentos — `.p12` en PostgreSQL, XML/PDF en Object Storage
+
+Resuelve el primer pendiente histórico de este documento: dónde vive físicamente cada archivo, no solo su puntero.
+
+**Certificado `.p12`:** blob cifrado en PostgreSQL, mismo patrón de envelope encryption vía `datakey` ya usado para el secreto MFA (sección 3.3). Es un archivo pequeño, por empresa, que rara vez cambia — no justifica un componente de almacenamiento de objetos adicional.
+
+**XML de comprobante, XML de respuesta y PDF de cada factura:** en **Oracle Object Storage** (capa Always Free, 20 GB, sin fecha de expiración mientras la cuenta permanezca en ese estado), no en PostgreSQL. A diferencia del `.p12`, este contenido crece sin límite mientras el negocio opere — mantenerlo en la base de datos transaccional degradaría con el tiempo el rendimiento OLTP y complicaría los respaldos. Cada documento se cifra con la misma KEK de Transit **antes** de subirse — Object Storage nunca recibe ni retiene contenido fiscal en texto plano, independientemente del cifrado por defecto que Oracle aplique por debajo.
+
+**Cliente de acceso:** SDK nativo de OCI Java (`oci-java-sdk-objectstorage`), no el SDK de AWS contra el endpoint compatible con S3. Dos razones concretas, no preferencia: (1) versiones recientes del SDK de AWS activan por defecto una codificación (`aws-chunked`) que rompe las subidas contra el endpoint de Oracle sin configuración manual adicional; (2) el SDK nativo soporta autenticación por **Instance Principal** — la VM se autentica con su propia identidad, sin generar ni custodiar un par adicional de credenciales estáticas tipo Access/Secret Key.
+
+**Aislamiento del acoplamiento:** el acceso al SDK nativo queda contenido detrás de una interfaz propia (`DocumentoStorageClient`, con `subir()`/`descargar()`), nunca invocado directamente desde la lógica de negocio — mismo patrón de aislamiento ya aplicado a `TenantContext` y al cliente de Vault. Si en el futuro cambia de proveedor de almacenamiento, el cambio queda contenido en una sola implementación, no disperso por el código.
+
 ## 7. Riesgos y correcciones registradas durante el diseño (bitácora)
 
 - El `synchronized` sobre `siguienteConsecutivo()` del proyecto original protegía un objeto en memoria, no una fila de base de datos — no ofrecía protección real de concurrencia. Corregido con bloqueo pesimista de fila.
@@ -730,6 +854,7 @@ Diseño: una sola identidad de aplicación autenticada contra Vault (AppRole), c
 - El proyecto original permitía que `UsuarioPermiso` colgara del usuario global en lugar de la membresía específica — en un escenario de usuario en múltiples empresas, un permiso otorgado en una empresa se filtraría a otra. Corregido: `usuario_permiso.usuario_empresa_id`.
 - CABYS genérico hardcodeado (`8522000000000`) en el generador XML original, sin bloqueo — riesgo de rechazo de Hacienda sin aviso al usuario. Debe corregirse en el rediseño exigiendo CABYS validado contra la API real antes de permitir facturar.
 - `FacturaPdfServiceImpl.generarPdfFactura()` del proyecto original resuelve la empresa emisora vía `empresaService.getEmpresaPrincipal()` — mismo defecto mono-tenant que `findFirstByActivaTrue()`, aplicado a la generación de PDF. La plantilla/maquetación (`addHeader`, `addClienteBlock`, `addLineasTable`, `addFooter`) se porta sin cambios; la resolución de la entidad `Empresa` se rediseña para depender de `factura.empresa_id`, nunca de un "principal" implícito. El vínculo con `comprobante_electronico` (clave numérica, consecutivo) sí está correctamente resuelto en el original y se preserva tal cual.
+- Catálogo oficial de tipo de documento de exoneración (Nota 10.1, Anexos y Estructuras v4.4) verificado directamente contra el PDF oficial de Hacienda, no contra fuentes secundarias que solo estimaban los códigos. Hallazgo relevante: los códigos 01, 05, 06 y 07 son de uso exclusivo para Nota de Crédito/Débito por regla explícita de Hacienda (notas 38-41 del documento oficial) — no una decisión de alcance de producto, sino una restricción de motor aplicada en `fn_validar_exoneracion_vigente` (sección 4.15.2).
 
 ## 8. Hoja de ruta — Release 1: Factura Electrónica de extremo a extremo
 
@@ -976,8 +1101,137 @@ Se descarta pgAdmin como servicio siempre encendido: es superficie de ataque adi
 
 En ambos casos, usar un rol de PostgreSQL de solo lectura (`soporte_lectura`, `GRANT SELECT` únicamente) para inspección manual — nunca las credenciales de superusuario de la aplicación.
 
+### 9.7 `pom.xml` — dependencias Maven del proyecto Spring Boot
+
+Corrige dos errores reales detectados en un borrador previo (coordenadas de Maven inexistentes: `spring-boot-starter-webmvc` y cinco variantes `-test` mal formadas) y sustituye la Categoría A del generador de PDF (iText, licencia AGPLv3 — obligaría a divulgar el código fuente completo de la aplicación bajo un despliegue en red, o a negociar una licencia comercial de costo no publicado) por Apache PDFBox (licencia Apache 2.0, sin esa obligación). También retira `dev.samstevens.totp` (sin publicaciones desde 2021, con una dependencia declarada hacia `spring-boot-autoconfigure` en versión 2.2.5.RELEASE) en favor de una implementación propia de TOTP (RFC 6238) sobre `javax.crypto`, usando ZXing —activamente mantenido— únicamente para la generación de la imagen QR de enrolamiento.
+
+**Hallazgo relevante de Spring Boot 4.x:** cada starter principal ahora publica un starter de prueba compañero (`spring-boot-starter-*-test`), un cambio de convención frente a Spring Boot 3.x y anteriores, donde existía un único `spring-boot-starter-test` genérico. Verificado contra Maven Central antes de incluirlo aquí.
+
+```xml
+<dependencies>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-data-jpa</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-security</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-validation</artifactId>
+    </dependency>
+
+    <dependency>
+        <groupId>org.springframework.vault</groupId>
+        <artifactId>spring-vault-core</artifactId>
+        <version>4.1.0</version>
+    </dependency>
+
+    <dependency>
+        <groupId>org.postgresql</groupId>
+        <artifactId>postgresql</artifactId>
+        <scope>runtime</scope>
+    </dependency>
+
+    <dependency>
+        <groupId>org.flywaydb</groupId>
+        <artifactId>flyway-core</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.flywaydb</groupId>
+        <artifactId>flyway-database-postgresql</artifactId>
+    </dependency>
+
+    <!-- Generación de PDF — reemplaza a iText (AGPLv3) -->
+    <dependency>
+        <groupId>org.apache.pdfbox</groupId>
+        <artifactId>pdfbox</artifactId>
+        <version>3.0.7</version>
+    </dependency>
+
+    <!-- Requerido por Argon2PasswordEncoder de Spring Security; no lo implementa internamente -->
+    <dependency>
+        <groupId>org.bouncycastle</groupId>
+        <artifactId>bcprov-jdk18on</artifactId>
+        <version>1.84</version>
+    </dependency>
+
+    <!-- TOTP: implementación propia sobre javax.crypto (RFC 6238) — reemplaza a dev.samstevens.totp -->
+    <dependency>
+        <groupId>com.google.zxing</groupId>
+        <artifactId>core</artifactId>
+        <version>3.5.3</version>
+    </dependency>
+    <dependency>
+        <groupId>com.google.zxing</groupId>
+        <artifactId>javase</artifactId>
+        <version>3.5.3</version>
+    </dependency>
+
+    <dependency>
+        <groupId>io.jsonwebtoken</groupId>
+        <artifactId>jjwt-api</artifactId>
+        <version>0.13.0</version>
+    </dependency>
+    <dependency>
+        <groupId>io.jsonwebtoken</groupId>
+        <artifactId>jjwt-impl</artifactId>
+        <version>0.13.0</version>
+        <scope>runtime</scope>
+    </dependency>
+    <dependency>
+        <groupId>io.jsonwebtoken</groupId>
+        <artifactId>jjwt-jackson</artifactId>
+        <version>0.13.0</version>
+        <scope>runtime</scope>
+    </dependency>
+
+    <dependency>
+        <groupId>org.projectlombok</groupId>
+        <artifactId>lombok</artifactId>
+        <optional>true</optional>
+    </dependency>
+
+    <!-- Spring Boot 4.x: starters de prueba compañeros, no un único starter genérico -->
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-actuator-test</artifactId>
+        <scope>test</scope>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-data-jpa-test</artifactId>
+        <scope>test</scope>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-security-test</artifactId>
+        <scope>test</scope>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-validation-test</artifactId>
+        <scope>test</scope>
+    </dependency>
+</dependencies>
+```
+
+Se descarta el import de `spring-cloud-dependencies` como BOM: ninguna dependencia del proyecto pertenece al ecosistema Spring Cloud (`spring-vault-core` es un proyecto independiente, `org.springframework.vault`, no `org.springframework.cloud`) — incluirlo sería peso muerto sin propósito.
+
 ## 10. Pendientes explícitos (no resueltos todavía)
 
-- [ ] Estrategia de almacenamiento del archivo `.p12` del certificado y de los XML/PDF de comprobantes (blob cifrado en base de datos vs. almacenamiento de objetos referenciado desde Vault).
 - [ ] Lógica de nota de crédito (anulación de factura) y su relación con `comprobante_electronico` — diferida a Release 2 (ver sección 8.2), quedó explícitamente fuera de alcance al definir el modelo de facturación (sección 4.12-4.14).
-- [ ] Validar compatibilidad de la Categoría A (cliente OAuth de Hacienda, DTOs de búsqueda CABYS) con Jakarta EE 11 y Jackson 3, que Spring Boot 4.1 trae como base por defecto — si el código original del proyecto fue escrito contra `javax.*`/Jackson 2, "se porta tal cual" pasa a ser "se porta con ajustes de compatibilidad".
+- [x] Validar compatibilidad de la Categoría A con Jakarta EE 11 y Jackson 3: **resuelto para el cliente CABYS/consulta de contribuyente** (Fase 6) — verificado con `dependency:tree` que `tools.jackson.core:jackson-databind` (Jackson 3, el que trae Spring Boot 4.1 por defecto) depende del mismo `com.fasterxml.jackson.core:jackson-annotations` que ya usan los DTOs originales (`@JsonIgnoreProperties`) — el módulo de anotaciones nunca se renombró entre Jackson 2 y 3, así que no hizo falta ningún shim. **Sigue pendiente de verificar** para los otros 3 archivos de Categoría A reservados para Fase 8/9 (firma XML-DSig/XAdES-BES, generador XML v4.4, cliente OAuth de Hacienda) al llegar a esa fase.
+- [ ] Confirmar en el servicio de alta de producto que el campo `impuesto` de la respuesta de la API de CABYS no llegue vacío o nulo antes de permitir guardar el producto — mismo principio de `NOT NULL` que ya aplica a `codigo_cabys`.
+- [ ] Mecanismo de revalidación periódica de productos ante una eventual reclasificación de tarifa de un código CABYS por parte de Hacienda (`cabys_validado_en` registra la fecha de validación, pero hoy nada dispara una revalidación futura). No bloquea Release 1; queda documentado como riesgo conocido, no como sorpresa futura.
+asterxml.jackson.core:jackson-annotations` que ya usan los DTOs originales (`@JsonIgnoreProperties`) — el módulo de anotaciones nunca se renombró entre Jackson 2 y 3, así que no hizo falta ningún shim. **Sigue pendiente de verificar** para los otros 3 archivos de Categoría A reservados para Fase 8/9 (firma XML-DSig/XAdES-BES, generador XML v4.4, cliente OAuth de Hacienda) al llegar a esa fase.
+- [ ] **Códigos CABYS no se revalidan tras su alta** (detectado en Fase 6): `producto.cabys_validado_en` prueba que el código y su `porcentaje_impuesto` se validaron contra `api.hacienda.go.cr` en el momento de crear el producto, pero nada dispara una revalidación posterior. Si Hacienda reclasifica un código CABYS (p. ej. un cambio de tarifa de IVA por reforma fiscal), un producto dado de alta antes de ese cambio sigue facturando con la tarifa vieja indefinidamente sin que el sistema lo detecte. **Deliberadamente no resuelto en Release 1** (no anticipar sin evidencia real de que ocurra) — pero documentado aquí para que la brecha se conozca de antemano, no se descubra por sorpresa cuando Hacienda reclasifique algo.

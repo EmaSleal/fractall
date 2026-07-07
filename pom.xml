@@ -50,6 +50,17 @@
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-web</artifactId>
 		</dependency>
+		<!-- Spring Boot 4 modularizó también RestClientAutoConfiguration (bean RestClient.Builder),
+		     fuera de spring-boot-autoconfigure, en este starter dedicado, necesario desde la
+		     Fase 6 para que HaciendaConsultaServiceImpl reciba un RestClient.Builder inyectado
+		     (ver su javadoc sobre por qué no construye su propio RestClient como el original
+		     portado). Sin este starter, el bean simplemente no existe y el arranque falla con
+		     UnsatisfiedDependencyException, mismo patrón de "starter modularizado silencioso"
+		     ya visto con Flyway y AutoConfigureMockMvc en fases anteriores. -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-restclient</artifactId>
+		</dependency>
 
 		<dependency>
 			<groupId>org.springframework.vault</groupId>
@@ -71,6 +82,16 @@
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-actuator-test</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<!-- Ninguno de los starters de test modularizados de Spring Boot 4 trae Mockito por
+		     transitividad (no hay un "spring-boot-starter-test" agregador en este proyecto),
+		     necesario a partir de la Fase 6 para pruebas unitarias de servicio con
+		     colaboradores mockeados (ProductoService/ClienteService/ClienteExoneracionService),
+		     sin arrancar contexto de Spring ni Testcontainers para cada rama de validación. -->
+		<dependency>
+			<groupId>org.mockito</groupId>
+			<artifactId>mockito-core</artifactId>
 			<scope>test</scope>
 		</dependency>
 		<dependency>

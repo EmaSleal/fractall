@@ -52,6 +52,16 @@ application:
     addr: ${VAULT_ADDR:http://localhost:8200}
     role-id: ${VAULT_ROLE_ID}
     secret-id: ${VAULT_SECRET_ID}
+  hacienda:
+    # Cliente de la API pública de Hacienda Costa Rica (Fase 6, sección 4.10 del documento de
+    # arquitectura, Categoría A portada de docs/proyecto-referencia/erp_spring_manager). Ambos
+    # valores por defecto son los endpoints públicos reales -- no requieren credenciales, así
+    # que a diferencia de VAULT_ROLE_ID/RESEND_API_KEY sí es seguro tener un fallback.
+    api:
+      url: ${HACIENDA_API_URL:https://api.hacienda.go.cr/fe/ae}
+    cabys:
+      url: ${HACIENDA_CABYS_URL:https://api.hacienda.go.cr/fe/cabys}
+    timeout: ${HACIENDA_API_TIMEOUT:10}
   notificaciones:
     resend:
       # Proveedor de correo transaccional ya decidido (Fase 4, sección 2 y 3.1 del

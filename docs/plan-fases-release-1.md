@@ -86,8 +86,9 @@ El orden no está definido por prioridad de negocio — está definido por **dep
 ## Fase 6 — Catálogo: producto y cliente
 
 **Trabajo:**
-- CRUD de `producto` con búsqueda CABYS contra `api.hacienda.go.cr` (Categoría A) — sin fallback genérico; la restricción `NOT NULL` de la base de datos ya lo bloquea, aquí se construye la experiencia de captura sobre esa restricción.
+- CRUD de `producto` con búsqueda CABYS contra `api.hacienda.go.cr` (Categoría A) — sin fallback genérico; la restricción `NOT NULL` de la base de datos ya lo bloquea, aquí se construye la experiencia de captura sobre esa restricción. `porcentaje_impuesto` se deriva del campo `impuesto` de la respuesta de Hacienda (sección 4.10) — rechazo duro si ese campo llega vacío o nulo, mismo principio que ya rige `codigo_cabys`.
 - CRUD de `cliente` con validación de identificación por tipo (física, jurídica, DIMEX, NITE).
+- CRUD completo de `cliente_exoneracion` (sección 4.15): alta, consulta, desactivación y validación de vigencia de autorizaciones de exoneración por cliente. Es data maestra ligada al cliente, se construye acá — su *consumo* dentro de una factura queda para la Fase 7.
 
 ---
 
@@ -95,6 +96,7 @@ El orden no está definido por prioridad de negocio — está definido por **dep
 
 **Trabajo:**
 - Bloqueo pesimista de fila sobre `contador_consecutivo` (sección 4.9), dentro de la misma transacción que crea la `factura` y sus `linea_factura`.
+- Integración de `cliente_exoneracion` (sección 4.15) en el flujo de creación de `linea_factura`: selección de una autorización activa del cliente al armar la línea, cálculo del snapshot (`porcentaje_exoneracion_aplicado`, `monto_exoneracion_aplicado`) — nunca una referencia en vivo, misma razón de integridad histórica que el resto de los campos `_aplicado`. Requiere una prueba de integración real que ejercite `fn_validar_exoneracion_vigente` y la extensión de `fn_validar_mismo_tenant` (sección 4.15.2/4.16) con datos reales de ambas tablas, no solo casos sin exoneración.
 
 **Criterio de salida:** una prueba de concurrencia real — dos hilos generando factura simultáneamente para la misma empresa — confirma que no hay consecutivos duplicados ni huecos ante un `ROLLBACK` forzado.
 
