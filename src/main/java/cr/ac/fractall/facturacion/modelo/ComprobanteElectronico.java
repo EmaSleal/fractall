@@ -42,11 +42,14 @@ public class ComprobanteElectronico extends TenantAwareEntity {
     @Column(name = "estado", nullable = false, length = 20)
     private String estado;
 
-    @Column(name = "xml_comprobante")
-    private String xmlComprobante;
+    @Column(name = "xml_comprobante_referencia")
+    private String xmlComprobanteReferencia;
 
-    @Column(name = "xml_respuesta")
-    private String xmlRespuesta;
+    @Column(name = "xml_respuesta_referencia")
+    private String xmlRespuestaReferencia;
+
+    @Column(name = "pdf_referencia")
+    private String pdfReferencia;
 
     @Column(name = "codigo_respuesta", length = 10)
     private String codigoRespuesta;

@@ -84,11 +84,11 @@ El orden no está definido por prioridad de negocio — está definido por **dep
 ---
 
 ## Fase 6 — Catálogo: producto y cliente
-
+ 
 **Trabajo:**
-- CRUD de `producto` con búsqueda CABYS contra `api.hacienda.go.cr` (Categoría A) — sin fallback genérico; la restricción `NOT NULL` de la base de datos ya lo bloquea, aquí se construye la experiencia de captura sobre esa restricción. `porcentaje_impuesto` se deriva del campo `impuesto` de la respuesta de Hacienda (sección 4.10) — rechazo duro si ese campo llega vacío o nulo, mismo principio que ya rige `codigo_cabys`.
+- CRUD de `producto` con búsqueda CABYS contra `api.hacienda.go.cr` (Categoría A) — sin fallback genérico; la restricción `NOT NULL` de la base de datos ya lo bloquea, aquí se construye la experiencia de captura sobre esa restricción.
 - CRUD de `cliente` con validación de identificación por tipo (física, jurídica, DIMEX, NITE).
-- CRUD completo de `cliente_exoneracion` (sección 4.15): alta, consulta, desactivación y validación de vigencia de autorizaciones de exoneración por cliente. Es data maestra ligada al cliente, se construye acá — su *consumo* dentro de una factura queda para la Fase 7.
+- CRUD completo de `cliente_exoneracion` (sección 4.15 del documento de arquitectura) — crear, consultar, desactivar, validar vigencia. Es data maestra ligada al cliente, con ciclo de vida independiente de la existencia de una factura; no se difiere a la Fase 7. La **integración** de esta autorización dentro del flujo de facturación —selección al armar una línea, cálculo del snapshot, y la prueba real del trigger `fn_validar_mismo_tenant`— sí pertenece a la Fase 7, donde existe `linea_factura` para ejercitarla de extremo a extremo.
 
 ---
 
@@ -96,9 +96,16 @@ El orden no está definido por prioridad de negocio — está definido por **dep
 
 **Trabajo:**
 - Bloqueo pesimista de fila sobre `contador_consecutivo` (sección 4.9), dentro de la misma transacción que crea la `factura` y sus `linea_factura`.
-- Integración de `cliente_exoneracion` (sección 4.15) en el flujo de creación de `linea_factura`: selección de una autorización activa del cliente al armar la línea, cálculo del snapshot (`porcentaje_exoneracion_aplicado`, `monto_exoneracion_aplicado`) — nunca una referencia en vivo, misma razón de integridad histórica que el resto de los campos `_aplicado`. Requiere una prueba de integración real que ejercite `fn_validar_exoneracion_vigente` y la extensión de `fn_validar_mismo_tenant` (sección 4.15.2/4.16) con datos reales de ambas tablas, no solo casos sin exoneración.
+- Integración de `cliente_exoneracion` (CRUD ya construido en Fase 6) dentro del flujo de creación de `linea_factura`: selección de una autorización activa del cliente al armar la factura, cálculo del snapshot (`porcentaje_exoneracion_aplicado`, `monto_exoneracion_aplicado`), y ejercicio real del trigger `fn_validar_mismo_tenant` con datos de ambas tablas — esta es la primera oportunidad de probar esa validación de extremo a extremo.
 
-**Criterio de salida:** una prueba de concurrencia real — dos hilos generando factura simultáneamente para la misma empresa — confirma que no hay consecutivos duplicados ni huecos ante un `ROLLBACK` forzado.
+**Decisión de implementación para el bloqueo pesimista:** `ContadorConsecutivo` se modela como entidad JPA con clave primaria compuesta (`@IdClass`) extendiendo `TenantAwareEntity`, con `@Lock(PESSIMISTIC_WRITE)` en el método del repositorio — no `JdbcTemplate` con SQL literal. La razón decisiva no es solo consistencia de paradigma con el resto del proyecto: es que la entidad JPA hereda automáticamente el filtro `@TenantId` (sección 5), mientras que SQL nativo queda fuera de ese alcance por diseño (sección 5.5) y no hay evidencia de rendimiento que justifique esa excepción en la tabla más sensible del esquema.
+
+**Tres condiciones no negociables para esta implementación, no opcionales:**
+1. El método del repositorio con `@Lock(PESSIMISTIC_WRITE)` debe invocarse dentro de un servicio anotado `@Transactional` que envuelva la lectura bloqueante, el incremento y la creación de la factura en una sola transacción — si el bloqueo se libera antes de confirmar el `UPDATE`, se pierde la garantía completa.
+2. No depender del *dirty checking* automático de Hibernate para el incremento del consecutivo — invocar `saveAndFlush()` explícitamente inmediatamente después de incrementar el valor, para eliminar cualquier ambigüedad sobre el momento exacto de la escritura.
+3. Verificar explícitamente, con la prueba de dos tenants ya establecida desde la Fase 1, que `@TenantId` interactúa correctamente con una clave primaria compuesta vía `@IdClass` — combinación no probada en ningún otro punto del esquema hasta esta fase.
+
+**Criterio de salida:** una prueba de concurrencia real — dos hilos generando factura simultáneamente para la misma empresa — confirma que no hay consecutivos duplicados ni huecos ante un `ROLLBACK` forzado, ejecutada sobre la implementación JPA descrita arriba, no sobre acceso a datos vía SQL nativo.
 
 ---
 

@@ -12,6 +12,12 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 
+/**
+ * Los 3 campos de exoneración ({@code exoneracionId}/{@code porcentajeExoneracionAplicado}/
+ * {@code montoExoneracionAplicado}) son todo-o-nada -- aplicado con un CHECK a nivel de motor
+ * ({@code chk_exoneracion_todo_o_nada}, V10) y verificado explícitamente en Java por
+ * {@code FacturaService} antes de persistir (ver su javadoc para el porqué de la duplicación).
+ */
 @Entity
 @Table(name = "linea_factura", uniqueConstraints = @UniqueConstraint(columnNames = {"factura_id", "numero_linea"}))
 @Getter
@@ -45,4 +51,13 @@ public class LineaFactura extends TenantAwareEntity {
 
     @Column(name = "porcentaje_impuesto_aplicado", nullable = false, precision = 5, scale = 2)
     private BigDecimal porcentajeImpuestoAplicado;
+
+    @Column(name = "exoneracion_id")
+    private UUID exoneracionId;
+
+    @Column(name = "porcentaje_exoneracion_aplicado", precision = 5, scale = 2)
+    private BigDecimal porcentajeExoneracionAplicado;
+
+    @Column(name = "monto_exoneracion_aplicado", precision = 14, scale = 5)
+    private BigDecimal montoExoneracionAplicado;
 }
