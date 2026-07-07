@@ -38,8 +38,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
 
-import cr.ac.fractall.empresa.Empresa;
-import cr.ac.fractall.empresa.EmpresaRepository;
+import cr.ac.fractall.empresa.modelo.Empresa;
+import cr.ac.fractall.empresa.repositorio.EmpresaRepository;
 import cr.ac.fractall.seguridad.dto.LoginRequest;
 import cr.ac.fractall.seguridad.dto.MfaCodigoRequest;
 import cr.ac.fractall.seguridad.dto.RefrescarTokenRequest;

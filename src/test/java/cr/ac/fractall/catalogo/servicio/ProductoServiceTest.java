@@ -15,12 +15,12 @@ import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import cr.ac.fractall.catalogo.Producto;
-import cr.ac.fractall.catalogo.ProductoRepository;
+import cr.ac.fractall.catalogo.modelo.Producto;
+import cr.ac.fractall.catalogo.repositorio.ProductoRepository;
 import cr.ac.fractall.catalogo.dto.ActualizarProductoRequest;
 import cr.ac.fractall.catalogo.dto.CrearProductoRequest;
 import cr.ac.fractall.catalogo.dto.ProductoResponse;
-import cr.ac.fractall.hacienda.HaciendaApiService;
+import cr.ac.fractall.hacienda.servicio.HaciendaApiService;
 import cr.ac.fractall.hacienda.dto.CabysBusquedaDTO;
 import cr.ac.fractall.hacienda.dto.CabysDTO;
 

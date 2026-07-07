@@ -30,8 +30,8 @@ import org.testcontainers.vault.VaultContainer;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 
-import cr.ac.fractall.empresa.Empresa;
-import cr.ac.fractall.empresa.EmpresaRepository;
+import cr.ac.fractall.empresa.modelo.Empresa;
+import cr.ac.fractall.empresa.repositorio.EmpresaRepository;
 import cr.ac.fractall.empresa.dto.ActualizarDatosFiscalesRequest;
 import cr.ac.fractall.empresa.dto.ConfigurarCredencialHaciendaRequest;
 import cr.ac.fractall.seguridad.modelo.Usuario;

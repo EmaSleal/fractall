@@ -23,10 +23,10 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.vault.VaultContainer;
 
-import cr.ac.fractall.empresa.CredencialHacienda;
-import cr.ac.fractall.empresa.CredencialHaciendaRepository;
-import cr.ac.fractall.empresa.Empresa;
-import cr.ac.fractall.empresa.EmpresaRepository;
+import cr.ac.fractall.empresa.modelo.CredencialHacienda;
+import cr.ac.fractall.empresa.repositorio.CredencialHaciendaRepository;
+import cr.ac.fractall.empresa.modelo.Empresa;
+import cr.ac.fractall.empresa.repositorio.EmpresaRepository;
 import cr.ac.fractall.empresa.dto.ActualizarDatosFiscalesRequest;
 import cr.ac.fractall.secretos.SecretosKvService;
 import cr.ac.fractall.seguridad.modelo.Usuario;

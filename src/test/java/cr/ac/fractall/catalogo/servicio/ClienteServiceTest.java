@@ -16,8 +16,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 
-import cr.ac.fractall.catalogo.Cliente;
-import cr.ac.fractall.catalogo.ClienteRepository;
+import cr.ac.fractall.catalogo.modelo.Cliente;
+import cr.ac.fractall.catalogo.repositorio.ClienteRepository;
 import cr.ac.fractall.catalogo.dto.ActualizarClienteRequest;
 import cr.ac.fractall.catalogo.dto.ClienteResponse;
 import cr.ac.fractall.catalogo.dto.CrearClienteRequest;

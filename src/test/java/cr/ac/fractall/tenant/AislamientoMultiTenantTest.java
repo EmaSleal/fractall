@@ -18,10 +18,10 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
-import cr.ac.fractall.catalogo.Cliente;
-import cr.ac.fractall.catalogo.ClienteRepository;
-import cr.ac.fractall.empresa.Empresa;
-import cr.ac.fractall.empresa.EmpresaRepository;
+import cr.ac.fractall.catalogo.modelo.Cliente;
+import cr.ac.fractall.catalogo.repositorio.ClienteRepository;
+import cr.ac.fractall.empresa.modelo.Empresa;
+import cr.ac.fractall.empresa.repositorio.EmpresaRepository;
 import cr.ac.fractall.seguridad.modelo.Usuario;
 import cr.ac.fractall.seguridad.repositorio.UsuarioRepository;
 import cr.ac.fractall.shared.TenantNoResueltoException;

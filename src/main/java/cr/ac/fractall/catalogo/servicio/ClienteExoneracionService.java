@@ -8,9 +8,9 @@ import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import cr.ac.fractall.catalogo.ClienteExoneracion;
-import cr.ac.fractall.catalogo.ClienteExoneracionRepository;
-import cr.ac.fractall.catalogo.ClienteRepository;
+import cr.ac.fractall.catalogo.modelo.ClienteExoneracion;
+import cr.ac.fractall.catalogo.repositorio.ClienteExoneracionRepository;
+import cr.ac.fractall.catalogo.repositorio.ClienteRepository;
 import cr.ac.fractall.catalogo.dto.ClienteExoneracionResponse;
 import cr.ac.fractall.catalogo.dto.CrearClienteExoneracionRequest;
 

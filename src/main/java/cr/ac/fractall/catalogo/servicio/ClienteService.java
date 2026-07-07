@@ -7,9 +7,9 @@ import java.util.function.Consumer;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import cr.ac.fractall.catalogo.Cliente;
-import cr.ac.fractall.catalogo.ClienteRepository;
-import cr.ac.fractall.catalogo.TipoIdentificacion;
+import cr.ac.fractall.catalogo.modelo.Cliente;
+import cr.ac.fractall.catalogo.repositorio.ClienteRepository;
+import cr.ac.fractall.catalogo.modelo.TipoIdentificacion;
 import cr.ac.fractall.catalogo.dto.ActualizarClienteRequest;
 import cr.ac.fractall.catalogo.dto.ClienteResponse;
 import cr.ac.fractall.catalogo.dto.CrearClienteRequest;

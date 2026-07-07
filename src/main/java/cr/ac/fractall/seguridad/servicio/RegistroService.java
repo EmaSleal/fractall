@@ -9,8 +9,8 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import cr.ac.fractall.empresa.Empresa;
-import cr.ac.fractall.empresa.EmpresaRepository;
+import cr.ac.fractall.empresa.modelo.Empresa;
+import cr.ac.fractall.empresa.repositorio.EmpresaRepository;
 import cr.ac.fractall.seguridad.modelo.Rol;
 import cr.ac.fractall.seguridad.modelo.Usuario;
 import cr.ac.fractall.seguridad.modelo.UsuarioEmpresa;

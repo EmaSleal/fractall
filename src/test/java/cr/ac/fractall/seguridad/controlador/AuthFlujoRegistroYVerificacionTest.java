@@ -36,8 +36,8 @@ import org.testcontainers.vault.VaultContainer;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
 
-import cr.ac.fractall.empresa.Empresa;
-import cr.ac.fractall.empresa.EmpresaRepository;
+import cr.ac.fractall.empresa.modelo.Empresa;
+import cr.ac.fractall.empresa.repositorio.EmpresaRepository;
 import cr.ac.fractall.seguridad.dto.ReenviarVerificacionRequest;
 import cr.ac.fractall.seguridad.dto.RegistroRequest;
 import cr.ac.fractall.seguridad.modelo.Rol;

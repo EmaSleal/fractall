@@ -4,7 +4,7 @@ import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.UUID;
 
-import cr.ac.fractall.catalogo.Producto;
+import cr.ac.fractall.catalogo.modelo.Producto;
 
 public record ProductoResponse(
         UUID id,

@@ -15,7 +15,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-import cr.ac.fractall.notificaciones.EmailNotificacionService;
+import cr.ac.fractall.notificaciones.servicio.EmailNotificacionService;
 import cr.ac.fractall.seguridad.dto.AccessTokenResponse;
 import cr.ac.fractall.seguridad.dto.LoginRequest;
 import cr.ac.fractall.seguridad.dto.MensajeResponse;

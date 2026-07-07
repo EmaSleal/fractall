@@ -2,7 +2,7 @@ package cr.ac.fractall.empresa.dto;
 
 import java.util.UUID;
 
-import cr.ac.fractall.empresa.Empresa;
+import cr.ac.fractall.empresa.modelo.Empresa;
 
 /**
  * Respuesta compartida por los 3 endpoints de {@code EmpresaController} -- incluye

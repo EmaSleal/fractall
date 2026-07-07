@@ -14,10 +14,10 @@ import jakarta.persistence.PersistenceContext;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import cr.ac.fractall.empresa.CredencialHacienda;
-import cr.ac.fractall.empresa.CredencialHaciendaRepository;
-import cr.ac.fractall.empresa.Empresa;
-import cr.ac.fractall.empresa.EmpresaRepository;
+import cr.ac.fractall.empresa.modelo.CredencialHacienda;
+import cr.ac.fractall.empresa.repositorio.CredencialHaciendaRepository;
+import cr.ac.fractall.empresa.modelo.Empresa;
+import cr.ac.fractall.empresa.repositorio.EmpresaRepository;
 import cr.ac.fractall.empresa.dto.ActualizarDatosFiscalesRequest;
 import cr.ac.fractall.empresa.dto.EmpresaResponse;
 import cr.ac.fractall.secretos.EnvelopeCipher;

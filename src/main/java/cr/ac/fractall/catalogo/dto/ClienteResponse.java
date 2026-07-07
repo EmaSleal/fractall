@@ -2,7 +2,7 @@ package cr.ac.fractall.catalogo.dto;
 
 import java.util.UUID;
 
-import cr.ac.fractall.catalogo.Cliente;
+import cr.ac.fractall.catalogo.modelo.Cliente;
 
 public record ClienteResponse(
         UUID id,
