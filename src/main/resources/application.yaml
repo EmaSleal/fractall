@@ -75,6 +75,21 @@ application:
       produccion:
         token-url: ${HACIENDA_OAUTH_PRODUCCION_TOKEN_URL:https://idp.comprobanteselectronicos.go.cr/auth/realms/rut/protocol/openid-connect/token}
         api-url: ${HACIENDA_OAUTH_PRODUCCION_API_URL:https://api.comprobanteselectronicos.go.cr}
+  almacenamiento:
+    # Oracle Object Storage (Fase 8, sección 6.4 del documento de arquitectura) -- autenticación
+    # por Instance Principal (ver OciObjectStorageServiceImpl), así que aquí solo van
+    # identificadores no secretos, nunca un Access/Secret Key. bucket y region sí tienen un valor
+    # por defecto razonable; namespace NO -- a diferencia de un nombre de bucket (elegido
+    # libremente por quien despliega) o de DB_NAME, el namespace de Object Storage lo asigna
+    # Oracle por cuenta/tenancy: no existe un valor "razonable" que adivinar, mismo principio que
+    # VAULT_ROLE_ID/RESEND_API_KEY (sin fallback inseguro). En pruebas SÍ hay un placeholder (ver
+    # src/test/resources/application.yaml) porque OciObjectStorageServiceImpl construye el
+    # cliente real de OCI de forma perezosa (ver su javadoc) -- ningún @SpringBootTest de este
+    # proyecto invoca `subir()` de verdad, así que ese valor nunca se usa contra OCI real.
+    oci:
+      bucket: ${OCI_OBJECT_STORAGE_BUCKET:fractall-comprobantes}
+      namespace: ${OCI_OBJECT_STORAGE_NAMESPACE}
+      region: ${OCI_OBJECT_STORAGE_REGION:us-ashburn-1}
   notificaciones:
     resend:
       # Proveedor de correo transaccional ya decidido (Fase 4, sección 2 y 3.1 del

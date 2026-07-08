@@ -53,3 +53,12 @@ application:
       # AuthFlujoRegistroYVerificacionTest) ejercitan un envío real.
       api-key: ${RESEND_API_KEY:test-resend-api-key-placeholder}
       remitente: ${RESEND_FROM_EMAIL:onboarding@resend.dev}
+  almacenamiento:
+    oci:
+      # Mismo patrón que RESEND_API_KEY arriba: OciObjectStorageServiceImpl#OciObjectStorageServiceImpl
+      # inyecta este valor de forma ansiosa (es solo un String de constructor), pero el cliente
+      # real de OCI se construye perezosamente (ver su javadoc) y ningún @SpringBootTest de este
+      # proyecto invoca `subir()` contra la implementación real -- el placeholder nunca se usa
+      # contra OCI real, solo evita que namespace (sin fallback en producción a propósito) rompa
+      # el arranque de CUALQUIER @SpringBootTest.
+      namespace: ${OCI_OBJECT_STORAGE_NAMESPACE:test-namespace-placeholder}

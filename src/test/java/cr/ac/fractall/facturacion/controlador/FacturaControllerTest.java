@@ -1,6 +1,9 @@
 package cr.ac.fractall.facturacion.controlador;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -16,6 +19,7 @@ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.testcontainers.containers.Container.ExecResult;
 import org.testcontainers.containers.PostgreSQLContainer;
@@ -25,6 +29,7 @@ import org.testcontainers.vault.VaultContainer;
 
 import tools.jackson.databind.ObjectMapper;
 
+import cr.ac.fractall.almacenamiento.ObjectStorageService;
 import cr.ac.fractall.catalogo.modelo.Cliente;
 import cr.ac.fractall.catalogo.modelo.Producto;
 import cr.ac.fractall.catalogo.repositorio.ClienteRepository;
@@ -33,7 +38,9 @@ import cr.ac.fractall.empresa.modelo.Empresa;
 import cr.ac.fractall.empresa.repositorio.EmpresaRepository;
 import cr.ac.fractall.facturacion.dto.CrearFacturaRequest;
 import cr.ac.fractall.facturacion.dto.LineaFacturaItemRequest;
+import cr.ac.fractall.facturacion.modelo.ComprobanteElectronico;
 import cr.ac.fractall.facturacion.modelo.ContadorConsecutivo;
+import cr.ac.fractall.facturacion.repositorio.ComprobanteElectronicoRepository;
 import cr.ac.fractall.facturacion.repositorio.ContadorConsecutivoRepository;
 import cr.ac.fractall.seguridad.modelo.Usuario;
 import cr.ac.fractall.seguridad.repositorio.UsuarioRepository;
@@ -163,7 +170,16 @@ class FacturaControllerTest {
     private ContadorConsecutivoRepository contadorConsecutivoRepository;
 
     @Autowired
+    private ComprobanteElectronicoRepository comprobanteElectronicoRepository;
+
+    @Autowired
     private JwtService jwtService;
+
+    // Fase 8: reemplaza la implementación real OCI-backed -- ver el javadoc de
+    // OciObjectStorageServiceImpl sobre por qué (Instance Principal no funciona fuera de una VM
+    // de OCI real, y no hay equivalente de contenedor local disponible en este entorno).
+    @MockitoBean
+    private ObjectStorageService objectStorageService;
 
     private record ContextoDePrueba(String accessToken, UUID empresaId, UUID clienteId, UUID productoId) {
     }
@@ -254,6 +270,42 @@ class FacturaControllerTest {
                 .andExpect(jsonPath("$.consecutivo").value(org.hamcrest.Matchers.hasLength(20)))
                 .andExpect(jsonPath("$.subtotal").value(4500.0))
                 .andExpect(jsonPath("$.lineas[0].exoneracionId").doesNotExist());
+    }
+
+    /**
+     * Prueba de cableado de punta a punta (Fase 8): confirma que
+     * {@code FacturaController#crear} invoca {@code ComprobanteXmlPersistenceService} DESPUÉS de
+     * que {@code FacturaService#crear} ya hizo commit -- ver el javadoc de ambas clases. Solo
+     * {@link ObjectStorageService} está mockeado; la generación del XML y el cifrado corren de
+     * punta a punta contra Postgres/Vault reales.
+     */
+    @Test
+    void postFacturaPersisteLaReferenciaDelXmlDevueltaPorElAlmacenamiento() throws Exception {
+        ContextoDePrueba contexto = crearContextoCompleto();
+        String referenciaEsperada = "empresas/" + contexto.empresaId() + "/comprobantes/referencia-de-prueba.xml.enc";
+        when(objectStorageService.subir(any(byte[].class), anyString())).thenReturn(referenciaEsperada);
+
+        CrearFacturaRequest request = new CrearFacturaRequest(
+                contexto.clienteId(), null, null, null, null, null,
+                java.util.List.of(new LineaFacturaItemRequest(
+                        contexto.productoId(), new BigDecimal("2"), new BigDecimal("1000.00000"), null)));
+
+        String cuerpoRespuesta = mockMvc.perform(post("/facturas")
+                        .header("Authorization", "Bearer " + contexto.accessToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+
+        UUID comprobanteId = UUID.fromString(objectMapper.readTree(cuerpoRespuesta).get("comprobanteId").asText());
+
+        TenantContext.set(contexto.empresaId());
+        try {
+            ComprobanteElectronico comprobante = comprobanteElectronicoRepository.findById(comprobanteId).orElseThrow();
+            assertThat(comprobante.getXmlComprobanteReferencia()).isEqualTo(referenciaEsperada);
+        } finally {
+            TenantContext.clear();
+        }
     }
 
     @Test

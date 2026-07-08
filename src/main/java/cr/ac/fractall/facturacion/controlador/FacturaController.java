@@ -11,7 +11,9 @@ import cr.ac.fractall.catalogo.servicio.ClienteExoneracionNoEncontradaException;
 import cr.ac.fractall.catalogo.servicio.ClienteNoEncontradoException;
 import cr.ac.fractall.catalogo.servicio.ProductoNoEncontradoException;
 import cr.ac.fractall.facturacion.dto.CrearFacturaRequest;
+import cr.ac.fractall.facturacion.dto.FacturaResponse;
 import cr.ac.fractall.facturacion.servicio.CondicionVentaInvalidaException;
+import cr.ac.fractall.facturacion.servicio.ComprobanteXmlPersistenceService;
 import cr.ac.fractall.facturacion.servicio.ContadorConsecutivoNoEncontradoException;
 import cr.ac.fractall.facturacion.servicio.ExoneracionNoAplicableAFacturaElectronicaException;
 import cr.ac.fractall.facturacion.servicio.ExoneracionNoPerteneceAlClienteException;
@@ -26,21 +28,34 @@ import jakarta.validation.Valid;
  * autenticado por {@code JwtAuthenticationFilter}/{@code JwtTenantFilter} -- {@code empresaId}
  * nunca llega por path variable ni cuerpo de la solicitud, mismo patrón de
  * {@code ProductoController}/{@code ClienteController} (ver su javadoc).
+ *
+ * <p>Fase 8: DESPUÉS de que {@link FacturaService#crear} ya hizo commit de su transacción, este
+ * controlador invoca {@link ComprobanteXmlPersistenceService#generarYPersistirXml} como una
+ * SEGUNDA llamada separada -- nunca dentro de la transacción de {@code crear()} (ver el javadoc
+ * de esa clase para el porqué). Si esa segunda llamada falla, la excepción se deja propagar sin
+ * capturar (ninguno de los catch de abajo la reconoce): la factura y el comprobante ya quedaron
+ * persistidos, pero el cliente HTTP recibe un error en vez de un 201 -- riesgo de fallo parcial
+ * documentado y aceptado, ver el javadoc de {@code ComprobanteXmlPersistenceService}.
  */
 @RestController
 @RequestMapping("/facturas")
 public class FacturaController {
 
     private final FacturaService facturaService;
+    private final ComprobanteXmlPersistenceService comprobanteXmlPersistenceService;
 
-    public FacturaController(FacturaService facturaService) {
+    public FacturaController(
+            FacturaService facturaService, ComprobanteXmlPersistenceService comprobanteXmlPersistenceService) {
         this.facturaService = facturaService;
+        this.comprobanteXmlPersistenceService = comprobanteXmlPersistenceService;
     }
 
     @PostMapping
     public ResponseEntity<?> crear(@Valid @RequestBody CrearFacturaRequest request) {
         try {
-            return ResponseEntity.status(HttpStatus.CREATED).body(facturaService.crear(request));
+            FacturaResponse response = facturaService.crear(request);
+            comprobanteXmlPersistenceService.generarYPersistirXml(response.comprobanteId());
+            return ResponseEntity.status(HttpStatus.CREATED).body(response);
         } catch (ClienteNoEncontradoException | ProductoNoEncontradoException
                 | ClienteExoneracionNoEncontradaException excepcion) {
             return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new MensajeResponse(excepcion.getMessage()));
