@@ -6,13 +6,17 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.io.File;
 import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.util.UUID;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -34,6 +38,7 @@ import cr.ac.fractall.catalogo.repositorio.ClienteRepository;
 import cr.ac.fractall.catalogo.repositorio.ProductoRepository;
 import cr.ac.fractall.empresa.modelo.Empresa;
 import cr.ac.fractall.empresa.repositorio.EmpresaRepository;
+import cr.ac.fractall.empresa.servicio.EmpresaService;
 import cr.ac.fractall.facturacion.modelo.ComprobanteElectronico;
 import cr.ac.fractall.facturacion.modelo.Factura;
 import cr.ac.fractall.facturacion.modelo.LineaFactura;
@@ -49,12 +54,20 @@ import cr.ac.fractall.tenant.TenantContext;
 /**
  * Prueba de {@link ComprobanteXmlPersistenceService} contra Postgres y Vault reales
  * (Testcontainers, mismo bootstrap de AppRole/Transit que {@code FacturaControllerTest}) --
- * {@link XmlFacturaGeneratorService} y {@link TransitService} corren de punta a punta, igual que
- * el resto de este proyecto. Solo {@link ObjectStorageService} se reemplaza con
- * {@code @MockitoBean}: Oracle Object Storage no tiene equivalente de contenedor local disponible
- * en este entorno y llamar al OCI real desde una prueba automatizada no es viable (ver el javadoc
- * de {@code OciObjectStorageServiceImpl} para la justificación completa de esta desviación
- * deliberada de la convención "probar contra lo real" que sigue el resto del proyecto).
+ * {@link XmlFacturaGeneratorService}, {@code XmlFacturaFirmaService} y {@link TransitService}
+ * corren de punta a punta, igual que el resto de este proyecto (incluida la firma XAdES-BES real
+ * -- ver el javadoc de {@code XmlFacturaFirmaServiceImplTest} para el porqué no se mockea). Solo
+ * {@link ObjectStorageService} se reemplaza con {@code @MockitoBean}: Oracle Object Storage no
+ * tiene equivalente de contenedor local disponible en este entorno y llamar al OCI real desde una
+ * prueba automatizada no es viable (ver el javadoc de {@code OciObjectStorageServiceImpl} para la
+ * justificación completa de esta desviación deliberada de la convención "probar contra lo real"
+ * que sigue el resto del proyecto).
+ *
+ * <p>La empresa de prueba carga un certificado {@code .p12} real (vía {@code keytool}, mismo
+ * enfoque que {@code EmpresaFlujoFase5Test#generarP12}) a través del camino de producción
+ * ({@link EmpresaService#cargarCertificado}) en {@link #setUp()} -- desde que
+ * {@code ComprobanteXmlPersistenceService#generarYPersistirXml} firma el XML antes de subirlo,
+ * ningún comprobante puede procesarse sin que la empresa tenga certificado cargado.
  */
 @Testcontainers
 @SpringBootTest
@@ -64,6 +77,7 @@ class ComprobanteXmlPersistenceServiceTest {
     private static final String POLICY_NAME = "empresa-secretos";
     private static final String TRANSIT_KEY = "empresa-datos-kek";
     private static final String APPROLE_NAME = "fractall-backend";
+    private static final String PIN_VALIDO = "pin-de-prueba-persistencia-1234";
 
     @Container
     static PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:18.1");
@@ -74,6 +88,7 @@ class ComprobanteXmlPersistenceServiceTest {
 
     private static String roleId;
     private static String secretId;
+    private static byte[] p12ValidoDePrueba;
 
     @DynamicPropertySource
     static void propiedades(DynamicPropertyRegistry registry) throws Exception {
@@ -86,6 +101,46 @@ class ComprobanteXmlPersistenceServiceTest {
         registry.add("application.vault.addr", VAULT::getHttpHostAddress);
         registry.add("application.vault.role-id", () -> roleId);
         registry.add("application.vault.secret-id", () -> secretId);
+    }
+
+    @BeforeAll
+    static void generarCertificadoDePrueba() throws Exception {
+        p12ValidoDePrueba = generarP12(PIN_VALIDO);
+    }
+
+    /**
+     * Genera un {@code .p12} autofirmado real vía {@code keytool} del propio JDK que corre la
+     * prueba -- mismo enfoque que {@code EmpresaFlujoFase5Test#generarP12}/
+     * {@code XmlFacturaFirmaServiceImplTest#generarP12}, copiado localmente acá.
+     */
+    private static byte[] generarP12(String pin) throws Exception {
+        Path archivo = Files.createTempFile("fractall-test-persistencia-cert", ".p12");
+        Files.deleteIfExists(archivo);
+        try {
+            ProcessBuilder builder = new ProcessBuilder(
+                    rutaKeytool(), "-genkeypair",
+                    "-alias", "fractall-test-persistencia",
+                    "-keyalg", "RSA", "-keysize", "2048",
+                    "-validity", "365",
+                    "-storetype", "PKCS12",
+                    "-keystore", archivo.toString(),
+                    "-storepass", pin,
+                    "-keypass", pin,
+                    "-dname", "CN=Fractall Test Persistencia, OU=QA, O=Fractall, L=San Jose, ST=SJ, C=CR");
+            builder.redirectErrorStream(true);
+            Process proceso = builder.start();
+            String salida = new String(proceso.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            int codigoSalida = proceso.waitFor();
+            assertThat(codigoSalida).as("keytool -genkeypair: " + salida).isZero();
+            return Files.readAllBytes(archivo);
+        } finally {
+            Files.deleteIfExists(archivo);
+        }
+    }
+
+    private static String rutaKeytool() {
+        String ruta = System.getProperty("java.home") + File.separator + "bin" + File.separator + "keytool";
+        return new File(ruta + ".exe").exists() ? ruta + ".exe" : ruta;
     }
 
     private static void bootstrapAppRole() throws Exception {
@@ -165,6 +220,9 @@ class ComprobanteXmlPersistenceServiceTest {
     @Autowired
     private TransitService transitService;
 
+    @Autowired
+    private EmpresaService empresaService;
+
     @MockitoBean
     private ObjectStorageService objectStorageService;
 
@@ -208,6 +266,11 @@ class ComprobanteXmlPersistenceServiceTest {
         empresa = empresaRepository.save(nueva);
 
         TenantContext.set(empresa.getId());
+
+        // Certificado .p12 real cargado por el camino de producción -- ver el javadoc de la
+        // clase: generarYPersistirXml firma el XML antes de subirlo, así que ningún comprobante
+        // puede procesarse sin esto.
+        empresaService.cargarCertificado(p12ValidoDePrueba, PIN_VALIDO);
     }
 
     @AfterEach
@@ -326,12 +389,22 @@ class ComprobanteXmlPersistenceServiceTest {
         byte[] xmlDescifrado = EnvelopeCipher.descifrar(dekPlaintext, xmlCifrado);
         String xml = new String(xmlDescifrado, StandardCharsets.UTF_8);
 
-        assertThat(xml).startsWith("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
+        // El XML persistido es el YA FIRMADO -- ver el javadoc de la clase y de
+        // ComprobanteXmlPersistenceService#generarYPersistirXml. El prólogo trae
+        // "standalone=\"no\"" (a diferencia del XML sin firmar que devuelve
+        // XmlFacturaGeneratorServiceImpl) porque XmlFacturaFirmaServiceImpl re-serializa el
+        // Document completo vía Transformer -- ver el javadoc de esa clase.
+        assertThat(xml).startsWith("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>");
         assertThat(xml).contains("<Clave>" + comprobante.getClaveNumerica() + "</Clave>");
+        assertThat(xml).contains("<ds:Signature");
+        assertThat(xml).contains("xades:QualifyingProperties");
 
-        // La referencia devuelta por el mock queda persistida en xml_comprobante_referencia.
+        // La referencia devuelta por el mock queda persistida en xml_comprobante_referencia, y
+        // el estado avanza a FIRMADO (GENERADO -> FIRMADO -> ENVIADO -> ACEPTADO, ver el javadoc
+        // de la clase).
         ComprobanteElectronico releido = comprobanteElectronicoRepository.findById(comprobante.getId()).orElseThrow();
         assertThat(releido.getXmlComprobanteReferencia()).isEqualTo(referenciaEsperada);
+        assertThat(releido.getEstado()).isEqualTo("FIRMADO");
     }
 
     @Test

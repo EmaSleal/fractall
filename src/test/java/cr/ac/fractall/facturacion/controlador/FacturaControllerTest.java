@@ -8,10 +8,15 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import java.io.File;
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.util.UUID;
 
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -36,6 +41,7 @@ import cr.ac.fractall.catalogo.repositorio.ClienteRepository;
 import cr.ac.fractall.catalogo.repositorio.ProductoRepository;
 import cr.ac.fractall.empresa.modelo.Empresa;
 import cr.ac.fractall.empresa.repositorio.EmpresaRepository;
+import cr.ac.fractall.empresa.servicio.EmpresaService;
 import cr.ac.fractall.facturacion.dto.CrearFacturaRequest;
 import cr.ac.fractall.facturacion.dto.LineaFacturaItemRequest;
 import cr.ac.fractall.facturacion.modelo.ComprobanteElectronico;
@@ -55,10 +61,13 @@ import cr.ac.fractall.tenant.TenantContextDescartable;
  * mismo hueco de cobertura que se corrigió en revisiones de código previas ("solo probado a
  * nivel de servicio, nunca a través de la pila HTTP real").
  *
- * <p>Mismo bootstrap de Postgres + Vault vía Testcontainers que {@code CatalogoControllerTest},
- * aunque {@code FacturaController} tampoco toca Vault -- ver el javadoc de esa clase para el
- * porqué (el contexto completo de la aplicación arranca con beans dependientes de Vault de
- * cualquier forma).
+ * <p>Mismo bootstrap de Postgres + Vault vía Testcontainers que {@code CatalogoControllerTest} --
+ * a diferencia de esa clase, {@code FacturaController} SÍ toca Vault de verdad desde la Fase 8:
+ * {@code ComprobanteXmlPersistenceService#generarYPersistirXml} firma el XML (certificado
+ * descifrado desde Postgres + PIN leído de Vault KV, ver {@code XmlFacturaFirmaServiceImpl}) antes
+ * de subirlo -- por eso {@link #crearContextoCompleto()} carga un certificado {@code .p12} real
+ * (vía {@code keytool}, mismo enfoque que {@code EmpresaFlujoFase5Test#generarP12}) a través del
+ * camino de producción ({@link EmpresaService#cargarCertificado}).
  */
 @Testcontainers
 @SpringBootTest
@@ -69,6 +78,7 @@ class FacturaControllerTest {
     private static final String POLICY_NAME = "empresa-secretos";
     private static final String TRANSIT_KEY = "empresa-datos-kek";
     private static final String APPROLE_NAME = "fractall-backend";
+    private static final String PIN_VALIDO = "pin-de-prueba-factura-controller-1234";
 
     @Container
     static PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:18.1");
@@ -79,6 +89,7 @@ class FacturaControllerTest {
 
     private static String roleId;
     private static String secretId;
+    private static byte[] p12ValidoDePrueba;
 
     @DynamicPropertySource
     static void propiedades(DynamicPropertyRegistry registry) throws Exception {
@@ -91,6 +102,45 @@ class FacturaControllerTest {
         registry.add("application.vault.addr", VAULT::getHttpHostAddress);
         registry.add("application.vault.role-id", () -> roleId);
         registry.add("application.vault.secret-id", () -> secretId);
+    }
+
+    @BeforeAll
+    static void generarCertificadoDePrueba() throws Exception {
+        p12ValidoDePrueba = generarP12(PIN_VALIDO);
+    }
+
+    /**
+     * Genera un {@code .p12} autofirmado real vía {@code keytool} del propio JDK que corre la
+     * prueba -- mismo enfoque que {@code EmpresaFlujoFase5Test#generarP12}, copiado localmente acá.
+     */
+    private static byte[] generarP12(String pin) throws Exception {
+        Path archivo = Files.createTempFile("fractall-test-facturacontroller-cert", ".p12");
+        Files.deleteIfExists(archivo);
+        try {
+            ProcessBuilder builder = new ProcessBuilder(
+                    rutaKeytool(), "-genkeypair",
+                    "-alias", "fractall-test-facturacontroller",
+                    "-keyalg", "RSA", "-keysize", "2048",
+                    "-validity", "365",
+                    "-storetype", "PKCS12",
+                    "-keystore", archivo.toString(),
+                    "-storepass", pin,
+                    "-keypass", pin,
+                    "-dname", "CN=Fractall Test FacturaController, OU=QA, O=Fractall, L=San Jose, ST=SJ, C=CR");
+            builder.redirectErrorStream(true);
+            Process proceso = builder.start();
+            String salida = new String(proceso.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            int codigoSalida = proceso.waitFor();
+            assertThat(codigoSalida).as("keytool -genkeypair: " + salida).isZero();
+            return Files.readAllBytes(archivo);
+        } finally {
+            Files.deleteIfExists(archivo);
+        }
+    }
+
+    private static String rutaKeytool() {
+        String ruta = System.getProperty("java.home") + File.separator + "bin" + File.separator + "keytool";
+        return new File(ruta + ".exe").exists() ? ruta + ".exe" : ruta;
     }
 
     private static void bootstrapAppRole() throws Exception {
@@ -158,6 +208,9 @@ class FacturaControllerTest {
     private EmpresaRepository empresaRepository;
 
     @Autowired
+    private EmpresaService empresaService;
+
+    @Autowired
     private UsuarioRepository usuarioRepository;
 
     @Autowired
@@ -215,6 +268,10 @@ class FacturaControllerTest {
 
             TenantContext.set(empresa.getId());
             try {
+                // Certificado .p12 real cargado por el camino de producción -- ver el javadoc de
+                // la clase: generarYPersistirXml firma el XML antes de subirlo.
+                empresaService.cargarCertificado(p12ValidoDePrueba, PIN_VALIDO);
+
                 contadorConsecutivoRepository.save(new ContadorConsecutivo(empresa.getId(), "SANDBOX", "01", 0L));
 
                 Cliente cliente = new Cliente();

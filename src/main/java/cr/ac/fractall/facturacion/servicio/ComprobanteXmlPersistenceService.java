@@ -14,10 +14,17 @@ import cr.ac.fractall.secretos.TransitService;
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * Genera el XML de Factura Electrónica, lo cifra (envelope encryption vía la KEK de Transit,
- * sección 6.1), lo sube a Oracle Object Storage (sección 6.4) y persiste su referencia en
- * {@code comprobante_electronico.xml_comprobante_referencia} -- Fase 8, sub-tarea "conectar el
- * generador de XML al flujo real de creación de factura".
+ * Genera el XML de Factura Electrónica, lo FIRMA digitalmente (XAdES-BES vía
+ * {@link XmlFacturaFirmaService}, sub-tarea "firma digital"), cifra el XML YA FIRMADO (envelope
+ * encryption vía la KEK de Transit, sección 6.1), lo sube a Oracle Object Storage (sección 6.4) y
+ * persiste su referencia en {@code comprobante_electronico.xml_comprobante_referencia} -- Fase 8.
+ *
+ * <p><b>Por qué se persiste el XML firmado y no el sin firmar:</b> el único propósito de este
+ * artefacto es eventualmente enviarse a Hacienda, que exige un {@code <ds:Signature>} real
+ * (XAdES-BES) -- persistir la versión sin firmar nunca fue el objetivo final, solo un paso
+ * intermedio de una sub-tarea anterior a la firma digital. {@link #generarYPersistirXml} también
+ * avanza {@code comprobante.estado} a {@code FIRMADO} en la misma escritura que fija
+ * {@code xmlComprobanteReferencia} -- ver el comentario junto a esa asignación más abajo.
  *
  * <p><b>Por qué esto NO es parte de {@code FacturaService#crear}:</b> {@code crear()} corre en una
  * única transacción que sostiene un bloqueo pesimista de fila sobre {@code contador_consecutivo}
@@ -54,17 +61,22 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 public class ComprobanteXmlPersistenceService {
 
+    private static final String ESTADO_FIRMADO = "FIRMADO";
+
     private final XmlFacturaGeneratorService xmlFacturaGeneratorService;
+    private final XmlFacturaFirmaService xmlFacturaFirmaService;
     private final TransitService transitService;
     private final ObjectStorageService objectStorageService;
     private final ComprobanteElectronicoRepository comprobanteElectronicoRepository;
 
     public ComprobanteXmlPersistenceService(
             XmlFacturaGeneratorService xmlFacturaGeneratorService,
+            XmlFacturaFirmaService xmlFacturaFirmaService,
             TransitService transitService,
             ObjectStorageService objectStorageService,
             ComprobanteElectronicoRepository comprobanteElectronicoRepository) {
         this.xmlFacturaGeneratorService = xmlFacturaGeneratorService;
+        this.xmlFacturaFirmaService = xmlFacturaFirmaService;
         this.transitService = transitService;
         this.objectStorageService = objectStorageService;
         this.comprobanteElectronicoRepository = comprobanteElectronicoRepository;
@@ -82,17 +94,20 @@ public class ComprobanteXmlPersistenceService {
      *     para el tenant actual
      * @throws XmlFacturaInvalidoException si el XML generado no cumple el XSD (bug interno del
      *     generador, ver su javadoc)
+     * @throws XmlFacturaFirmaException si la empresa no tiene certificado {@code .p12} cargado o
+     *     la firma XAdES-BES falla (ver el javadoc de {@link XmlFacturaFirmaService})
      */
     public void generarYPersistirXml(UUID comprobanteId) {
         ComprobanteElectronico comprobante = comprobanteElectronicoRepository.findById(comprobanteId)
                 .orElseThrow(() -> new ComprobanteElectronicoNoEncontradoException(comprobanteId));
 
         String xml = xmlFacturaGeneratorService.generarXmlFactura(comprobanteId);
+        String xmlFirmado = xmlFacturaFirmaService.firmar(xml, comprobante.getEmpresaId());
 
         TransitService.Dek dek = transitService.generarDek();
         byte[] xmlCifrado;
         try {
-            xmlCifrado = EnvelopeCipher.cifrar(dek.plaintext(), xml.getBytes(StandardCharsets.UTF_8));
+            xmlCifrado = EnvelopeCipher.cifrar(dek.plaintext(), xmlFirmado.getBytes(StandardCharsets.UTF_8));
         } finally {
             // Descarte inmediato de la DEK en texto plano (sección 6.1) -- solo dek.cifrado() se
             // sube (envuelto dentro del blob, ver ComprobanteXmlBlobFormat), nunca el plaintext.
@@ -107,7 +122,13 @@ public class ComprobanteXmlPersistenceService {
 
         // Ver el javadoc de la clase: save() de SimpleJpaRepository ya es transaccional por sí
         // mismo -- transacción corta y dedicada solo para esta escritura, sin auto-invocación.
+        // FIRMADO refleja que, a partir de este punto, el artefacto persistido es el XML REAL
+        // firmado (XAdES-BES) que eventualmente se envía a Hacienda -- no el XML sin firmar que
+        // este servicio subía antes de esta sub-tarea (secuencia GENERADO -> FIRMADO -> ENVIADO ->
+        // ACEPTADO del documento de arquitectura; ver el javadoc de FacturaService#crear sobre por
+        // qué GENERADO en sí se asigna prematuramente y ese gap queda fuera de este alcance).
         comprobante.setXmlComprobanteReferencia(referencia);
+        comprobante.setEstado(ESTADO_FIRMADO);
         comprobanteElectronicoRepository.save(comprobante);
     }
 
