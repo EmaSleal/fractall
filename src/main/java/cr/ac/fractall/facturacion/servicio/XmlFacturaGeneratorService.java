@@ -11,8 +11,8 @@ import java.util.UUID;
  * SOLO el método {@code generarXmlFactura} y su grafo de llamadas -- {@code generarXmlTiquete}/
  * {@code generarXmlNotaCredito}/{@code generarXmlNotaDebito} quedan deliberadamente fuera de
  * alcance del Release 1 (sección 8.2). La validación contra el XSD real (equivalente a la llamada
- * a {@code XmlValidator.validarXml} del original) es un paso posterior separado, todavía no
- * conectado a este servicio.
+ * a {@code XmlValidator.validarXml} del original) está conectada vía
+ * {@link XmlFacturaXsdValidator}.
  *
  * <p>Deliberadamente NO se llama {@code XmlGeneratorService} pese a que así se llama en el ERP de
  * referencia -- ese nombre implicaría cubrir las 4 variantes de comprobante que el original genera
@@ -34,10 +34,12 @@ public interface XmlFacturaGeneratorService {
      *
      * @param comprobanteId id de un {@code ComprobanteElectronico} del tenant actual
      *     ({@link cr.ac.fractall.tenant.TenantContext})
-     * @return el XML generado, como {@code String}, sin firmar (XAdES-BES es una fase futura
-     *     separada) y sin validar contra el XSD (sub-tarea 3, todavía no conectada aquí)
+     * @return el XML generado, como {@code String}, ya validado contra el XSD v4.4 de Hacienda
+     *     ({@link XmlFacturaXsdValidator}) pero sin firmar (XAdES-BES es una fase futura separada)
      * @throws ComprobanteElectronicoNoEncontradoException si no existe un comprobante con ese id
      *     para el tenant actual
+     * @throws XmlFacturaInvalidoException si el XML generado no cumple el XSD -- bug interno del
+     *     generador, ver el javadoc de esa excepción
      */
     String generarXmlFactura(UUID comprobanteId);
 }

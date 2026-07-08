@@ -27,6 +27,7 @@ import cr.ac.fractall.facturacion.repositorio.FacturaRepository;
 import cr.ac.fractall.facturacion.repositorio.LineaFacturaRepository;
 import cr.ac.fractall.facturacion.servicio.ComprobanteElectronicoNoEncontradoException;
 import cr.ac.fractall.facturacion.servicio.XmlFacturaGeneratorService;
+import cr.ac.fractall.facturacion.servicio.XmlFacturaXsdValidator;
 import lombok.extern.slf4j.Slf4j;
 
 /**
@@ -105,6 +106,7 @@ public class XmlFacturaGeneratorServiceImpl implements XmlFacturaGeneratorServic
     private final ClienteRepository clienteRepository;
     private final ProductoRepository productoRepository;
     private final ClienteExoneracionRepository clienteExoneracionRepository;
+    private final XmlFacturaXsdValidator xmlFacturaXsdValidator;
 
     public XmlFacturaGeneratorServiceImpl(
             ComprobanteElectronicoRepository comprobanteElectronicoRepository,
@@ -113,7 +115,8 @@ public class XmlFacturaGeneratorServiceImpl implements XmlFacturaGeneratorServic
             EmpresaRepository empresaRepository,
             ClienteRepository clienteRepository,
             ProductoRepository productoRepository,
-            ClienteExoneracionRepository clienteExoneracionRepository) {
+            ClienteExoneracionRepository clienteExoneracionRepository,
+            XmlFacturaXsdValidator xmlFacturaXsdValidator) {
         this.comprobanteElectronicoRepository = comprobanteElectronicoRepository;
         this.facturaRepository = facturaRepository;
         this.lineaFacturaRepository = lineaFacturaRepository;
@@ -121,6 +124,7 @@ public class XmlFacturaGeneratorServiceImpl implements XmlFacturaGeneratorServic
         this.clienteRepository = clienteRepository;
         this.productoRepository = productoRepository;
         this.clienteExoneracionRepository = clienteExoneracionRepository;
+        this.xmlFacturaXsdValidator = xmlFacturaXsdValidator;
     }
 
     @Override
@@ -185,10 +189,13 @@ public class XmlFacturaGeneratorServiceImpl implements XmlFacturaGeneratorServic
 
         xml.append("</FacturaElectronica>");
 
-        // La validación contra el XSD real (equivalente a XmlValidator.validarXml en el
-        // original) es la sub-tarea 3, todavía no conectada aquí -- se devuelve el XML generado
-        // sin validar.
-        return xml.toString();
+        // Validación contra el XSD real (equivalente a XmlValidator.validarXml en el original) --
+        // ver el javadoc de XmlFacturaXsdValidator. Lanza XmlFacturaInvalidoException si el XML
+        // no cumple el esquema; nunca debería pasar con datos ya validados por FacturaService,
+        // así que es un IllegalStateException-como-familia (bug interno), no un 404 de dominio.
+        String xmlGenerado = xml.toString();
+        xmlFacturaXsdValidator.validar(xmlGenerado);
+        return xmlGenerado;
     }
 
     // =====================================================================

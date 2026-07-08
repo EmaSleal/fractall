@@ -1,6 +1,8 @@
 package cr.ac.fractall.facturacion.servicio.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -37,6 +39,8 @@ import cr.ac.fractall.facturacion.repositorio.ComprobanteElectronicoRepository;
 import cr.ac.fractall.facturacion.repositorio.FacturaRepository;
 import cr.ac.fractall.facturacion.repositorio.LineaFacturaRepository;
 import cr.ac.fractall.facturacion.servicio.XmlFacturaGeneratorService;
+import cr.ac.fractall.facturacion.servicio.XmlFacturaInvalidoException;
+import cr.ac.fractall.facturacion.servicio.XmlFacturaXsdValidator;
 import cr.ac.fractall.seguridad.modelo.Usuario;
 import cr.ac.fractall.seguridad.repositorio.UsuarioRepository;
 import cr.ac.fractall.tenant.TenantContext;
@@ -92,6 +96,9 @@ class XmlFacturaGeneratorServiceImplTest {
 
     @Autowired
     private XmlFacturaGeneratorService xmlFacturaGeneratorService;
+
+    @Autowired
+    private XmlFacturaXsdValidator xmlFacturaXsdValidator;
 
     private UUID usuarioId;
     private Empresa empresa;
@@ -178,7 +185,13 @@ class XmlFacturaGeneratorServiceImplTest {
         exoneracion.setClienteId(clienteId);
         exoneracion.setTipoDocumento("08");
         exoneracion.setNumeroDocumento("DOC-" + UUID.randomUUID());
-        exoneracion.setNombreInstitucion("PROCOMER");
+        // "01" (Ministerio de Hacienda): valor de texto libre en este proyecto (ver el gap de
+        // NombreInstitucion documentado en el javadoc de XmlFacturaGeneratorServiceImpl), pero
+        // debe caer dentro del catálogo cerrado de 2 caracteres del XSD real (maxLength=2 +
+        // enumeración) para que el XML generado con este fixture pase la validación de esquema de
+        // esta prueba -- "PROCOMER" (8 caracteres) no es un código de ese catálogo y el XSD real
+        // lo rechaza (cvc-maxLength-valid), tal como anticipaba ese javadoc.
+        exoneracion.setNombreInstitucion("01");
         exoneracion.setNumeroArticulo("5");
         exoneracion.setInciso("2");
         exoneracion.setFechaEmision(LocalDateTime.now().minusDays(10));
@@ -331,7 +344,7 @@ class XmlFacturaGeneratorServiceImplTest {
         assertThat(texto(exoneracionXml, "NumeroDocumento")).isEqualTo(exoneracion.getNumeroDocumento());
         assertThat(texto(exoneracionXml, "Articulo")).isEqualTo("5");
         assertThat(texto(exoneracionXml, "Inciso")).isEqualTo("2");
-        assertThat(texto(exoneracionXml, "NombreInstitucion")).isEqualTo("PROCOMER");
+        assertThat(texto(exoneracionXml, "NombreInstitucion")).isEqualTo("01");
         assertThat(texto(exoneracionXml, "TarifaExonerada")).isEqualTo("100.00");
         assertThat(texto(exoneracionXml, "MontoExoneracion")).isEqualTo("260.00000");
 
@@ -373,5 +386,66 @@ class XmlFacturaGeneratorServiceImplTest {
 
         Element receptor = (Element) documento.getElementsByTagName("Receptor").item(0);
         assertThat(receptor.getElementsByTagName("Ubicacion").getLength()).isZero();
+    }
+
+    /**
+     * Sub-tarea 3 (validación XSD): confirma explícitamente, vía el {@link XmlFacturaXsdValidator}
+     * inyectado, que un XML real generado por el servicio (mismos datos que
+     * {@code generaXmlFacturaSinExoneracionNoIncluyeBloqueExoneracion}) cumple el XSD v4.4 --
+     * complementa la prueba negativa de abajo, que demuestra que el validador SÍ rechaza cuando
+     * corresponde.
+     */
+    @Test
+    void xmlGeneradoConDatosValidosPasaLaValidacionContraElXsd() {
+        Cliente cliente = crearCliente("310499" + System.nanoTime() % 1_000_000, "100 metros este del parque");
+        Producto producto = crearProducto("PROD-XML-E-" + UUID.randomUUID(), new BigDecimal("13.00"));
+
+        Factura factura = crearFactura(cliente.getId(), new BigDecimal("1000.00000"), new BigDecimal("130.00000"));
+        LineaFactura linea = crearLinea(factura.getId(), producto, 1, BigDecimal.ONE, new BigDecimal("1000.00000"));
+        lineaFacturaRepository.saveAndFlush(linea);
+        ComprobanteElectronico comprobante = crearComprobante(factura.getId());
+
+        // generarXmlFactura ya valida internamente -- si el XML no fuera válido, esta llamada
+        // habría lanzado XmlFacturaInvalidoException y el test fallaría acá mismo.
+        String xml = xmlFacturaGeneratorService.generarXmlFactura(comprobante.getId());
+
+        // Segunda comprobación explícita e independiente, llamando al validador directamente
+        // sobre el mismo XML, para dejar constancia inequívoca de que pasa la validación de
+        // esquema (no solo que el método no lanzó nada).
+        assertThatCode(() -> xmlFacturaXsdValidator.validar(xml)).doesNotThrowAnyException();
+    }
+
+    /**
+     * Prueba negativa clave de la sub-tarea 3: si el validador siempre devolviera "válido" por un
+     * bug de cableado (XSD equivocado, {@code Schema} no aplicado, etc.), esta prueba lo
+     * detectaría. Se parte de un XML real y válido (mismos datos que la prueba anterior) y se le
+     * quita el elemento {@code <CondicionVenta>} completo -- un elemento obligatorio del XSD
+     * (sin {@code minOccurs="0"} en {@code FacturaElectronicaType}, confirmado leyendo el XSD).
+     * El XML resultante sigue siendo perfectamente bien formado (XML válido, DOM parseable sin
+     * problema) pero viola la cardinalidad del esquema -- por eso esto SÍ ejercita validación a
+     * nivel de esquema XSD, no una simple comprobación de buena formación.
+     */
+    @Test
+    void rechazaXmlBienFormadoQueLeFaltaUnElementoObligatorioDelXsd() throws Exception {
+        Cliente cliente = crearCliente("310599" + System.nanoTime() % 1_000_000, "100 metros este del parque");
+        Producto producto = crearProducto("PROD-XML-F-" + UUID.randomUUID(), new BigDecimal("13.00"));
+
+        Factura factura = crearFactura(cliente.getId(), new BigDecimal("1000.00000"), new BigDecimal("130.00000"));
+        LineaFactura linea = crearLinea(factura.getId(), producto, 1, BigDecimal.ONE, new BigDecimal("1000.00000"));
+        lineaFacturaRepository.saveAndFlush(linea);
+        ComprobanteElectronico comprobante = crearComprobante(factura.getId());
+
+        String xmlValido = xmlFacturaGeneratorService.generarXmlFactura(comprobante.getId());
+        assertThat(xmlValido).contains("<CondicionVenta>01</CondicionVenta>");
+
+        String xmlMutado = xmlValido.replace("<CondicionVenta>01</CondicionVenta>", "");
+        // Sigue siendo bien formado: se confirma que el DOM parsea sin excepción antes de pasarlo
+        // al validador de esquema, para que quede claro que lo que falla después es una regla del
+        // XSD y no un problema de sintaxis XML.
+        parsear(xmlMutado);
+
+        assertThatThrownBy(() -> xmlFacturaXsdValidator.validar(xmlMutado))
+                .isInstanceOf(XmlFacturaInvalidoException.class)
+                .hasMessageContaining("XSD v4.4");
     }
 }
