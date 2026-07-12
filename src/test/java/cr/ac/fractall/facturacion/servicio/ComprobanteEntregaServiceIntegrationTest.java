@@ -2,24 +2,19 @@ package cr.ac.fractall.facturacion.servicio;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import java.io.File;
 import java.math.BigDecimal;
-import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.util.UUID;
 
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -36,7 +31,9 @@ import cr.ac.fractall.catalogo.modelo.Cliente;
 import cr.ac.fractall.catalogo.modelo.Producto;
 import cr.ac.fractall.catalogo.repositorio.ClienteRepository;
 import cr.ac.fractall.catalogo.repositorio.ProductoRepository;
+import cr.ac.fractall.empresa.modelo.CredencialHacienda;
 import cr.ac.fractall.empresa.modelo.Empresa;
+import cr.ac.fractall.empresa.repositorio.CredencialHaciendaRepository;
 import cr.ac.fractall.empresa.repositorio.EmpresaRepository;
 import cr.ac.fractall.empresa.servicio.EmpresaService;
 import cr.ac.fractall.facturacion.modelo.ComprobanteElectronico;
@@ -45,39 +42,51 @@ import cr.ac.fractall.facturacion.modelo.LineaFactura;
 import cr.ac.fractall.facturacion.repositorio.ComprobanteElectronicoRepository;
 import cr.ac.fractall.facturacion.repositorio.FacturaRepository;
 import cr.ac.fractall.facturacion.repositorio.LineaFacturaRepository;
+import cr.ac.fractall.hacienda.dto.MensajeHacienda;
+import cr.ac.fractall.hacienda.dto.RespuestaHaciendaDTO;
+import cr.ac.fractall.hacienda.servicio.HaciendaComprobanteApiService;
+import cr.ac.fractall.notificaciones.servicio.ResendEmailClient;
 import cr.ac.fractall.secretos.EnvelopeCipher;
 import cr.ac.fractall.secretos.TransitService;
 import cr.ac.fractall.seguridad.modelo.Usuario;
 import cr.ac.fractall.seguridad.repositorio.UsuarioRepository;
 import cr.ac.fractall.tenant.TenantContext;
 
+import java.io.File;
+import java.nio.file.Files;
+import java.nio.file.Path;
+
+import org.junit.jupiter.api.BeforeAll;
+
 /**
- * Prueba de {@link ComprobanteXmlPersistenceService} contra Postgres y Vault reales
- * (Testcontainers, mismo bootstrap de AppRole/Transit que {@code FacturaControllerTest}) --
- * {@link XmlFacturaGeneratorService}, {@code XmlFacturaFirmaService} y {@link TransitService}
- * corren de punta a punta, igual que el resto de este proyecto (incluida la firma XAdES-BES real
- * -- ver el javadoc de {@code XmlFacturaFirmaServiceImplTest} para el porqué no se mockea). Solo
- * {@link ObjectStorageService} se reemplaza con {@code @MockitoBean}: Oracle Object Storage no
- * tiene equivalente de contenedor local disponible en este entorno y llamar al OCI real desde una
- * prueba automatizada no es viable (ver el javadoc de {@code OciObjectStorageServiceImpl} para la
- * justificación completa de esta desviación deliberada de la convención "probar contra lo real"
- * que sigue el resto del proyecto).
+ * Prueba de integración de punta a punta de la Fase 9 (T-08): verifica que el flujo completo
+ * {@code ComprobanteHaciendaEnvioService.enviarComprobante()} → ACEPTADO → {@code entregarSiAceptado()}
+ * → {@code ComprobanteEntregaService.entregar()} termina con {@code pdf_referencia} persistido en
+ * la base de datos real (Postgres vía Testcontainers) y que {@link ResendEmailClient} es invocado.
  *
- * <p>La empresa de prueba carga un certificado {@code .p12} real (vía {@code keytool}, mismo
- * enfoque que {@code EmpresaFlujoFase5Test#generarP12}) a través del camino de producción
- * ({@link EmpresaService#cargarCertificado}) en {@link #setUp()} -- desde que
- * {@code ComprobanteXmlPersistenceService#generarYPersistirXml} firma el XML antes de subirlo,
- * ningún comprobante puede procesarse sin que la empresa tenga certificado cargado.
+ * <p>Wiring comprobado de punta a punta: el estado ACEPTADO de Hacienda (mockeado) dispara la
+ * entrega, que genera el PDF (PDFBox real), lo cifra (Vault real), lo "sube" a OCI (mockeado) y
+ * persiste la referencia. El XML descifrado que construye el descargador también usa Vault real --
+ * el blob de prueba se arma con {@link cr.ac.fractall.facturacion.servicio.ComprobanteXmlBlobFormat}
+ * y {@link EnvelopeCipher}, mismas primitivas que el Uploader usa en producción.
+ *
+ * <p>Mocks deliberados:
+ * <ul>
+ *   <li>{@link ObjectStorageService}: Oracle OCI no tiene imagen local disponible (misma
+ *       restricción documentada en {@code OciObjectStorageServiceImpl}).
+ *   <li>{@link HaciendaComprobanteApiService}: evita llamadas HTTP a Hacienda.
+ *   <li>{@link ResendEmailClient}: evita envío real de correo; verificamos su invocación.
+ * </ul>
  */
 @Testcontainers
 @SpringBootTest
-class ComprobanteXmlPersistenceServiceTest {
+class ComprobanteEntregaServiceIntegrationTest {
 
     private static final String ROOT_TOKEN = "test-root-token";
     private static final String POLICY_NAME = "empresa-secretos";
     private static final String TRANSIT_KEY = "empresa-datos-kek";
     private static final String APPROLE_NAME = "fractall-backend";
-    private static final String PIN_VALIDO = "pin-de-prueba-persistencia-1234";
+    private static final String PIN_VALIDO = "pin-entrega-integracion-1234";
 
     @Container
     static PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:18.1");
@@ -108,25 +117,20 @@ class ComprobanteXmlPersistenceServiceTest {
         p12ValidoDePrueba = generarP12(PIN_VALIDO);
     }
 
-    /**
-     * Genera un {@code .p12} autofirmado real vía {@code keytool} del propio JDK que corre la
-     * prueba -- mismo enfoque que {@code EmpresaFlujoFase5Test#generarP12}/
-     * {@code XmlFacturaFirmaServiceImplTest#generarP12}, copiado localmente acá.
-     */
     private static byte[] generarP12(String pin) throws Exception {
-        Path archivo = Files.createTempFile("fractall-test-persistencia-cert", ".p12");
+        Path archivo = Files.createTempFile("fractall-test-entrega-cert", ".p12");
         Files.deleteIfExists(archivo);
         try {
             ProcessBuilder builder = new ProcessBuilder(
                     rutaKeytool(), "-genkeypair",
-                    "-alias", "fractall-test-persistencia",
+                    "-alias", "fractall-test-entrega",
                     "-keyalg", "RSA", "-keysize", "2048",
                     "-validity", "365",
                     "-storetype", "PKCS12",
                     "-keystore", archivo.toString(),
                     "-storepass", pin,
                     "-keypass", pin,
-                    "-dname", "CN=Fractall Test Persistencia, OU=QA, O=Fractall, L=San Jose, ST=SJ, C=CR");
+                    "-dname", "CN=Fractall Test Entrega, OU=QA, O=Fractall, L=San Jose, ST=SJ, C=CR");
             builder.redirectErrorStream(true);
             Process proceso = builder.start();
             String salida = new String(proceso.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
@@ -179,7 +183,8 @@ class ComprobanteXmlPersistenceServiceTest {
 
         roleId = ejecutarVault("read", "-field=role_id", "auth/approle/role/" + APPROLE_NAME + "/role-id")
                 .getStdout().trim();
-        secretId = ejecutarVault("write", "-field=secret_id", "-f", "auth/approle/role/" + APPROLE_NAME + "/secret-id")
+        secretId = ejecutarVault("write", "-field=secret_id", "-f",
+                "auth/approle/role/" + APPROLE_NAME + "/secret-id")
                 .getStdout().trim();
     }
 
@@ -192,6 +197,10 @@ class ComprobanteXmlPersistenceServiceTest {
         assertThat(resultado.getExitCode()).as(resultado.getStderr()).isZero();
         return resultado;
     }
+
+    // -------------------------------------------------------------------------
+    // Injected beans
+    // -------------------------------------------------------------------------
 
     @Autowired
     private UsuarioRepository usuarioRepository;
@@ -215,36 +224,40 @@ class ComprobanteXmlPersistenceServiceTest {
     private ComprobanteElectronicoRepository comprobanteElectronicoRepository;
 
     @Autowired
-    private ComprobanteXmlPersistenceService comprobanteXmlPersistenceService;
+    private CredencialHaciendaRepository credencialHaciendaRepository;
 
     @Autowired
-    private TransitService transitService;
+    private ComprobanteHaciendaEnvioService comprobanteHaciendaEnvioService;
 
     @Autowired
     private EmpresaService empresaService;
 
+    @Autowired
+    private TransitService transitService;
+
     @MockitoBean
     private ObjectStorageService objectStorageService;
 
-    // Fase 8 (envío a Hacienda): generarYPersistirXml ahora invoca
-    // ComprobanteHaciendaEnvioService#enviarComprobante justo después de persistir FIRMADO -- se
-    // mockea aquí para que esta prueba siga enfocada en la generación/firma/cifrado/subida del
-    // XML, sin necesitar una CredencialHacienda real ni acoplarse a las reglas de transición de
-    // estado de ese servicio (esas se prueban por separado en
-    // ComprobanteHaciendaEnvioServiceTest).
     @MockitoBean
-    private ComprobanteHaciendaEnvioService comprobanteHaciendaEnvioService;
+    private HaciendaComprobanteApiService haciendaComprobanteApiService;
 
-    private UUID usuarioId;
+    @MockitoBean
+    private ResendEmailClient resendEmailClient;
+
+    // -------------------------------------------------------------------------
+    // Test state
+    // -------------------------------------------------------------------------
+
     private Empresa empresa;
+    private UUID usuarioId;
 
     @BeforeEach
     void setUp() {
-        TenantContext.set(UUID.randomUUID());
+        TenantContext.set(UUID.randomUUID()); // descarte para abrir EntityManager
 
         Usuario usuario = new Usuario();
-        usuario.setNombre("Usuario de prueba persistencia XML");
-        usuario.setEmail("usuario-persistencia-xml-" + UUID.randomUUID() + "@fractall.test");
+        usuario.setNombre("Usuario de prueba entrega fase-9");
+        usuario.setEmail("usuario-entrega-" + UUID.randomUUID() + "@fractall.test");
         usuario.setPasswordHash("hash-no-relevante");
         usuario.setEmailVerificado(true);
         usuario.setEstado("ACTIVA");
@@ -256,7 +269,7 @@ class ComprobanteXmlPersistenceServiceTest {
         usuarioId = usuario.getId();
 
         Empresa nueva = new Empresa();
-        nueva.setRazonSocial("Empresa Persistencia XML S.A.");
+        nueva.setRazonSocial("Empresa Entrega Fase9 S.A.");
         nueva.setNumeroIdentificacion(String.valueOf(
                 100_000_000_000L + Math.abs(UUID.randomUUID().getMostSignificantBits() % 900_000_000_000L)));
         nueva.setTipoIdentificacion("02");
@@ -266,7 +279,7 @@ class ComprobanteXmlPersistenceServiceTest {
         nueva.setDistrito("01");
         nueva.setOtrasSenas("300 metros norte de la plaza central");
         nueva.setTelefono("22223333");
-        nueva.setEmail("empresa@fractall.test");
+        nueva.setEmail("empresa-entrega@fractall.test");
         nueva.setAmbienteHacienda("SANDBOX");
         nueva.setStatus("REGISTRADA");
         nueva.setCreadoPor(usuarioId);
@@ -276,10 +289,20 @@ class ComprobanteXmlPersistenceServiceTest {
 
         TenantContext.set(empresa.getId());
 
-        // Certificado .p12 real cargado por el camino de producción -- ver el javadoc de la
-        // clase: generarYPersistirXml firma el XML antes de subirlo, así que ningún comprobante
-        // puede procesarse sin esto.
+        // Cargar certificado real (necesario para que ComprobanteXmlPersistenceService firme el XML
+        // si se encadenara ese flujo; aquí el XML ya está firmado, pero el contexto Vault sí es
+        // real para cifrado/descifrado del PDF en ComprobanteEntregaService)
         empresaService.cargarCertificado(p12ValidoDePrueba, PIN_VALIDO);
+
+        // Credencial de Hacienda necesaria para ComprobanteHaciendaEnvioService
+        CredencialHacienda credencial = new CredencialHacienda();
+        credencial.setEmpresaId(empresa.getId());
+        credencial.setAmbiente("SANDBOX");
+        credencial.setUsuarioHacienda("usuario@hacienda.test");
+        credencial.setCredencialReferencia("secret/data/empresas/" + empresa.getId() + "/hacienda/sandbox/password");
+        credencial.setConfiguradaEn(LocalDateTime.now());
+        credencial.setConfiguradaPor(usuarioId);
+        credencialHaciendaRepository.save(credencial);
     }
 
     @AfterEach
@@ -287,21 +310,41 @@ class ComprobanteXmlPersistenceServiceTest {
         TenantContext.clear();
     }
 
-    private ComprobanteElectronico crearComprobanteConFacturaYLinea() {
+    // -------------------------------------------------------------------------
+    // Helper: build a real encrypted XML blob using Vault Transit (same as prod)
+    // -------------------------------------------------------------------------
+
+    private byte[] construirBlobCifrado(String xmlClaro) {
+        TransitService.Dek dek = transitService.generarDek();
+        byte[] xmlCifrado;
+        try {
+            xmlCifrado = EnvelopeCipher.cifrar(dek.plaintext(), xmlClaro.getBytes(StandardCharsets.UTF_8));
+        } finally {
+            java.util.Arrays.fill(dek.plaintext(), (byte) 0);
+        }
+        return ComprobanteXmlBlobFormat.serializar(dek.cifrado(), xmlCifrado);
+    }
+
+    // -------------------------------------------------------------------------
+    // Helper: create a ComprobanteElectronico with its full dependency graph
+    // -------------------------------------------------------------------------
+
+    private ComprobanteElectronico crearComprobanteConFactura(String emailCliente) {
         Cliente cliente = new Cliente();
-        cliente.setNombre("Cliente de prueba persistencia XML");
+        cliente.setNombre("Cliente Entrega Fase9");
         cliente.setTipoIdentificacion("02");
         cliente.setNumeroIdentificacion("310" + System.nanoTime() % 1_000_000_000L);
+        cliente.setEmail(emailCliente);
         cliente.setRequiereFacturaElectronica(true);
         cliente.setCreateDate(LocalDateTime.now());
         cliente.setUpdateDate(LocalDateTime.now());
         cliente = clienteRepository.save(cliente);
 
         Producto producto = new Producto();
-        producto.setCodigo("PROD-PXML-" + UUID.randomUUID());
-        producto.setDescripcion("Producto de prueba persistencia XML");
+        producto.setCodigo("PROD-ENT-" + UUID.randomUUID());
+        producto.setDescripcion("Producto de prueba entrega fase-9");
         producto.setCodigoCabys("2132100000100");
-        producto.setDescripcionCabys("Descripción CABYS de prueba");
+        producto.setDescripcionCabys("Descripcion CABYS de prueba");
         producto.setCabysValidadoEn(LocalDateTime.now());
         producto.setCodigoUnidadFe("Unid");
         producto.setPrecioVenta(new BigDecimal("1000.00000"));
@@ -349,100 +392,113 @@ class ComprobanteXmlPersistenceServiceTest {
         }
         String claveNumerica = ("506" + consecutivo + relleno).substring(0, 50);
 
+        // Build a real encrypted XML blob (same pipeline as production)
+        byte[] xmlComprobanteBlob = construirBlobCifrado("<FacturaElectronica><Clave>" + claveNumerica + "</Clave></FacturaElectronica>");
+        String xmlComprobanteRef = "empresas/" + empresa.getId() + "/comprobantes/" + claveNumerica + ".xml.enc";
+
         ComprobanteElectronico comprobante = new ComprobanteElectronico();
         comprobante.setFacturaId(factura.getId());
         comprobante.setAmbienteHacienda("SANDBOX");
         comprobante.setTipoComprobante("01");
         comprobante.setConsecutivo(consecutivo);
         comprobante.setClaveNumerica(claveNumerica);
-        comprobante.setEstado("GENERADO");
+        comprobante.setEstado("FIRMADO");
+        comprobante.setXmlComprobanteReferencia(xmlComprobanteRef);
         comprobante.setIntentosEnvio(0);
         comprobante.setFechaEmision(LocalDateTime.now());
-        return comprobanteElectronicoRepository.saveAndFlush(comprobante);
+        comprobante = comprobanteElectronicoRepository.saveAndFlush(comprobante);
+
+        // Wire OCI mock to return the real encrypted blob when the descargador asks for it
+        when(objectStorageService.descargar(xmlComprobanteRef)).thenReturn(xmlComprobanteBlob);
+
+        return comprobante;
     }
 
+    // -------------------------------------------------------------------------
+    // T-08a: ACEPTADO via enviarComprobante → entregar fires → pdf_referencia persisted
+    // -------------------------------------------------------------------------
+
     @Test
-    void generarYPersistirXmlSubeUnBlobConElLayoutDocumentadoYPersistaLaReferenciaDevuelta() {
-        ComprobanteElectronico comprobante = crearComprobanteConFacturaYLinea();
-        String referenciaEsperada = "empresas/" + empresa.getId() + "/comprobantes/"
-                + comprobante.getClaveNumerica() + ".xml.enc";
+    void aceptadoViaEnvioDisparaEntregaYPersistePdfReferencia() {
+        ComprobanteElectronico comprobante = crearComprobanteConFactura("cliente-entrega@test.com");
 
-        when(objectStorageService.subir(any(byte[].class), anyString())).thenReturn(referenciaEsperada);
+        String expectedPdfRef = "empresas/" + empresa.getId()
+                + "/comprobantes/" + comprobante.getClaveNumerica() + ".pdf.enc";
 
-        comprobanteXmlPersistenceService.generarYPersistirXml(comprobante.getId());
+        // Hacienda mock: responde ACEPTADO con un XML de respuesta
+        String xmlRespuestaBase64 = java.util.Base64.getEncoder()
+                .encodeToString("<MensajeHacienda/>".getBytes(StandardCharsets.UTF_8));
+        when(haciendaComprobanteApiService.enviarComprobante(anyString(), anyString(), any()))
+                .thenReturn(RespuestaHaciendaDTO.builder()
+                        .claveNumerica(comprobante.getClaveNumerica())
+                        .fechaRespuesta(LocalDateTime.now())
+                        .codigoMensaje(MensajeHacienda.ACEPTADO)
+                        .mensaje("Aceptado")
+                        .xmlRespuesta(xmlRespuestaBase64)
+                        .exitoso(true)
+                        .debeReintentar(false)
+                        .codigoHttp(200)
+                        .build());
 
-        ArgumentCaptor<byte[]> contenidoCaptor = ArgumentCaptor.forClass(byte[].class);
-        ArgumentCaptor<String> rutaCaptor = ArgumentCaptor.forClass(String.class);
-        verify(objectStorageService).subir(contenidoCaptor.capture(), rutaCaptor.capture());
+        // OCI mock: subir returns a deterministic reference for the XML respuesta upload
+        String xmlRespuestaRef = "empresas/" + empresa.getId()
+                + "/comprobantes/" + comprobante.getClaveNumerica() + "-respuesta.xml.enc";
+        // Build a real blob for the respuesta XML (needed when descargador downloads it for the email)
+        byte[] xmlRespuestaBlob = construirBlobCifrado("<MensajeHacienda/>");
+        when(objectStorageService.descargar(xmlRespuestaRef)).thenReturn(xmlRespuestaBlob);
+        when(objectStorageService.subir(any(byte[].class), anyString()))
+                .thenAnswer(inv -> (String) inv.getArguments()[1]);
 
-        // Ruta del objeto: empresas/{empresaId}/comprobantes/{claveNumerica}.xml.enc -- ver el
-        // javadoc de ComprobanteXmlPersistenceService#construirRutaObjeto.
-        assertThat(rutaCaptor.getValue()).isEqualTo(referenciaEsperada);
+        // ResendEmailClient mock: accept any call, return true
+        when(resendEmailClient.enviar(anyString(), anyString(), anyString(), anyList())).thenReturn(true);
 
-        // Layout exacto documentado en ComprobanteXmlBlobFormat: [4 bytes longitud big-endian]
-        // [N bytes DEK envuelta][resto: XML cifrado]. Se decodifica aquí con las mismas
-        // primitivas ya probadas por separado (TransitService/EnvelopeCipher) para demostrar que
-        // el blob subido es realmente recuperable de punta a punta, sin que
-        // ComprobanteXmlPersistenceService necesite exponer un deserializador propio todavía.
-        byte[] blob = contenidoCaptor.getValue();
-        ByteBuffer buffer = ByteBuffer.wrap(blob);
-        int longitudDek = buffer.getInt();
-        assertThat(longitudDek).isPositive();
+        // Trigger: sync send to Hacienda (ACEPTADO) → wiring fires entregar
+        comprobanteHaciendaEnvioService.enviarComprobante("<xml-firmado-de-prueba/>", comprobante);
 
-        byte[] dekEnvuelta = new byte[longitudDek];
-        buffer.get(dekEnvuelta);
-        byte[] xmlCifrado = new byte[buffer.remaining()];
-        buffer.get(xmlCifrado);
+        // Verify: pdf_referencia persisted in real DB
+        ComprobanteElectronico releido = comprobanteElectronicoRepository
+                .findById(comprobante.getId())
+                .orElseThrow();
+        assertThat(releido.getEstado()).isEqualTo("ACEPTADO");
+        assertThat(releido.getPdfReferencia()).isEqualTo(expectedPdfRef);
 
-        byte[] dekPlaintext = transitService.descifrarDek(dekEnvuelta);
-        byte[] xmlDescifrado = EnvelopeCipher.descifrar(dekPlaintext, xmlCifrado);
-        String xml = new String(xmlDescifrado, StandardCharsets.UTF_8);
-
-        // El XML persistido es el YA FIRMADO -- ver el javadoc de la clase y de
-        // ComprobanteXmlPersistenceService#generarYPersistirXml. El prólogo trae
-        // "standalone=\"no\"" (a diferencia del XML sin firmar que devuelve
-        // XmlFacturaGeneratorServiceImpl) porque XmlFacturaFirmaServiceImpl re-serializa el
-        // Document completo vía Transformer -- ver el javadoc de esa clase.
-        assertThat(xml).startsWith("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>");
-        assertThat(xml).contains("<Clave>" + comprobante.getClaveNumerica() + "</Clave>");
-        assertThat(xml).contains("<ds:Signature");
-        assertThat(xml).contains("xades:QualifyingProperties");
-
-        // La referencia devuelta por el mock queda persistida en xml_comprobante_referencia, y
-        // el estado avanza a FIRMADO (GENERADO -> FIRMADO -> ENVIADO -> ACEPTADO, ver el javadoc
-        // de la clase). Como comprobanteHaciendaEnvioService está mockeado (no hace nada), el
-        // estado FIRMADO releído abajo es justo el que generarYPersistirXml dejó ANTES de
-        // invocarlo -- eso prueba que la invocación ocurre DESPUÉS de fijar/guardar FIRMADO, no
-        // antes.
-        ComprobanteElectronico releido = comprobanteElectronicoRepository.findById(comprobante.getId()).orElseThrow();
-        assertThat(releido.getXmlComprobanteReferencia()).isEqualTo(referenciaEsperada);
-        assertThat(releido.getEstado()).isEqualTo("FIRMADO");
-
-        // El XML firmado se pasa TAL CUAL (en memoria) a ComprobanteHaciendaEnvioService, no un
-        // XML re-derivado ni re-leído de Object Storage (ese servicio no expone descarga). La
-        // entidad pasada corresponde al mismo comprobante recién persistido en FIRMADO (se
-        // compara por id -- ComprobanteElectronico no redefine equals()/hashCode(), y la
-        // instancia interna de generarYPersistirXml es un objeto distinto al de esta prueba,
-        // aunque represente la misma fila).
-        ArgumentCaptor<String> xmlFirmadoCaptor = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<ComprobanteElectronico> comprobantePasadoCaptor = ArgumentCaptor.forClass(ComprobanteElectronico.class);
-        verify(comprobanteHaciendaEnvioService)
-                .enviarComprobante(xmlFirmadoCaptor.capture(), comprobantePasadoCaptor.capture());
-        assertThat(xmlFirmadoCaptor.getValue()).contains("<ds:Signature");
-        assertThat(xmlFirmadoCaptor.getValue()).contains("<Clave>" + comprobante.getClaveNumerica() + "</Clave>");
-        assertThat(comprobantePasadoCaptor.getValue().getId()).isEqualTo(comprobante.getId());
-        assertThat(comprobantePasadoCaptor.getValue().getEstado()).isEqualTo("FIRMADO");
+        // Verify: email was sent with the real ResendEmailClient mock
+        verify(resendEmailClient).enviar(
+                anyString(), anyString(), anyString(), anyList());
     }
 
+    // -------------------------------------------------------------------------
+    // T-08b: cliente.email null — pdf_referencia persisted, no exception
+    // -------------------------------------------------------------------------
+
     @Test
-    void generarYPersistirXmlConComprobanteInexistenteLanzaExcepcionYNuncaLlamaAlAlmacenamiento() {
-        UUID comprobanteInexistente = UUID.randomUUID();
+    void clienteEmailNuloNoPropagaExcepcionYPdfReferenciaPersistida() {
+        ComprobanteElectronico comprobante = crearComprobanteConFactura(null); // null email
 
-        org.assertj.core.api.Assertions.assertThatThrownBy(
-                        () -> comprobanteXmlPersistenceService.generarYPersistirXml(comprobanteInexistente))
-                .isInstanceOf(ComprobanteElectronicoNoEncontradoException.class);
+        String expectedPdfRef = "empresas/" + empresa.getId()
+                + "/comprobantes/" + comprobante.getClaveNumerica() + ".pdf.enc";
 
-        org.mockito.Mockito.verifyNoInteractions(objectStorageService);
-        org.mockito.Mockito.verifyNoInteractions(comprobanteHaciendaEnvioService);
+        when(haciendaComprobanteApiService.enviarComprobante(anyString(), anyString(), any()))
+                .thenReturn(RespuestaHaciendaDTO.builder()
+                        .claveNumerica(comprobante.getClaveNumerica())
+                        .fechaRespuesta(LocalDateTime.now())
+                        .codigoMensaje(MensajeHacienda.ACEPTADO)
+                        .mensaje("Aceptado")
+                        .exitoso(true)
+                        .debeReintentar(false)
+                        .codigoHttp(200)
+                        .build());
+
+        when(objectStorageService.subir(any(byte[].class), anyString()))
+                .thenAnswer(inv -> (String) inv.getArguments()[1]);
+
+        // Should not throw
+        comprobanteHaciendaEnvioService.enviarComprobante("<xml-firmado-de-prueba/>", comprobante);
+
+        ComprobanteElectronico releido = comprobanteElectronicoRepository
+                .findById(comprobante.getId())
+                .orElseThrow();
+        assertThat(releido.getEstado()).isEqualTo("ACEPTADO");
+        assertThat(releido.getPdfReferencia()).isEqualTo(expectedPdfRef);
     }
 }

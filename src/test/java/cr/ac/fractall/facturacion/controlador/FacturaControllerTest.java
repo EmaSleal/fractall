@@ -39,7 +39,9 @@ import cr.ac.fractall.catalogo.modelo.Cliente;
 import cr.ac.fractall.catalogo.modelo.Producto;
 import cr.ac.fractall.catalogo.repositorio.ClienteRepository;
 import cr.ac.fractall.catalogo.repositorio.ProductoRepository;
+import cr.ac.fractall.empresa.modelo.CredencialHacienda;
 import cr.ac.fractall.empresa.modelo.Empresa;
+import cr.ac.fractall.empresa.repositorio.CredencialHaciendaRepository;
 import cr.ac.fractall.empresa.repositorio.EmpresaRepository;
 import cr.ac.fractall.empresa.servicio.EmpresaService;
 import cr.ac.fractall.facturacion.dto.CrearFacturaRequest;
@@ -48,6 +50,9 @@ import cr.ac.fractall.facturacion.modelo.ComprobanteElectronico;
 import cr.ac.fractall.facturacion.modelo.ContadorConsecutivo;
 import cr.ac.fractall.facturacion.repositorio.ComprobanteElectronicoRepository;
 import cr.ac.fractall.facturacion.repositorio.ContadorConsecutivoRepository;
+import cr.ac.fractall.hacienda.dto.MensajeHacienda;
+import cr.ac.fractall.hacienda.dto.RespuestaHaciendaDTO;
+import cr.ac.fractall.hacienda.servicio.HaciendaComprobanteApiService;
 import cr.ac.fractall.seguridad.modelo.Usuario;
 import cr.ac.fractall.seguridad.repositorio.UsuarioRepository;
 import cr.ac.fractall.seguridad.servicio.JwtService;
@@ -226,6 +231,9 @@ class FacturaControllerTest {
     private ComprobanteElectronicoRepository comprobanteElectronicoRepository;
 
     @Autowired
+    private CredencialHaciendaRepository credencialHaciendaRepository;
+
+    @Autowired
     private JwtService jwtService;
 
     // Fase 8: reemplaza la implementación real OCI-backed -- ver el javadoc de
@@ -233,6 +241,13 @@ class FacturaControllerTest {
     // de OCI real, y no hay equivalente de contenedor local disponible en este entorno).
     @MockitoBean
     private ObjectStorageService objectStorageService;
+
+    // Fase 8 (envío a Hacienda): ComprobanteXmlPersistenceService#generarYPersistirXml ahora
+    // invoca ComprobanteHaciendaEnvioService justo después de FIRMADO -- se mockea para evitar una
+    // llamada HTTP real a Hacienda desde esta prueba de integración, mismo motivo que
+    // CatalogoControllerTest mockea HaciendaApiService.
+    @MockitoBean
+    private HaciendaComprobanteApiService haciendaComprobanteApiService;
 
     private record ContextoDePrueba(String accessToken, UUID empresaId, UUID clienteId, UUID productoId) {
     }
@@ -263,6 +278,30 @@ class FacturaControllerTest {
             empresa.setCreateDate(ahora);
             empresa.setUpdateDate(ahora);
             empresa = empresaRepository.save(empresa);
+
+            CredencialHacienda credencial = new CredencialHacienda();
+            credencial.setEmpresaId(empresa.getId());
+            credencial.setAmbiente("SANDBOX");
+            credencial.setUsuarioHacienda("usuario-" + empresa.getId() + "@hacienda.test");
+            credencial.setCredencialReferencia(
+                    "secret/data/empresas/" + empresa.getId() + "/hacienda/sandbox/password");
+            credencial.setConfiguradaEn(ahora);
+            credencial.setConfiguradaPor(usuario.getId());
+            credencialHaciendaRepository.save(credencial);
+
+            // Respuesta genérica de "recibido, en procesamiento" -- suficiente para que
+            // ComprobanteHaciendaEnvioService no lance CredencialHaciendaNoEncontradaException ni
+            // intente ninguna llamada de red real; las reglas de transición de estado en sí se
+            // prueban por separado en ComprobanteHaciendaEnvioServiceTest.
+            when(haciendaComprobanteApiService.enviarComprobante(any(), any(), any())).thenReturn(
+                    RespuestaHaciendaDTO.builder()
+                            .fechaRespuesta(ahora)
+                            .codigoMensaje(MensajeHacienda.PROCESANDO)
+                            .mensaje("Comprobante recibido, en procesamiento")
+                            .exitoso(false)
+                            .debeReintentar(true)
+                            .codigoHttp(202)
+                            .build());
 
             String accessToken = jwtService.generarToken(usuario.getId(), empresa.getId());
 
@@ -363,6 +402,36 @@ class FacturaControllerTest {
         } finally {
             TenantContext.clear();
         }
+    }
+
+    /**
+     * Cara "A" del hallazgo de revisión sobre {@code CredencialHaciendaNoEncontradaException}:
+     * la excepción debe mapearse a 503, mismo criterio que
+     * {@code ContadorConsecutivoNoEncontradoException} -- nunca un 500 crudo, aunque la factura y
+     * el comprobante ya hayan quedado persistidos en {@code FIRMADO} (ver el javadoc de
+     * {@code ComprobanteXmlPersistenceService} sobre por qué ese estado parcial es un riesgo
+     * aceptado, no algo que este endpoint intente revertir).
+     */
+    @Test
+    void postFacturaSinCredencialHaciendaRetorna503() throws Exception {
+        ContextoDePrueba contexto = crearContextoCompleto();
+        // CredencialHacienda no extiende TenantAwareEntity (ver su modelo), pero el resolutor de
+        // tenant de Hibernate falla de forma cerrada para CUALQUIER entidad al abrir el
+        // EntityManager -- mismo motivo documentado en TenantContextDescartable.
+        TenantContextDescartable.ejecutar(() -> credencialHaciendaRepository
+                .findByEmpresaIdAndAmbiente(contexto.empresaId(), "SANDBOX")
+                .ifPresent(credencialHaciendaRepository::delete));
+
+        CrearFacturaRequest request = new CrearFacturaRequest(
+                contexto.clienteId(), null, null, null, null, null,
+                java.util.List.of(new LineaFacturaItemRequest(
+                        contexto.productoId(), BigDecimal.ONE, new BigDecimal("1000.00000"), null)));
+
+        mockMvc.perform(post("/facturas")
+                        .header("Authorization", "Bearer " + contexto.accessToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isServiceUnavailable());
     }
 
     @Test

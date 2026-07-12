@@ -1,23 +1,24 @@
 package cr.ac.fractall.facturacion.servicio;
 
 import java.nio.charset.StandardCharsets;
-import java.util.Arrays;
 import java.util.UUID;
 
 import org.springframework.stereotype.Service;
 
-import cr.ac.fractall.almacenamiento.ObjectStorageService;
 import cr.ac.fractall.facturacion.modelo.ComprobanteElectronico;
 import cr.ac.fractall.facturacion.repositorio.ComprobanteElectronicoRepository;
-import cr.ac.fractall.secretos.EnvelopeCipher;
-import cr.ac.fractall.secretos.TransitService;
 import lombok.extern.slf4j.Slf4j;
 
 /**
  * Genera el XML de Factura Electrónica, lo FIRMA digitalmente (XAdES-BES vía
  * {@link XmlFacturaFirmaService}, sub-tarea "firma digital"), cifra el XML YA FIRMADO (envelope
- * encryption vía la KEK de Transit, sección 6.1), lo sube a Oracle Object Storage (sección 6.4) y
- * persiste su referencia en {@code comprobante_electronico.xml_comprobante_referencia} -- Fase 8.
+ * encryption vía la KEK de Transit, sección 6.1, delegado en {@link ComprobanteXmlCifradoUploader}
+ * -- ver su javadoc sobre por qué ese cifrado+subida vive en una clase compartida), lo sube a
+ * Oracle Object Storage (sección 6.4) y persiste su referencia en
+ * {@code comprobante_electronico.xml_comprobante_referencia} -- Fase 8. Justo después de persistir
+ * {@code FIRMADO}, invoca {@link ComprobanteHaciendaEnvioService#enviarComprobante} para enviar ese
+ * mismo XML a Hacienda en la MISMA request (ver el javadoc de esa clase para las reglas de
+ * transición de estado que siguen).
  *
  * <p><b>Por qué se persiste el XML firmado y no el sin firmar:</b> el único propósito de este
  * artefacto es eventualmente enviarse a Hacienda, que exige un {@code <ds:Signature>} real
@@ -56,6 +57,23 @@ import lombok.extern.slf4j.Slf4j;
  * las Fases 6/7: documentar un riesgo de baja probabilidad en vez de construir una saga completa
  * antes de que el negocio la necesite); en su lugar, la excepción se deja propagar sin capturar,
  * para que el llamador HTTP la vea como un error real (nunca se traga en silencio).
+ *
+ * <p>Mismo riesgo aceptado, un caso puntual más: si la empresa no tiene {@code CredencialHacienda}
+ * configurada para {@code comprobante.getAmbienteHacienda()}, la llamada a
+ * {@link ComprobanteHaciendaEnvioService#enviarComprobante} (línea 130 más abajo) lanza
+ * {@link CredencialHaciendaNoEncontradaException} DESPUÉS de que este método ya guardó el
+ * comprobante en {@code FIRMADO} -- a diferencia de los otros casos de este párrafo,
+ * {@code xml_comprobante_referencia} SÍ queda fijado (el XML se firmó y subió con éxito; solo el
+ * envío a Hacienda nunca ocurrió). El comprobante queda en {@code FIRMADO} de forma permanente:
+ * {@code ComprobanteHaciendaPollingScheduledJob} solo sondea {@code ENVIADO}, así que nada lo
+ * vuelve a recoger automáticamente. No se construye un camino de recuperación para esto (ni el job
+ * escanea {@code FIRMADO}, ni se agrega descarga a
+ * {@link cr.ac.fractall.almacenamiento.ObjectStorageService} para poder reenviar el XML ya subido
+ * -- ver su javadoc sobre por qué esa operación se omite a propósito) por el mismo motivo que el
+ * resto de este párrafo: es una ventana evitable (configurar credenciales antes de facturar) y de
+ * baja probabilidad, no algo que amerite nueva infraestructura de reintento.
+ * {@code FacturaController} sí mapea esta excepción a 503 (no 500) para que quede claro que es un
+ * fallo de infraestructura/configuración, no un error del cliente.
  */
 @Service
 @Slf4j
@@ -65,21 +83,21 @@ public class ComprobanteXmlPersistenceService {
 
     private final XmlFacturaGeneratorService xmlFacturaGeneratorService;
     private final XmlFacturaFirmaService xmlFacturaFirmaService;
-    private final TransitService transitService;
-    private final ObjectStorageService objectStorageService;
+    private final ComprobanteXmlCifradoUploader comprobanteXmlCifradoUploader;
     private final ComprobanteElectronicoRepository comprobanteElectronicoRepository;
+    private final ComprobanteHaciendaEnvioService comprobanteHaciendaEnvioService;
 
     public ComprobanteXmlPersistenceService(
             XmlFacturaGeneratorService xmlFacturaGeneratorService,
             XmlFacturaFirmaService xmlFacturaFirmaService,
-            TransitService transitService,
-            ObjectStorageService objectStorageService,
-            ComprobanteElectronicoRepository comprobanteElectronicoRepository) {
+            ComprobanteXmlCifradoUploader comprobanteXmlCifradoUploader,
+            ComprobanteElectronicoRepository comprobanteElectronicoRepository,
+            ComprobanteHaciendaEnvioService comprobanteHaciendaEnvioService) {
         this.xmlFacturaGeneratorService = xmlFacturaGeneratorService;
         this.xmlFacturaFirmaService = xmlFacturaFirmaService;
-        this.transitService = transitService;
-        this.objectStorageService = objectStorageService;
+        this.comprobanteXmlCifradoUploader = comprobanteXmlCifradoUploader;
         this.comprobanteElectronicoRepository = comprobanteElectronicoRepository;
+        this.comprobanteHaciendaEnvioService = comprobanteHaciendaEnvioService;
     }
 
     /**
@@ -104,19 +122,9 @@ public class ComprobanteXmlPersistenceService {
         String xml = xmlFacturaGeneratorService.generarXmlFactura(comprobanteId);
         String xmlFirmado = xmlFacturaFirmaService.firmar(xml, comprobante.getEmpresaId());
 
-        TransitService.Dek dek = transitService.generarDek();
-        byte[] xmlCifrado;
-        try {
-            xmlCifrado = EnvelopeCipher.cifrar(dek.plaintext(), xmlFirmado.getBytes(StandardCharsets.UTF_8));
-        } finally {
-            // Descarte inmediato de la DEK en texto plano (sección 6.1) -- solo dek.cifrado() se
-            // sube (envuelto dentro del blob, ver ComprobanteXmlBlobFormat), nunca el plaintext.
-            Arrays.fill(dek.plaintext(), (byte) 0);
-        }
-
-        byte[] blob = ComprobanteXmlBlobFormat.serializar(dek.cifrado(), xmlCifrado);
         String rutaObjeto = construirRutaObjeto(comprobante.getEmpresaId(), comprobante.getClaveNumerica());
-        String referencia = objectStorageService.subir(blob, rutaObjeto);
+        String referencia = comprobanteXmlCifradoUploader.cifrarYSubir(
+                xmlFirmado.getBytes(StandardCharsets.UTF_8), rutaObjeto);
 
         log.info("XML de comprobante {} subido a Object Storage: {}", comprobanteId, referencia);
 
@@ -130,6 +138,13 @@ public class ComprobanteXmlPersistenceService {
         comprobante.setXmlComprobanteReferencia(referencia);
         comprobante.setEstado(ESTADO_FIRMADO);
         comprobanteElectronicoRepository.save(comprobante);
+
+        // Envío síncrono a Hacienda en la MISMA request, justo después de persistir FIRMADO -- ver
+        // el javadoc de ComprobanteHaciendaEnvioService para las reglas de transición de estado
+        // que siguen. xmlFirmado se pasa tal cual, todavía en memoria: ObjectStorageService no
+        // expone descarga (ver su javadoc), así que este es el único punto donde el XML firmado en
+        // claro sigue existiendo fuera de Object Storage.
+        comprobanteHaciendaEnvioService.enviarComprobante(xmlFirmado, comprobante);
     }
 
     /**
