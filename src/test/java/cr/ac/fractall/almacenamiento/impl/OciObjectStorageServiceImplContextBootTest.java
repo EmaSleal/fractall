@@ -114,4 +114,15 @@ class OciObjectStorageServiceImplContextBootTest {
     void elContextoCompletoArrancaConElBeanOciBackedRealSinInvocarOci() {
         assertThat(objectStorageService).isInstanceOf(OciObjectStorageServiceImpl.class);
     }
+
+    @Test
+    void elBeanOciImplementaDescargar() {
+        // Confirma que OciObjectStorageServiceImpl implementa descargar() sin invocar OCI real.
+        // La construcción perezosa garantiza que la ausencia de metadata de instancia OCI
+        // no impide que el bean exista en el contexto (misma afirmación que la prueba anterior,
+        // extendida a la nueva operación de Fase 9).
+        assertThat(objectStorageService).isInstanceOf(OciObjectStorageServiceImpl.class);
+        OciObjectStorageServiceImpl impl = (OciObjectStorageServiceImpl) objectStorageService;
+        assertThat(impl).isNotNull();
+    }
 }

@@ -1,5 +1,6 @@
 package cr.ac.fractall.notificaciones.servicio;
 
+import java.util.Base64;
 import java.util.List;
 
 import org.slf4j.Logger;
@@ -70,7 +71,44 @@ public class ResendEmailClient {
         }
     }
 
+    /**
+     * Envía un correo vía {@code POST https://api.resend.com/emails} con adjuntos en base64.
+     * El contenido de cada {@link Adjunto} debe estar en texto claro -- este método lo
+     * codifica en base64 antes de enviarlo según el formato esperado por la API de Resend.
+     * Misma garantía que {@link #enviar(String, String, String)}: devuelve {@code false} ante
+     * cualquier error de red/proveedor sin lanzar.
+     *
+     * <p>Agregado en Fase 9 para el flujo de entrega al cliente con PDF y XMLs adjuntos.
+     */
+    public boolean enviar(String destinatario, String asunto, String cuerpoHtml, List<Adjunto> adjuntos) {
+        List<AdjuntoJson> adjuntosJson = adjuntos.stream()
+                .map(a -> new AdjuntoJson(a.filename(), Base64.getEncoder().encodeToString(a.content())))
+                .toList();
+        SolicitudCorreoConAdjuntos solicitud = new SolicitudCorreoConAdjuntos(
+                remitente, List.of(destinatario), asunto, cuerpoHtml, adjuntosJson);
+        try {
+            HttpStatusCode estado = restClient.post()
+                    .body(solicitud)
+                    .retrieve()
+                    .toBodilessEntity()
+                    .getStatusCode();
+            return estado.is2xxSuccessful();
+        } catch (RestClientException excepcion) {
+            log.warn("Fallo al enviar correo con adjuntos vía Resend a {}: {}", destinatario, excepcion.getMessage());
+            return false;
+        }
+    }
+
     /** Forma exacta del cuerpo JSON esperado por la API de Resend. */
     record SolicitudCorreo(String from, List<String> to, String subject, String html) {
+    }
+
+    /** Variante del cuerpo JSON para envíos con adjuntos (Fase 9). */
+    record SolicitudCorreoConAdjuntos(String from, List<String> to, String subject, String html,
+            List<AdjuntoJson> attachments) {
+    }
+
+    /** Representación JSON de un adjunto según la API de Resend: filename + content en base64. */
+    record AdjuntoJson(String filename, String content) {
     }
 }

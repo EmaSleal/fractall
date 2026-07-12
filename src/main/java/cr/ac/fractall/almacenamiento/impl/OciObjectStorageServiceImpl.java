@@ -8,6 +8,7 @@ import org.springframework.stereotype.Service;
 import com.oracle.bmc.Region;
 import com.oracle.bmc.auth.InstancePrincipalsAuthenticationDetailsProvider;
 import com.oracle.bmc.objectstorage.ObjectStorageClient;
+import com.oracle.bmc.objectstorage.requests.GetObjectRequest;
 import com.oracle.bmc.objectstorage.requests.PutObjectRequest;
 
 import cr.ac.fractall.almacenamiento.ObjectStorageService;
@@ -69,6 +70,23 @@ public class OciObjectStorageServiceImpl implements ObjectStorageService {
         this.bucket = bucket;
         this.namespace = namespace;
         this.region = region;
+    }
+
+    @Override
+    public byte[] descargar(String rutaObjeto) {
+        log.info("Descargando objeto de Oracle Object Storage: {}", rutaObjeto);
+
+        GetObjectRequest request = GetObjectRequest.builder()
+                .namespaceName(namespace)
+                .bucketName(bucket)
+                .objectName(rutaObjeto)
+                .build();
+
+        try {
+            return obtenerCliente().getObject(request).getInputStream().readAllBytes();
+        } catch (java.io.IOException excepcion) {
+            throw new IllegalStateException("No se pudo leer el contenido del objeto OCI: " + rutaObjeto, excepcion);
+        }
     }
 
     @Override

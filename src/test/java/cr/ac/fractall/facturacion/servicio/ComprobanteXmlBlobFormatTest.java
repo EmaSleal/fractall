@@ -67,6 +67,44 @@ class ComprobanteXmlBlobFormatTest {
         assertThat(blob1).isEqualTo(blob2);
     }
 
+    // --- Tests para deserializar() (T-01, Fase 9) ---
+
+    @Test
+    void deserializarInvierteSerializar() {
+        byte[] dekEnvuelta = "vault:v1:dek-para-round-trip".getBytes(StandardCharsets.UTF_8);
+        byte[] xmlCifrado = bytesAleatorios(64);
+
+        byte[] blob = ComprobanteXmlBlobFormat.serializar(dekEnvuelta, xmlCifrado);
+        ComprobanteXmlBlobFormat.Contenido contenido = ComprobanteXmlBlobFormat.deserializar(blob);
+
+        assertThat(contenido.dekEnvuelta()).isEqualTo(dekEnvuelta);
+        assertThat(contenido.xmlCifrado()).isEqualTo(xmlCifrado);
+    }
+
+    @Test
+    void deserializarConXmlCifradoVacioPreservaDekYRetornaXmlVacio() {
+        byte[] dekEnvuelta = "vault:v1:dek-con-xml-vacio".getBytes(StandardCharsets.UTF_8);
+        byte[] xmlCifrado = new byte[0];
+
+        byte[] blob = ComprobanteXmlBlobFormat.serializar(dekEnvuelta, xmlCifrado);
+        ComprobanteXmlBlobFormat.Contenido contenido = ComprobanteXmlBlobFormat.deserializar(blob);
+
+        assertThat(contenido.dekEnvuelta()).isEqualTo(dekEnvuelta);
+        assertThat(contenido.xmlCifrado()).isEmpty();
+    }
+
+    @Test
+    void deserializarConDiferentesTamanosDeDekYXmlSiempreProduceElResultadoCorrecto() {
+        byte[] dekPequena = "v".getBytes(StandardCharsets.UTF_8);
+        byte[] xmlGrande = bytesAleatorios(256);
+
+        byte[] blob = ComprobanteXmlBlobFormat.serializar(dekPequena, xmlGrande);
+        ComprobanteXmlBlobFormat.Contenido contenido = ComprobanteXmlBlobFormat.deserializar(blob);
+
+        assertThat(contenido.dekEnvuelta()).isEqualTo(dekPequena);
+        assertThat(contenido.xmlCifrado()).isEqualTo(xmlGrande);
+    }
+
     private static byte[] bytesAleatorios(int longitud) {
         byte[] bytes = new byte[longitud];
         RANDOM.nextBytes(bytes);

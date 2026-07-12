@@ -23,11 +23,11 @@ import java.nio.ByteOrder;
  *           prefijo de 12 bytes, seguido del ciphertext+tag; ver el javadoc de EnvelopeCipher)
  * </pre>
  *
- * <p>Solo se provee {@link #serializar} -- ningún código de este release necesita releer el
- * objeto (ver el javadoc de {@code ObjectStorageService} sobre por qué no existe un método de
- * descarga todavía). Un futuro deserializador es trivial a partir de este layout: leer los
- * primeros 4 bytes como {@code int} big-endian para obtener {@code N}, tomar los siguientes
- * {@code N} bytes como la DEK envuelta, y el resto como el XML cifrado.
+ * <p>Se provee {@link #serializar} y su inverso {@link #deserializar}: leer los primeros
+ * 4 bytes como {@code int} big-endian para obtener {@code N}, tomar los siguientes {@code N}
+ * bytes como la DEK envuelta, y el resto como el XML cifrado. {@code deserializar} fue agregado
+ * en Fase 9 cuando el flujo de entrega al cliente necesitó releer los blobs almacenados en OCI
+ * para descifrarlos y adjuntarlos al email (ver {@code ComprobanteXmlCifradoDescargador}).
  */
 final class ComprobanteXmlBlobFormat {
 
@@ -44,5 +44,18 @@ final class ComprobanteXmlBlobFormat {
         buffer.put(dekEnvuelta);
         buffer.put(xmlCifrado);
         return buffer.array();
+    }
+
+    static Contenido deserializar(byte[] blob) {
+        ByteBuffer buffer = ByteBuffer.wrap(blob).order(ByteOrder.BIG_ENDIAN);
+        int longitudDek = buffer.getInt();
+        byte[] dekEnvuelta = new byte[longitudDek];
+        buffer.get(dekEnvuelta);
+        byte[] xmlCifrado = new byte[buffer.remaining()];
+        buffer.get(xmlCifrado);
+        return new Contenido(dekEnvuelta, xmlCifrado);
+    }
+
+    record Contenido(byte[] dekEnvuelta, byte[] xmlCifrado) {
     }
 }
