@@ -36,19 +36,17 @@ services:
       retries: 5
 
   app:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    build: ./app
     restart: unless-stopped
-    environment:
-      - DB_HOST=postgres
-      - DB_PORT=5432
-      - DB_NAME=facturacion
-      - DB_USER=fractall
-      - DB_PASSWORD=fractall
-      - VAULT_ADDR=http://vault:8200
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8088:8080"   # nunca 0.0.0.0 — ver más abajo
+    environment:
+      - SPRING_PROFILES_ACTIVE=produccion
+      - DB_HOST=postgres
+      - VAULT_ADDR=http://vault:8200
+      - JAVA_TOOL_OPTIONS=-XX:MaxRAMPercentage=70.0
+    networks:
+      - red_interna
     depends_on:
       postgres:
         condition: service_healthy
