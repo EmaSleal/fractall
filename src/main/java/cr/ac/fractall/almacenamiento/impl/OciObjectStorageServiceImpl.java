@@ -66,7 +66,7 @@ public class OciObjectStorageServiceImpl implements ObjectStorageService {
     public OciObjectStorageServiceImpl(
             @Value("${application.almacenamiento.oci.bucket:fractall-comprobantes}") String bucket,
             @Value("${application.almacenamiento.oci.namespace}") String namespace,
-            @Value("${application.almacenamiento.oci.region:us-ashburn-1}") String region) {
+            @Value("${application.almacenamiento.oci.region:mx-queretaro-1}") String region) {
         this.bucket = bucket;
         this.namespace = namespace;
         this.region = region;

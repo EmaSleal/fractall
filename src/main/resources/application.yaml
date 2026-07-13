@@ -89,7 +89,7 @@ application:
     oci:
       bucket: ${OCI_OBJECT_STORAGE_BUCKET:fractall-comprobantes}
       namespace: ${OCI_OBJECT_STORAGE_NAMESPACE}
-      region: ${OCI_OBJECT_STORAGE_REGION:us-ashburn-1}
+      region: ${OCI_OBJECT_STORAGE_REGION:mx-queretaro-1}
   notificaciones:
     resend:
       # Proveedor de correo transaccional ya decidido (Fase 4, sección 2 y 3.1 del
