@@ -14,7 +14,8 @@ RUN ./mvnw clean package -DskipTests -B
 # ── Stage 2: runtime — minimal image, no build tooling ─────────────────
 FROM eclipse-temurin:21-jre-jammy
 
-RUN groupadd -r appgroup && useradd -r -g appgroup appuser
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/* \
+    && groupadd -r appgroup && useradd -r -g appgroup appuser
 
 WORKDIR /app
 
