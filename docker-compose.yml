@@ -38,6 +38,10 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    volumes:
+      - vault_data:/vault/data
+      - ../files/vault-config.hcl:/vault/config/vault-config.hcl:ro
+      - ../files/gcp-kms-credenciales.json:/vault/gcp-credenciales.json:ro
 
   app:
     build: .
