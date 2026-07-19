@@ -69,6 +69,7 @@ services:
 
 volumes:
   postgres_data:
-
+  vault_data:
+  
 networks:
   red_interna:
