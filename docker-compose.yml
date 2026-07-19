@@ -29,6 +29,8 @@ services:
     cap_add:
       - IPC_LOCK
     command: server -config=/vault/config/vault-config.hcl
+    environment:
+      - GOOGLE_APPLICATION_CREDENTIALS=/vault/gcp-credenciales.json
     networks:
       - red_interna
     healthcheck:
