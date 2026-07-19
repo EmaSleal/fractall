@@ -47,7 +47,13 @@ services:
     environment:
       - SPRING_PROFILES_ACTIVE=produccion
       - DB_HOST=postgres
+      - DB_USERNAME
+      - DB_PASSWORD
       - VAULT_ADDR=http://vault:8200
+      - VAULT_ROLE_ID
+      - VAULT_SECRET_ID
+      - RESEND_API_KEY
+      - OCI_OBJECT_STORAGE_NAMESPACE
       - JAVA_TOOL_OPTIONS=-XX:MaxRAMPercentage=70.0
     networks:
       - red_interna
