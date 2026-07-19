@@ -47,6 +47,8 @@ services:
     environment:
       - SPRING_PROFILES_ACTIVE=produccion
       - DB_HOST=postgres
+      - DB_USERNAME=fractall
+      - DB_PASSWORD=fractall
       - VAULT_ADDR=http://vault:8200
       - JAVA_TOOL_OPTIONS=-XX:MaxRAMPercentage=70.0
     networks:
