@@ -26,6 +26,7 @@ services:
   vault:
     image: hashicorp/vault:1.18
     restart: unless-stopped
+    user: "0"
     cap_add:
       - IPC_LOCK
     command: server -config=/vault/config/vault-config.hcl
