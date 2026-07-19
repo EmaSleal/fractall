@@ -59,6 +59,7 @@ services:
       - VAULT_ROLE_ID
       - VAULT_SECRET_ID
       - RESEND_API_KEY
+      - APP_BASE_URL
       - OCI_OBJECT_STORAGE_NAMESPACE
       - JAVA_TOOL_OPTIONS=-XX:MaxRAMPercentage=70.0
     networks:
