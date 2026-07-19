@@ -50,6 +50,7 @@ import cr.ac.fractall.seguridad.servicio.VerificacionEmailService;
 import cr.ac.fractall.tenant.TenantContextDescartable;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
+import org.springframework.beans.factory.annotation.Value;
 
 /**
  * {@code /auth/registro}, {@code /auth/verificar-email}, {@code /auth/reenviar-verificacion}
@@ -108,6 +109,8 @@ public class AuthController {
     private static final MensajeResponse MENSAJE_CODIGO_MFA_INVALIDO =
             new MensajeResponse("El código MFA no es válido o ya expiró.");
 
+    private final String appBaseUrl;
+
     private final RegistroService registroService;
     private final VerificacionEmailService verificacionEmailService;
     private final EmailNotificacionService emailNotificacionService;
@@ -118,6 +121,7 @@ public class AuthController {
     private final MfaService mfaService;
 
     public AuthController(
+            @Value("${application.app-base-url}") String appBaseUrl,
             RegistroService registroService,
             VerificacionEmailService verificacionEmailService,
             EmailNotificacionService emailNotificacionService,
@@ -126,6 +130,7 @@ public class AuthController {
             SesionService sesionService,
             JwtService jwtService,
             MfaService mfaService) {
+        this.appBaseUrl = appBaseUrl;
         this.registroService = registroService;
         this.verificacionEmailService = verificacionEmailService;
         this.emailNotificacionService = emailNotificacionService;
@@ -375,7 +380,7 @@ public class AuthController {
     }
 
     private String construirHtmlVerificacion(String tokenCrudo) {
-        String enlace = "https://app.fractall.cr/auth/verificar-email?token=" + tokenCrudo;
+        String enlace = appBaseUrl + "/auth/verificar-email?token=" + tokenCrudo;
         return "<p>Gracias por registrarte en Fractall. Confirma tu correo con el siguiente enlace:</p>"
                 + "<p><a href=\"" + enlace + "\">" + enlace + "</a></p>"
                 + "<p>Este enlace expira en 24 horas.</p>";

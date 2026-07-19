@@ -38,6 +38,7 @@ spring:
     enabled: true
 
 application:
+  app-base-url: ${APP_BASE_URL:https://app.fractall.cr}
   security:
     jwt:
       # Access token de vida corta (15 min, ver sección 2 del documento de arquitectura).
