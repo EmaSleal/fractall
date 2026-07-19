@@ -29,7 +29,8 @@ services:
     user: "0"
     cap_add:
       - IPC_LOCK
-    command: server -config=/vault/config/vault-config.hcl
+    # The image entrypoint already passes -config=/vault/config.
+    command: server
     environment:
       - GOOGLE_APPLICATION_CREDENTIALS=/vault/gcp-credenciales.json
     networks:
