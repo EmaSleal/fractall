@@ -28,9 +28,7 @@ services:
     restart: unless-stopped
     cap_add:
       - IPC_LOCK
-    command: server -dev -dev-listen-address=0.0.0.0:8200
-    ports:
-      - "8200:8200"
+    command: server -config=/vault/config/vault-config.hcl
     networks:
       - red_interna
     healthcheck:
