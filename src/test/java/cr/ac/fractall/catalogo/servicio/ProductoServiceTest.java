@@ -62,7 +62,7 @@ class ProductoServiceTest {
 
     @Test
     void crearConCodigoCabysValidoDerivaLosCuatroCamposDesdeHacienda() {
-        when(haciendaApiService.buscarCabys("2132100000100", 25))
+        when(haciendaApiService.buscarCabysPorCodigo("2132100000100"))
                 .thenReturn(respuestaConUnCodigo("2132100000100", "Jugo de tomate concentrado", 13));
 
         CrearProductoRequest request = new CrearProductoRequest(
@@ -80,7 +80,7 @@ class ProductoServiceTest {
 
     @Test
     void crearCuandoLaLlamadaAHaciendaFallaLanzaHaciendaNoDisponibleYNoPersisteNada() {
-        when(haciendaApiService.buscarCabys("2132100000100", 25))
+        when(haciendaApiService.buscarCabysPorCodigo("2132100000100"))
                 .thenReturn(CabysBusquedaDTO.builder()
                         .exitosa(false)
                         .mensajeError("Timeout al conectar con Hacienda")
@@ -96,7 +96,7 @@ class ProductoServiceTest {
 
     @Test
     void crearCuandoLaLlamadaAHaciendaTraeExitosaNulaLanzaHaciendaNoDisponible() {
-        when(haciendaApiService.buscarCabys("2132100000100", 25))
+        when(haciendaApiService.buscarCabysPorCodigo("2132100000100"))
                 .thenReturn(CabysBusquedaDTO.builder().build());
 
         CrearProductoRequest request = new CrearProductoRequest(
@@ -109,7 +109,7 @@ class ProductoServiceTest {
 
     @Test
     void crearConCodigoCabysSinCoincidenciaExactaSeRechazaYNoPersisteNada() {
-        when(haciendaApiService.buscarCabys("9999999999999", 25))
+        when(haciendaApiService.buscarCabysPorCodigo("9999999999999"))
                 .thenReturn(respuestaConUnCodigo("2132100000100", "Otro producto", 13));
 
         CrearProductoRequest request = new CrearProductoRequest(
@@ -122,7 +122,7 @@ class ProductoServiceTest {
 
     @Test
     void crearConCabysSinCampoImpuestoSeRechazaYNoPersisteNada() {
-        when(haciendaApiService.buscarCabys("2132100000100", 25))
+        when(haciendaApiService.buscarCabysPorCodigo("2132100000100"))
                 .thenReturn(respuestaConUnCodigo("2132100000100", "Jugo de tomate concentrado", null));
 
         CrearProductoRequest request = new CrearProductoRequest(
@@ -142,7 +142,7 @@ class ProductoServiceTest {
 
         assertThatThrownBy(() -> productoService.crear(request))
                 .isInstanceOf(ProductoDuplicadoException.class);
-        verify(haciendaApiService, never()).buscarCabys(any(), any());
+        verify(haciendaApiService, never()).buscarCabysPorCodigo(any());
         verify(productoRepository, never()).saveAndFlush(any());
     }
 
@@ -159,7 +159,7 @@ class ProductoServiceTest {
 
         productoService.actualizar(java.util.UUID.randomUUID(), request);
 
-        verify(haciendaApiService, never()).buscarCabys(any(), any());
+        verify(haciendaApiService, never()).buscarCabysPorCodigo(any());
         assertThat(existente.getDescripcion()).isEqualTo("Nueva descripción");
     }
 }

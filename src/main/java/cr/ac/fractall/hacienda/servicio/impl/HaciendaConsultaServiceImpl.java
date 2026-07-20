@@ -255,4 +255,46 @@ public class HaciendaConsultaServiceImpl implements HaciendaApiService {
                 .build();
         }
     }
+
+    @Override
+    public CabysBusquedaDTO buscarCabysPorCodigo(String codigo) {
+        if (codigo == null || codigo.trim().isEmpty()) {
+            return CabysBusquedaDTO.builder()
+                .exitosa(false)
+                .mensajeError("Código CABYS requerido")
+                .build();
+        }
+
+        log.info("Buscando código CABYS exacto: '{}'", codigo);
+
+        try {
+            String url = UriComponentsBuilder.fromUriString(haciendaCabysUrl)
+                .queryParam("codigo", codigo.trim())
+                .encode()
+                .toUriString();
+
+            ResponseEntity<CabysBusquedaDTO> response = restClient.get()
+                .uri(url)
+                .retrieve()
+                .toEntity(CabysBusquedaDTO.class);
+
+            if (response.getStatusCode() == HttpStatus.OK && response.getBody() != null) {
+                CabysBusquedaDTO resultado = response.getBody();
+                resultado.setExitosa(true);
+                return resultado;
+            }
+
+            return CabysBusquedaDTO.builder()
+                .exitosa(false)
+                .mensajeError("No se encontró el código CABYS")
+                .build();
+
+        } catch (RestClientException e) {
+            log.error("Error al buscar código CABYS '{}': {}", codigo, e.getMessage());
+            return CabysBusquedaDTO.builder()
+                .exitosa(false)
+                .mensajeError("Error al conectar con API CABYS: " + e.getMessage())
+                .build();
+        }
+    }
 }

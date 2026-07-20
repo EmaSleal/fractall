@@ -118,7 +118,7 @@ public class ProductoService {
      * del cliente.
      */
     private CabysDTO validarYObtenerCabys(String codigoCabys) {
-        CabysBusquedaDTO resultado = haciendaApiService.buscarCabys(codigoCabys, TOP_BUSQUEDA_VALIDACION);
+        CabysBusquedaDTO resultado = haciendaApiService.buscarCabysPorCodigo(codigoCabys);
 
         if (!Boolean.TRUE.equals(resultado.getExitosa())) {
             throw new HaciendaNoDisponibleException(resultado.getMensajeError());

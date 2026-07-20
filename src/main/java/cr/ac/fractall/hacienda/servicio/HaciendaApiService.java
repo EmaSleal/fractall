@@ -42,4 +42,13 @@ public interface HaciendaApiService {
      * @return DTO con lista de códigos CABYS encontrados
      */
     CabysBusquedaDTO buscarCabys(String busqueda, Integer top);
+
+    /**
+     * Busca un código CABYS exacto por su número de 13 dígitos.
+     * Endpoint: https://api.hacienda.go.cr/fe/cabys?codigo={codigo}
+     *
+     * @param codigo Código CABYS de 13 dígitos
+     * @return DTO con el resultado de la búsqueda
+     */
+    CabysBusquedaDTO buscarCabysPorCodigo(String codigo);
 }
