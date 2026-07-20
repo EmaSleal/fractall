@@ -14,6 +14,11 @@ import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.util.UriComponentsBuilder;
 
+import java.util.List;
+
+import org.springframework.core.ParameterizedTypeReference;
+
+import cr.ac.fractall.hacienda.dto.CabysDTO;
 import cr.ac.fractall.hacienda.dto.CabysBusquedaDTO;
 import cr.ac.fractall.hacienda.dto.HaciendaConsultaDTO;
 import cr.ac.fractall.hacienda.servicio.HaciendaApiService;
@@ -273,20 +278,23 @@ public class HaciendaConsultaServiceImpl implements HaciendaApiService {
                 .encode()
                 .toUriString();
 
-            ResponseEntity<CabysBusquedaDTO> response = restClient.get()
+            List<CabysDTO> items = restClient.get()
                 .uri(url)
                 .retrieve()
-                .toEntity(CabysBusquedaDTO.class);
+                .body(new ParameterizedTypeReference<List<CabysDTO>>() {});
 
-            if (response.getStatusCode() == HttpStatus.OK && response.getBody() != null) {
-                CabysBusquedaDTO resultado = response.getBody();
-                resultado.setExitosa(true);
-                return resultado;
+            if (items == null || items.isEmpty()) {
+                return CabysBusquedaDTO.builder()
+                    .exitosa(false)
+                    .mensajeError("No se encontró el código CABYS")
+                    .build();
             }
 
             return CabysBusquedaDTO.builder()
-                .exitosa(false)
-                .mensajeError("No se encontró el código CABYS")
+                .exitosa(true)
+                .cabys(items)
+                .cantidad(items.size())
+                .total(items.size())
                 .build();
 
         } catch (RestClientException e) {
