@@ -451,17 +451,17 @@ public class XmlFacturaGeneratorServiceImpl implements XmlFacturaGeneratorServic
         xml.append("<TipoCambio>").append(fmt(tipoCambio, 5)).append("</TipoCambio>");
         xml.append("</CodigoTipoMoneda>");
 
+        if (totalServiciosGravados.compareTo(BigDecimal.ZERO) > 0) {
+            xml.append("<TotalServGravados>").append(fmt(totalServiciosGravados, 5)).append("</TotalServGravados>");
+        }
+        if (totalServiciosExentos.compareTo(BigDecimal.ZERO) > 0) {
+            xml.append("<TotalServExentos>").append(fmt(totalServiciosExentos, 5)).append("</TotalServExentos>");
+        }
         if (totalMercanciasGravadas.compareTo(BigDecimal.ZERO) > 0) {
             xml.append("<TotalMercanciasGravadas>").append(fmt(totalMercanciasGravadas, 5)).append("</TotalMercanciasGravadas>");
         }
         if (totalMercanciasExentas.compareTo(BigDecimal.ZERO) > 0) {
             xml.append("<TotalMercanciasExentas>").append(fmt(totalMercanciasExentas, 5)).append("</TotalMercanciasExentas>");
-        }
-        if (totalServiciosGravados.compareTo(BigDecimal.ZERO) > 0) {
-            xml.append("<TotalServiciosGravados>").append(fmt(totalServiciosGravados, 5)).append("</TotalServiciosGravados>");
-        }
-        if (totalServiciosExentos.compareTo(BigDecimal.ZERO) > 0) {
-            xml.append("<TotalServiciosExentas>").append(fmt(totalServiciosExentos, 5)).append("</TotalServiciosExentas>");
         }
 
         xml.append("<TotalGravado>").append(fmt(totalGravado, 5)).append("</TotalGravado>");
