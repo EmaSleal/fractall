@@ -542,8 +542,8 @@ public class XmlFacturaGeneratorServiceImpl implements XmlFacturaGeneratorServic
 
     /**
      * Resuelve el CodigoTarifaIVA según el porcentaje (FE v4.4):
-     * 01=13% general, 02=1%, 03=2%, 04=4%, 06=8%, 10=exento(0%)
-     * Los códigos 05/07/08 son tarifas transitorias exclusivas de NC/ND -- nunca se usan en FE01.
+     * 08=13% general, 02=1%, 03=2%, 04=4%, 06=8%, 10=exento(0%), 01=no sujeto(0%)
+     * Los códigos 05/07/09 son tarifas transitorias exclusivas de NC/ND -- nunca se usan en FE01.
      */
     private String resolverCodigoTarifaIVA(BigDecimal porcentaje) {
         if (porcentaje == null || porcentaje.compareTo(BigDecimal.ZERO) == 0) return "10";
@@ -551,7 +551,7 @@ public class XmlFacturaGeneratorServiceImpl implements XmlFacturaGeneratorServic
         if (porcentaje.compareTo(new BigDecimal("2")) == 0) return "03";
         if (porcentaje.compareTo(new BigDecimal("4")) == 0) return "04";
         if (porcentaje.compareTo(new BigDecimal("8")) == 0) return "06";
-        return "01"; // 13% general
+        return "08"; // 13% general
     }
 
     private String fmt(BigDecimal value, int decimals) {
