@@ -276,48 +276,49 @@ public class HaciendaComprobanteApiServiceImpl implements HaciendaComprobanteApi
         Empresa empresa = obtenerEmpresa(credencial.getEmpresaId());
         TokenHaciendaDTO token = self.autenticar(credencialId);
 
+        String urlRecepcion = urlBasePara(credencial.getAmbiente()) + "/recepcion/v1/recepcion";
+        String xmlBase64 = Base64.getEncoder().encodeToString(xml.getBytes(StandardCharsets.UTF_8));
+        String fechaEmision = OffsetDateTime.now(ZoneId.of("America/Costa_Rica"))
+                .format(DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ssxxx"));
+        String tipoId = empresa.getTipoIdentificacion() != null ? empresa.getTipoIdentificacion() : "02";
+        Map<String, Object> body = Map.of(
+                "clave", claveNumerica,
+                "fecha", fechaEmision,
+                "emisor", Map.of(
+                        "tipoIdentificacion", tipoId,
+                        "numeroIdentificacion", empresa.getNumeroIdentificacion()),
+                "comprobanteXml", xmlBase64);
+        log.info("URL de recepción: {}", urlRecepcion);
+
         try {
-            String urlRecepcion = urlBasePara(credencial.getAmbiente()) + "/recepcion/v1/recepcion";
+            return llamarApiEnvio(urlRecepcion, claveNumerica, body, token.accessToken());
+        } catch (HttpClientErrorException.Unauthorized e) {
+            log.warn("Token expirado enviando comprobante {} — renovando y reintentando inline", claveNumerica);
+            TokenHaciendaDTO tokenNuevo = renovarYActualizarCache(credencialId, token.refreshToken());
+            return llamarApiEnvio(urlRecepcion, claveNumerica, body, tokenNuevo.accessToken());
+        }
+    }
 
-            String xmlBase64 = Base64.getEncoder().encodeToString(xml.getBytes(StandardCharsets.UTF_8));
-
-            String fechaEmision = OffsetDateTime.now(ZoneId.of("America/Costa_Rica"))
-                    .format(DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ssxxx"));
-
-            String tipoId = empresa.getTipoIdentificacion() != null ? empresa.getTipoIdentificacion() : "02";
-
-            Map<String, Object> body = Map.of(
-                    "clave", claveNumerica,
-                    "fecha", fechaEmision,
-                    "emisor", Map.of(
-                            "tipoIdentificacion", tipoId,
-                            "numeroIdentificacion", empresa.getNumeroIdentificacion()),
-                    "comprobanteXml", xmlBase64);
-
-            log.info("URL de recepción: {}", urlRecepcion);
-
-            long startTime = System.currentTimeMillis();
+    private RespuestaHaciendaDTO llamarApiEnvio(String urlRecepcion, String claveNumerica,
+            Map<String, Object> body, String accessToken) {
+        try {
+            long start = System.currentTimeMillis();
             ResponseEntity<String> response = restClient.post()
                     .uri(urlRecepcion)
                     .contentType(MediaType.APPLICATION_JSON)
-                    .headers(headers -> headers.setBearerAuth(token.accessToken()))
+                    .headers(h -> h.setBearerAuth(accessToken))
                     .body(body)
                     .retrieve()
                     .toEntity(String.class);
-            long responseTime = System.currentTimeMillis() - startTime;
-
-            log.info("Respuesta de Hacienda - Status: {} - Tiempo: {}ms", response.getStatusCode(), responseTime);
-
-            return parsearRespuesta(response, claveNumerica, responseTime);
+            long elapsed = System.currentTimeMillis() - start;
+            log.info("Respuesta de Hacienda - Status: {} - Tiempo: {}ms", response.getStatusCode(), elapsed);
+            return parsearRespuesta(response, claveNumerica, elapsed);
 
         } catch (HttpClientErrorException.Unauthorized e) {
-            log.warn("Token expirado enviando comprobante {} — intentando renovar", claveNumerica);
-            renovarYActualizarCache(credencialId, token.refreshToken());
-            throw new IllegalStateException("Token renovado, reintentando envío", e);
+            throw e;
 
         } catch (HttpStatusCodeException e) {
             log.error("Error HTTP al enviar comprobante: {} - {}", e.getStatusCode(), e.getResponseBodyAsString());
-
             return RespuestaHaciendaDTO.builder()
                     .claveNumerica(claveNumerica)
                     .fechaRespuesta(LocalDateTime.now())
@@ -331,7 +332,6 @@ public class HaciendaComprobanteApiServiceImpl implements HaciendaComprobanteApi
 
         } catch (Exception e) {
             log.error("Error al enviar comprobante: {}", e.getMessage(), e);
-
             return RespuestaHaciendaDTO.builder()
                     .claveNumerica(claveNumerica)
                     .fechaRespuesta(LocalDateTime.now())
@@ -351,30 +351,34 @@ public class HaciendaComprobanteApiServiceImpl implements HaciendaComprobanteApi
 
         CredencialHacienda credencial = obtenerCredencial(credencialId);
         TokenHaciendaDTO token = self.autenticar(credencialId);
+        String urlConsulta = urlBasePara(credencial.getAmbiente()) + "/recepcion/v1/recepcion/" + claveNumerica;
 
         try {
-            String urlConsulta = urlBasePara(credencial.getAmbiente()) + "/recepcion/v1/recepcion/" + claveNumerica;
+            return llamarApiConsulta(urlConsulta, claveNumerica, token.accessToken());
+        } catch (HttpClientErrorException.Unauthorized e) {
+            log.warn("Token expirado consultando comprobante {} — renovando y reintentando inline", claveNumerica);
+            TokenHaciendaDTO tokenNuevo = renovarYActualizarCache(credencialId, token.refreshToken());
+            return llamarApiConsulta(urlConsulta, claveNumerica, tokenNuevo.accessToken());
+        }
+    }
 
-            long startTime = System.currentTimeMillis();
+    private RespuestaHaciendaDTO llamarApiConsulta(String urlConsulta, String claveNumerica, String accessToken) {
+        try {
+            long start = System.currentTimeMillis();
             ResponseEntity<String> response = restClient.get()
                     .uri(urlConsulta)
-                    .headers(headers -> headers.setBearerAuth(token.accessToken()))
+                    .headers(h -> h.setBearerAuth(accessToken))
                     .retrieve()
                     .toEntity(String.class);
-            long responseTime = System.currentTimeMillis() - startTime;
-
-            log.info("Consulta exitosa - Status: {} - Tiempo: {}ms", response.getStatusCode(), responseTime);
-
-            return parsearRespuesta(response, claveNumerica, responseTime);
+            long elapsed = System.currentTimeMillis() - start;
+            log.info("Consulta exitosa - Status: {} - Tiempo: {}ms", response.getStatusCode(), elapsed);
+            return parsearRespuesta(response, claveNumerica, elapsed);
 
         } catch (HttpClientErrorException.Unauthorized e) {
-            log.warn("Token expirado consultando comprobante {} — intentando renovar", claveNumerica);
-            renovarYActualizarCache(credencialId, token.refreshToken());
-            throw new IllegalStateException("Token renovado, reintentando consulta", e);
+            throw e;
 
         } catch (HttpClientErrorException.NotFound e) {
             log.info("Comprobante no encontrado en Hacienda: {}", claveNumerica);
-
             return RespuestaHaciendaDTO.builder()
                     .claveNumerica(claveNumerica)
                     .fechaRespuesta(LocalDateTime.now())
@@ -565,21 +569,17 @@ public class HaciendaComprobanteApiServiceImpl implements HaciendaComprobanteApi
         };
     }
 
-    private void renovarYActualizarCache(UUID credencialId, String refreshToken) {
+    private TokenHaciendaDTO renovarYActualizarCache(UUID credencialId, String refreshToken) {
         Cache cache = cacheManager.getCache(CacheConfig.CACHE_HACIENDA_TOKEN);
         if (cache != null) {
             cache.evict(credencialId);
         }
-        try {
-            TokenHaciendaDTO tokenNuevo = renovarToken(refreshToken, credencialId);
-            if (cache != null) {
-                cache.put(credencialId, tokenNuevo);
-            }
-            log.info("Token de Hacienda renovado para credencial {}", credencialId);
-        } catch (Exception e) {
-            log.warn("Fallo al renovar token para credencial {} — se reautenticará en el próximo intento: {}",
-                    credencialId, e.getMessage());
+        TokenHaciendaDTO tokenNuevo = renovarToken(refreshToken, credencialId);
+        if (cache != null) {
+            cache.put(credencialId, tokenNuevo);
         }
+        log.info("Token de Hacienda renovado para credencial {}", credencialId);
+        return tokenNuevo;
     }
 
     // ========================================

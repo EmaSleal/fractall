@@ -281,7 +281,7 @@ class HaciendaComprobanteApiServiceImplTest {
     }
 
     @Test
-    void enviarComprobanteConTokenExpiradoRenovaTokenYLanzaExcepcionParaReintento() {
+    void enviarComprobanteConTokenExpiradoRenovaYReintentaEnvioInline() {
         UUID credencialId = UUID.randomUUID();
         UUID empresaId = UUID.randomUUID();
         when(credencialHaciendaRepository.findById(credencialId))
@@ -311,10 +311,13 @@ class HaciendaComprobanteApiServiceImplTest {
                         {"access_token":"AT-nuevo","refresh_token":"RT-nuevo","expires_in":3600,"token_type":"Bearer"}
                         """,
                         MediaType.APPLICATION_JSON));
+        servidorMock.expect(requestTo(SANDBOX_API_URL + "/recepcion/v1/recepcion"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withStatus(HttpStatus.ACCEPTED));
 
-        assertThatThrownBy(() -> servicio.enviarComprobante("<xml/>", "clave-test", credencialId))
-                .isInstanceOf(IllegalStateException.class);
+        RespuestaHaciendaDTO respuesta = servicio.enviarComprobante("<xml/>", "clave-test", credencialId);
 
+        assertThat(respuesta.getCodigoMensaje()).isEqualTo(MensajeHacienda.PROCESANDO);
         servidorMock.verify();
     }
 
@@ -348,7 +351,7 @@ class HaciendaComprobanteApiServiceImplTest {
     }
 
     @Test
-    void consultarComprobanteConTokenExpiradoRenovaTokenYLanzaExcepcionParaReintento() {
+    void consultarComprobanteConTokenExpiradoRenovaYReintentaConsultaInline() {
         UUID credencialId = UUID.randomUUID();
         UUID empresaId = UUID.randomUUID();
         when(credencialHaciendaRepository.findById(credencialId))
@@ -376,10 +379,17 @@ class HaciendaComprobanteApiServiceImplTest {
                         {"access_token":"AT-nuevo","refresh_token":"RT-nuevo","expires_in":3600,"token_type":"Bearer"}
                         """,
                         MediaType.APPLICATION_JSON));
+        servidorMock.expect(requestTo(SANDBOX_API_URL + "/recepcion/v1/recepcion/clave-test"))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess(
+                        """
+                        {"ind-estado":"procesando"}
+                        """,
+                        MediaType.APPLICATION_JSON));
 
-        assertThatThrownBy(() -> servicio.consultarComprobante("clave-test", credencialId))
-                .isInstanceOf(IllegalStateException.class);
+        RespuestaHaciendaDTO respuesta = servicio.consultarComprobante("clave-test", credencialId);
 
+        assertThat(respuesta.getCodigoMensaje()).isEqualTo(MensajeHacienda.PROCESANDO);
         servidorMock.verify();
     }
 
