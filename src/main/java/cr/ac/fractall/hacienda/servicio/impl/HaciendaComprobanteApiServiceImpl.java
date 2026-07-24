@@ -14,6 +14,8 @@ import java.util.UUID;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.cache.Cache;
+import org.springframework.cache.CacheManager;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.core.ParameterizedTypeReference;
@@ -26,6 +28,7 @@ import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.RestClient;
 
+import cr.ac.fractall.config.CacheConfig;
 import cr.ac.fractall.config.CacheConfig;
 import cr.ac.fractall.empresa.modelo.CredencialHacienda;
 import cr.ac.fractall.empresa.modelo.Empresa;
@@ -111,6 +114,7 @@ public class HaciendaComprobanteApiServiceImpl implements HaciendaComprobanteApi
     private final SecretosKvService secretosKvService;
     private final RestClient restClient;
     private final ObjectMapper objectMapper;
+    private final CacheManager cacheManager;
     private final HaciendaComprobanteApiService self;
     private final String clientId;
     private final String sandboxTokenUrl;
@@ -125,6 +129,7 @@ public class HaciendaComprobanteApiServiceImpl implements HaciendaComprobanteApi
             SecretosKvService secretosKvService,
             RestClient.Builder restClientBuilder,
             ObjectMapper objectMapper,
+            CacheManager cacheManager,
             @Lazy HaciendaComprobanteApiService self,
             @Value("${application.hacienda.oauth.client-id:api-stag}") String clientId,
             @Value("${application.hacienda.oauth.sandbox.token-url:"
@@ -145,6 +150,7 @@ public class HaciendaComprobanteApiServiceImpl implements HaciendaComprobanteApi
                 .requestFactory(HaciendaConsultaServiceImpl.construirRequestFactory(timeout))
                 .build();
         this.objectMapper = objectMapper;
+        this.cacheManager = cacheManager;
         this.self = self;
         this.clientId = clientId;
         this.sandboxTokenUrl = sandboxTokenUrl;
@@ -167,6 +173,7 @@ public class HaciendaComprobanteApiServiceImpl implements HaciendaComprobanteApi
             SecretosKvService secretosKvService,
             RestClient restClient,
             ObjectMapper objectMapper,
+            CacheManager cacheManager,
             String clientId,
             String sandboxTokenUrl,
             String sandboxApiUrl,
@@ -177,6 +184,7 @@ public class HaciendaComprobanteApiServiceImpl implements HaciendaComprobanteApi
         this.secretosKvService = secretosKvService;
         this.restClient = restClient;
         this.objectMapper = objectMapper;
+        this.cacheManager = cacheManager;
         this.self = this;
         this.clientId = clientId;
         this.sandboxTokenUrl = sandboxTokenUrl;
@@ -266,10 +274,9 @@ public class HaciendaComprobanteApiServiceImpl implements HaciendaComprobanteApi
 
         CredencialHacienda credencial = obtenerCredencial(credencialId);
         Empresa empresa = obtenerEmpresa(credencial.getEmpresaId());
+        TokenHaciendaDTO token = self.autenticar(credencialId);
 
         try {
-            TokenHaciendaDTO token = self.autenticar(credencialId);
-
             String urlRecepcion = urlBasePara(credencial.getAmbiente()) + "/recepcion/v1/recepcion";
 
             String xmlBase64 = Base64.getEncoder().encodeToString(xml.getBytes(StandardCharsets.UTF_8));
@@ -302,6 +309,11 @@ public class HaciendaComprobanteApiServiceImpl implements HaciendaComprobanteApi
             log.info("Respuesta de Hacienda - Status: {} - Tiempo: {}ms", response.getStatusCode(), responseTime);
 
             return parsearRespuesta(response, claveNumerica, responseTime);
+
+        } catch (HttpClientErrorException.Unauthorized e) {
+            log.warn("Token expirado enviando comprobante {} — intentando renovar", claveNumerica);
+            renovarYActualizarCache(credencialId, token.refreshToken());
+            throw new IllegalStateException("Token renovado, reintentando envío", e);
 
         } catch (HttpStatusCodeException e) {
             log.error("Error HTTP al enviar comprobante: {} - {}", e.getStatusCode(), e.getResponseBodyAsString());
@@ -338,10 +350,9 @@ public class HaciendaComprobanteApiServiceImpl implements HaciendaComprobanteApi
         log.info("Consultando comprobante en Hacienda - Clave: {}", claveNumerica);
 
         CredencialHacienda credencial = obtenerCredencial(credencialId);
+        TokenHaciendaDTO token = self.autenticar(credencialId);
 
         try {
-            TokenHaciendaDTO token = self.autenticar(credencialId);
-
             String urlConsulta = urlBasePara(credencial.getAmbiente()) + "/recepcion/v1/recepcion/" + claveNumerica;
 
             long startTime = System.currentTimeMillis();
@@ -355,6 +366,11 @@ public class HaciendaComprobanteApiServiceImpl implements HaciendaComprobanteApi
             log.info("Consulta exitosa - Status: {} - Tiempo: {}ms", response.getStatusCode(), responseTime);
 
             return parsearRespuesta(response, claveNumerica, responseTime);
+
+        } catch (HttpClientErrorException.Unauthorized e) {
+            log.warn("Token expirado consultando comprobante {} — intentando renovar", claveNumerica);
+            renovarYActualizarCache(credencialId, token.refreshToken());
+            throw new IllegalStateException("Token renovado, reintentando consulta", e);
 
         } catch (HttpClientErrorException.NotFound e) {
             log.info("Comprobante no encontrado en Hacienda: {}", claveNumerica);
@@ -547,6 +563,23 @@ public class HaciendaComprobanteApiServiceImpl implements HaciendaComprobanteApi
             case "procesando", "0" -> MensajeHacienda.PROCESANDO;
             default -> MensajeHacienda.ERROR;
         };
+    }
+
+    private void renovarYActualizarCache(UUID credencialId, String refreshToken) {
+        Cache cache = cacheManager.getCache(CacheConfig.CACHE_HACIENDA_TOKEN);
+        if (cache != null) {
+            cache.evict(credencialId);
+        }
+        try {
+            TokenHaciendaDTO tokenNuevo = renovarToken(refreshToken, credencialId);
+            if (cache != null) {
+                cache.put(credencialId, tokenNuevo);
+            }
+            log.info("Token de Hacienda renovado para credencial {}", credencialId);
+        } catch (Exception e) {
+            log.warn("Fallo al renovar token para credencial {} — se reautenticará en el próximo intento: {}",
+                    credencialId, e.getMessage());
+        }
     }
 
     // ========================================

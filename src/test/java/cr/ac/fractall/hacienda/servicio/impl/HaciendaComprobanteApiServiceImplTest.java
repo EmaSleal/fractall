@@ -26,6 +26,9 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestClient;
 
+import org.springframework.cache.concurrent.ConcurrentMapCacheManager;
+
+import cr.ac.fractall.config.CacheConfig;
 import cr.ac.fractall.empresa.modelo.CredencialHacienda;
 import cr.ac.fractall.empresa.modelo.Empresa;
 import cr.ac.fractall.empresa.repositorio.CredencialHaciendaRepository;
@@ -77,6 +80,7 @@ class HaciendaComprobanteApiServiceImplTest {
                 secretosKvService,
                 restClient,
                 objectMapper,
+                new ConcurrentMapCacheManager(CacheConfig.CACHE_HACIENDA_TOKEN),
                 "api-stag",
                 SANDBOX_TOKEN_URL,
                 SANDBOX_API_URL,
@@ -276,6 +280,44 @@ class HaciendaComprobanteApiServiceImplTest {
         servidorMock.verify();
     }
 
+    @Test
+    void enviarComprobanteConTokenExpiradoRenovaTokenYLanzaExcepcionParaReintento() {
+        UUID credencialId = UUID.randomUUID();
+        UUID empresaId = UUID.randomUUID();
+        when(credencialHaciendaRepository.findById(credencialId))
+                .thenReturn(Optional.of(credencialSandbox(credencialId, empresaId)));
+        when(empresaRepository.findById(empresaId))
+                .thenReturn(Optional.of(empresaConIdentificacion("310123456", "02")));
+        when(secretosKvService.leerSecreto(empresaId, "hacienda/sandbox/password"))
+                .thenReturn(Optional.of("clave-secreta"));
+
+        servidorMock.expect(requestTo(SANDBOX_TOKEN_URL))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(content().string(Matchers.containsString("grant_type=password")))
+                .andRespond(withSuccess(
+                        """
+                        {"access_token":"AT-viejo","refresh_token":"RT-viejo","expires_in":300,"token_type":"Bearer"}
+                        """,
+                        MediaType.APPLICATION_JSON));
+        servidorMock.expect(requestTo(SANDBOX_API_URL + "/recepcion/v1/recepcion"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withStatus(HttpStatus.UNAUTHORIZED));
+        servidorMock.expect(requestTo(SANDBOX_TOKEN_URL))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(content().string(Matchers.containsString("grant_type=refresh_token")))
+                .andExpect(content().string(Matchers.containsString("refresh_token=RT-viejo")))
+                .andRespond(withSuccess(
+                        """
+                        {"access_token":"AT-nuevo","refresh_token":"RT-nuevo","expires_in":3600,"token_type":"Bearer"}
+                        """,
+                        MediaType.APPLICATION_JSON));
+
+        assertThatThrownBy(() -> servicio.enviarComprobante("<xml/>", "clave-test", credencialId))
+                .isInstanceOf(IllegalStateException.class);
+
+        servidorMock.verify();
+    }
+
     // ========== consultarComprobante ==========
 
     @Test
@@ -302,6 +344,42 @@ class HaciendaComprobanteApiServiceImplTest {
         assertThat(respuesta.getCodigoMensaje()).isEqualTo(MensajeHacienda.PROCESANDO);
         assertThat(respuesta.getCodigoHttp()).isEqualTo(404);
         assertThat(respuesta.getDebeReintentar()).isTrue();
+        servidorMock.verify();
+    }
+
+    @Test
+    void consultarComprobanteConTokenExpiradoRenovaTokenYLanzaExcepcionParaReintento() {
+        UUID credencialId = UUID.randomUUID();
+        UUID empresaId = UUID.randomUUID();
+        when(credencialHaciendaRepository.findById(credencialId))
+                .thenReturn(Optional.of(credencialSandbox(credencialId, empresaId)));
+        when(secretosKvService.leerSecreto(empresaId, "hacienda/sandbox/password"))
+                .thenReturn(Optional.of("clave-secreta"));
+
+        servidorMock.expect(requestTo(SANDBOX_TOKEN_URL))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(content().string(Matchers.containsString("grant_type=password")))
+                .andRespond(withSuccess(
+                        """
+                        {"access_token":"AT-viejo","refresh_token":"RT-viejo","expires_in":300,"token_type":"Bearer"}
+                        """,
+                        MediaType.APPLICATION_JSON));
+        servidorMock.expect(requestTo(SANDBOX_API_URL + "/recepcion/v1/recepcion/clave-test"))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(withStatus(HttpStatus.UNAUTHORIZED));
+        servidorMock.expect(requestTo(SANDBOX_TOKEN_URL))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(content().string(Matchers.containsString("grant_type=refresh_token")))
+                .andExpect(content().string(Matchers.containsString("refresh_token=RT-viejo")))
+                .andRespond(withSuccess(
+                        """
+                        {"access_token":"AT-nuevo","refresh_token":"RT-nuevo","expires_in":3600,"token_type":"Bearer"}
+                        """,
+                        MediaType.APPLICATION_JSON));
+
+        assertThatThrownBy(() -> servicio.consultarComprobante("clave-test", credencialId))
+                .isInstanceOf(IllegalStateException.class);
+
         servidorMock.verify();
     }
 

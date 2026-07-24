@@ -107,6 +107,8 @@ class HaciendaTokenCacheAislamientoTest {
                     secretosKvService,
                     restClient,
                     objectMapper,
+                    new org.springframework.cache.concurrent.ConcurrentMapCacheManager(
+                            cr.ac.fractall.config.CacheConfig.CACHE_HACIENDA_TOKEN),
                     "api-stag",
                     SANDBOX_TOKEN_URL,
                     SANDBOX_API_URL,
