@@ -84,6 +84,7 @@ public class ComprobanteXmlPersistenceService {
     private final XmlFacturaGeneratorService xmlFacturaGeneratorService;
     private final XmlFacturaFirmaService xmlFacturaFirmaService;
     private final ComprobanteXmlCifradoUploader comprobanteXmlCifradoUploader;
+    private final ComprobanteXmlCifradoDescargador comprobanteXmlCifradoDescargador;
     private final ComprobanteElectronicoRepository comprobanteElectronicoRepository;
     private final ComprobanteHaciendaEnvioService comprobanteHaciendaEnvioService;
 
@@ -91,11 +92,13 @@ public class ComprobanteXmlPersistenceService {
             XmlFacturaGeneratorService xmlFacturaGeneratorService,
             XmlFacturaFirmaService xmlFacturaFirmaService,
             ComprobanteXmlCifradoUploader comprobanteXmlCifradoUploader,
+            ComprobanteXmlCifradoDescargador comprobanteXmlCifradoDescargador,
             ComprobanteElectronicoRepository comprobanteElectronicoRepository,
             ComprobanteHaciendaEnvioService comprobanteHaciendaEnvioService) {
         this.xmlFacturaGeneratorService = xmlFacturaGeneratorService;
         this.xmlFacturaFirmaService = xmlFacturaFirmaService;
         this.comprobanteXmlCifradoUploader = comprobanteXmlCifradoUploader;
+        this.comprobanteXmlCifradoDescargador = comprobanteXmlCifradoDescargador;
         this.comprobanteElectronicoRepository = comprobanteElectronicoRepository;
         this.comprobanteHaciendaEnvioService = comprobanteHaciendaEnvioService;
     }
@@ -154,6 +157,18 @@ public class ComprobanteXmlPersistenceService {
      * dígitos) como componente final para que la ruta nunca choque entre dos comprobantes de la
      * misma empresa.
      */
+    public String obtenerXmlRespuesta(UUID comprobanteId) {
+        ComprobanteElectronico comprobante = comprobanteElectronicoRepository.findById(comprobanteId)
+                .orElseThrow(() -> new ComprobanteElectronicoNoEncontradoException(comprobanteId));
+        if (comprobante.getXmlRespuestaReferencia() == null) {
+            throw new IllegalStateException(
+                    "El comprobante " + comprobanteId + " aún no tiene XML de respuesta de Hacienda");
+        }
+        byte[] xmlBytes = comprobanteXmlCifradoDescargador.descargarYDescifrar(
+                comprobante.getXmlRespuestaReferencia());
+        return new String(xmlBytes, StandardCharsets.UTF_8);
+    }
+
     private static String construirRutaObjeto(UUID empresaId, String claveNumerica) {
         return "empresas/" + empresaId + "/comprobantes/" + claveNumerica + ".xml.enc";
     }

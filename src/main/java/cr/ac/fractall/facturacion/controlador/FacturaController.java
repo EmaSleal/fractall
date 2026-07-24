@@ -1,13 +1,19 @@
 package cr.ac.fractall.facturacion.controlador;
 
+import java.util.UUID;
+
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import cr.ac.fractall.catalogo.servicio.ClienteExoneracionNoEncontradaException;
+import cr.ac.fractall.facturacion.servicio.ComprobanteElectronicoNoEncontradoException;
 import cr.ac.fractall.catalogo.servicio.ClienteNoEncontradoException;
 import cr.ac.fractall.catalogo.servicio.ProductoNoEncontradoException;
 import cr.ac.fractall.facturacion.dto.CrearFacturaRequest;
@@ -49,6 +55,15 @@ public class FacturaController {
             FacturaService facturaService, ComprobanteXmlPersistenceService comprobanteXmlPersistenceService) {
         this.facturaService = facturaService;
         this.comprobanteXmlPersistenceService = comprobanteXmlPersistenceService;
+    }
+
+    @GetMapping(path = "/diagnostico/{comprobanteId}/xml-respuesta", produces = MediaType.TEXT_XML_VALUE)
+    public ResponseEntity<?> xmlRespuestaHacienda(@PathVariable UUID comprobanteId) {
+        try {
+            return ResponseEntity.ok(comprobanteXmlPersistenceService.obtenerXmlRespuesta(comprobanteId));
+        } catch (ComprobanteElectronicoNoEncontradoException e) {
+            return ResponseEntity.notFound().build();
+        }
     }
 
     @PostMapping
