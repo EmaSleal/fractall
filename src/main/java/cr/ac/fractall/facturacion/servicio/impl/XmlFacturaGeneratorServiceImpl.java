@@ -399,6 +399,8 @@ public class XmlFacturaGeneratorServiceImpl implements XmlFacturaGeneratorServic
     private void agregarResumen(StringBuilder xml, Factura factura, List<LineaContexto> contextos) {
         BigDecimal totalMercanciasGravadas = BigDecimal.ZERO;
         BigDecimal totalMercanciasExentas = BigDecimal.ZERO;
+        BigDecimal totalServiciosGravados = BigDecimal.ZERO;
+        BigDecimal totalServiciosExentos = BigDecimal.ZERO;
         // Suma de <Impuesto><Monto> de cada línea (bruto, ANTES de exoneración) -- así lo define
         // literalmente la documentación del XSD para TotalImpuesto/TotalDesgloseImpuesto ("suma
         // de todos campos monto del impuesto" / "suma del monto por código de impuesto").
@@ -408,18 +410,27 @@ public class XmlFacturaGeneratorServiceImpl implements XmlFacturaGeneratorServic
 
         for (LineaContexto contexto : contextos) {
             LineaCalculo calculo = contexto.calculo();
+            boolean servicio = esServicio(contexto.producto().getCodigoUnidadFe());
             if (calculo.gravado()) {
-                totalMercanciasGravadas = totalMercanciasGravadas.add(calculo.subtotal());
+                if (servicio) {
+                    totalServiciosGravados = totalServiciosGravados.add(calculo.subtotal());
+                } else {
+                    totalMercanciasGravadas = totalMercanciasGravadas.add(calculo.subtotal());
+                }
                 codigoTarifaPrincipal = calculo.codigoTarifaIVA();
             } else {
-                totalMercanciasExentas = totalMercanciasExentas.add(calculo.subtotal());
+                if (servicio) {
+                    totalServiciosExentos = totalServiciosExentos.add(calculo.subtotal());
+                } else {
+                    totalMercanciasExentas = totalMercanciasExentas.add(calculo.subtotal());
+                }
             }
             totalImpuestoBruto = totalImpuestoBruto.add(calculo.montoImpuesto());
             totalExonerado = totalExonerado.add(calculo.montoExonerado());
         }
 
-        BigDecimal totalGravado = totalMercanciasGravadas;
-        BigDecimal totalExento = totalMercanciasExentas;
+        BigDecimal totalGravado = totalMercanciasGravadas.add(totalServiciosGravados);
+        BigDecimal totalExento = totalMercanciasExentas.add(totalServiciosExentos);
         BigDecimal totalVenta = totalGravado.add(totalExento);
         BigDecimal totalVentaNeta = totalVenta;
         // Impuesto neto de la factura completa: bruto menos exonerado -- MISMA fórmula que
@@ -444,6 +455,12 @@ public class XmlFacturaGeneratorServiceImpl implements XmlFacturaGeneratorServic
         }
         if (totalMercanciasExentas.compareTo(BigDecimal.ZERO) > 0) {
             xml.append("<TotalMercanciasExentas>").append(fmt(totalMercanciasExentas, 5)).append("</TotalMercanciasExentas>");
+        }
+        if (totalServiciosGravados.compareTo(BigDecimal.ZERO) > 0) {
+            xml.append("<TotalServiciosGravados>").append(fmt(totalServiciosGravados, 5)).append("</TotalServiciosGravados>");
+        }
+        if (totalServiciosExentos.compareTo(BigDecimal.ZERO) > 0) {
+            xml.append("<TotalServiciosExentas>").append(fmt(totalServiciosExentos, 5)).append("</TotalServiciosExentas>");
         }
 
         xml.append("<TotalGravado>").append(fmt(totalGravado, 5)).append("</TotalGravado>");
@@ -518,17 +535,22 @@ public class XmlFacturaGeneratorServiceImpl implements XmlFacturaGeneratorServic
     // Utilidades
     // =====================================================================
 
+    private static boolean esServicio(String codigoUnidadFe) {
+        return "Sp".equals(codigoUnidadFe) || "OS".equals(codigoUnidadFe);
+    }
+
     /**
-     * Resuelve el CodigoTarifaIVA según el porcentaje:
-     * 10=exento(0%), 03=1%, 04=2%, 05=4%, 06=8%, 07=13%
+     * Resuelve el CodigoTarifaIVA según el porcentaje (FE v4.4):
+     * 01=13% general, 02=1%, 03=2%, 04=4%, 06=8%, 10=exento(0%)
+     * Los códigos 05/07/08 son tarifas transitorias exclusivas de NC/ND -- nunca se usan en FE01.
      */
     private String resolverCodigoTarifaIVA(BigDecimal porcentaje) {
         if (porcentaje == null || porcentaje.compareTo(BigDecimal.ZERO) == 0) return "10";
-        if (porcentaje.compareTo(new BigDecimal("1")) == 0) return "03";
-        if (porcentaje.compareTo(new BigDecimal("2")) == 0) return "04";
-        if (porcentaje.compareTo(new BigDecimal("4")) == 0) return "05";
+        if (porcentaje.compareTo(new BigDecimal("1")) == 0) return "02";
+        if (porcentaje.compareTo(new BigDecimal("2")) == 0) return "03";
+        if (porcentaje.compareTo(new BigDecimal("4")) == 0) return "04";
         if (porcentaje.compareTo(new BigDecimal("8")) == 0) return "06";
-        return "07"; // 13% general
+        return "01"; // 13% general
     }
 
     private String fmt(BigDecimal value, int decimals) {
