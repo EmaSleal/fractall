@@ -3,6 +3,7 @@ package cr.ac.fractall.facturacion.servicio.impl;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
@@ -95,7 +96,7 @@ public class XmlFacturaGeneratorServiceImpl implements XmlFacturaGeneratorServic
     private static final String NAMESPACE =
             "https://cdn.comprobanteselectronicos.go.cr/xml-schemas/v4.4/facturaElectronica";
     private static final DateTimeFormatter DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ssXXX");
-    private static final ZoneOffset CR_ZONE_OFFSET = ZoneOffset.of("-06:00");
+    private static final ZoneId CR_ZONE = ZoneId.of("America/Costa_Rica");
     private static final BigDecimal CIEN = new BigDecimal("100");
     private static final int ESCALA_MONETARIA = 5;
 
@@ -560,7 +561,9 @@ public class XmlFacturaGeneratorServiceImpl implements XmlFacturaGeneratorServic
 
     private String formatearFecha(LocalDateTime fecha) {
         if (fecha == null) throw new IllegalStateException("Fecha no disponible para formatear en el XML");
-        return fecha.atOffset(CR_ZONE_OFFSET).format(DATE_FORMATTER);
+        // fechaEmision se persiste en UTC (el servidor corre en UTC) — hay que convertir al
+        // huso CR antes de formatear, no solo adjuntar -06:00 como si fuera local.
+        return fecha.atZone(ZoneOffset.UTC).withZoneSameInstant(CR_ZONE).toOffsetDateTime().format(DATE_FORMATTER);
     }
 
     private String obtenerProveedorSistemas(Empresa empresa) {
