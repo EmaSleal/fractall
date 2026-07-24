@@ -537,7 +537,10 @@ public class XmlFacturaGeneratorServiceImpl implements XmlFacturaGeneratorServic
     // =====================================================================
 
     private static boolean esServicio(String codigoUnidadFe) {
-        return "Sp".equals(codigoUnidadFe) || "OS".equals(codigoUnidadFe);
+        return switch (codigoUnidadFe == null ? "" : codigoUnidadFe) {
+            case "Sp", "Spe", "St", "Os", "Al", "Alc", "Cm", "I" -> true;
+            default -> false;
+        };
     }
 
     /**
