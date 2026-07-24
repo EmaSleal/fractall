@@ -87,7 +87,9 @@ public class ComprobanteHaciendaPollingScheduledJob {
         this.comprobanteHaciendaEnvioService = comprobanteHaciendaEnvioService;
     }
 
-    @Scheduled(fixedDelay = 5, initialDelay = 5, timeUnit = TimeUnit.MINUTES)
+    @Scheduled(fixedDelayString = "${application.hacienda.polling-delay-minutes:5}",
+               initialDelayString = "${application.hacienda.polling-delay-minutes:5}",
+               timeUnit = TimeUnit.MINUTES)
     public void consultarPendientes() {
         List<UUID> empresaIds = TenantContextDescartable.<List<UUID>>ejecutar(
                 () -> comprobanteElectronicoRepository.findEmpresaIdsConEstado(ESTADO_ENVIADO));
