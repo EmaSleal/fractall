@@ -309,7 +309,15 @@ public class FacturaService {
         List<FacturaMedioPago> mediosPagoGuardados =
                 facturaMedioPagoRepository.findByFacturaIdOrderByOrden(factura.getId());
 
-        List<LineaFacturaResponse> lineasResponse = lineas.stream().map(LineaFacturaResponse::desde).toList();
+        List<LineaFacturaResponse> lineasResponse = lineas.stream().map(linea -> {
+            List<LineaCodigoComercial> codigos =
+                    lineaCodigoComercialRepository.findByLineaIdOrderByOrden(linea.getId());
+            List<LineaDescuento> descuentosLinea =
+                    lineaDescuentoRepository.findByLineaIdOrderByOrden(linea.getId());
+            ImpuestoLineaExoneracion exo =
+                    impuestoLineaExoneracionRepository.findByLineaId(linea.getId()).orElse(null);
+            return LineaFacturaResponse.desde(linea, codigos, descuentosLinea, exo);
+        }).toList();
         return FacturaResponse.desde(factura, comprobante, lineasResponse,
                 otrosCargosGuardados, referenciasGuardadas, mediosPagoGuardados);
     }
