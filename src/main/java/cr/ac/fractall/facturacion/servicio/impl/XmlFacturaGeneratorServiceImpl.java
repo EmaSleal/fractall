@@ -677,7 +677,12 @@ public class XmlFacturaGeneratorServiceImpl implements XmlFacturaGeneratorServic
             xml.append("<TotalIVADevuelto>").append(fmt(ivaDevuelto, 5)).append("</TotalIVADevuelto>");
         }
 
-        // T-20: Multi-MedioPago from FacturaMedioPago child table — XSD order: after TotalIVADevuelto
+        // XSD: TotalOtrosCargos before MedioPago
+        if (totalOtrosCargosValor.compareTo(BigDecimal.ZERO) > 0) {
+            xml.append("<TotalOtrosCargos>").append(fmt(totalOtrosCargosValor, 5)).append("</TotalOtrosCargos>");
+        }
+
+        // T-20: Multi-MedioPago from FacturaMedioPago child table
         if (!mediosPago.isEmpty()) {
             for (FacturaMedioPago mp : mediosPago) {
                 xml.append("<MedioPago>");
@@ -700,9 +705,6 @@ public class XmlFacturaGeneratorServiceImpl implements XmlFacturaGeneratorServic
             xml.append("</MedioPago>");
         }
 
-        if (totalOtrosCargosValor.compareTo(BigDecimal.ZERO) > 0) {
-            xml.append("<TotalOtrosCargos>").append(fmt(totalOtrosCargosValor, 5)).append("</TotalOtrosCargos>");
-        }
         xml.append("<TotalComprobante>").append(fmt(totalComprobante, 5)).append("</TotalComprobante>");
         xml.append("</ResumenFactura>");
     }
