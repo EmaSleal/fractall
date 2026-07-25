@@ -232,7 +232,19 @@ public class FacturaService {
             totalImpuestoFactura = totalImpuestoFactura.add(impuestoLinea).subtract(montoExoneracionAplicado);
         }
 
-        BigDecimal totalFactura = subtotalFactura.add(totalImpuestoFactura);
+        BigDecimal totalOtrosCargos = BigDecimal.ZERO;
+        if (request.otrosCargos() != null) {
+            for (OtrosCargoRequest cargo : request.otrosCargos()) {
+                if (cargo.montoCargo() != null) {
+                    totalOtrosCargos = totalOtrosCargos.add(cargo.montoCargo());
+                }
+            }
+        }
+        BigDecimal ivaDevuelto = request.totalIvaDevuelto() != null ? request.totalIvaDevuelto() : BigDecimal.ZERO;
+        BigDecimal totalFactura = subtotalFactura.add(totalImpuestoFactura)
+                .subtract(ivaDevuelto)
+                .add(totalOtrosCargos)
+                .setScale(ESCALA_MONETARIA, RoundingMode.HALF_UP);
 
         String condicionVenta = request.condicionVenta() != null ? request.condicionVenta() : CONDICION_VENTA_DEFECTO;
         validarCondicionVenta(condicionVenta, request.plazoCredito());

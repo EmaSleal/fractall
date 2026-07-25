@@ -189,6 +189,11 @@ public class EmpresaService {
         }
     }
 
+    @Transactional(readOnly = true)
+    public EmpresaResponse consultar() {
+        return EmpresaResponse.desde(obtenerEmpresaActual());
+    }
+
     private Empresa obtenerEmpresaActual() {
         UUID empresaId = TenantContext.get();
         return empresaRepository.findById(empresaId)

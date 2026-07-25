@@ -9,6 +9,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.ModelAttribute;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -47,6 +48,11 @@ public class EmpresaController {
 
     public EmpresaController(EmpresaService empresaService) {
         this.empresaService = empresaService;
+    }
+
+    @GetMapping
+    public ResponseEntity<EmpresaResponse> consultar() {
+        return ResponseEntity.ok(empresaService.consultar());
     }
 
     @PatchMapping
