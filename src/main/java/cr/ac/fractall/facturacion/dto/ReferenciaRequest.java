@@ -21,6 +21,8 @@ public record ReferenciaRequest(
         @NotNull
         LocalDate fechaEmisionIr,
 
+        @NotBlank
+        @Size(max = 2)
         String codigo,
 
         String codigoReferenciaOtro,
