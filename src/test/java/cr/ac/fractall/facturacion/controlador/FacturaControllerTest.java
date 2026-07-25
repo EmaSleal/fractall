@@ -349,9 +349,11 @@ class FacturaControllerTest {
         ContextoDePrueba contexto = crearContextoCompleto();
 
         CrearFacturaRequest request = new CrearFacturaRequest(
-                contexto.clienteId(), null, null, null, null, null,
+                contexto.clienteId(), null, null, null, null, null, null, null, null,
                 java.util.List.of(new LineaFacturaItemRequest(
-                        contexto.productoId(), new BigDecimal("3"), new BigDecimal("1500.00000"), null)));
+                        contexto.productoId(), new BigDecimal("3"), new BigDecimal("1500.00000"), null,
+                        null, null, null, null, null, null, null)),
+                null, null, null);
 
         mockMvc.perform(post("/facturas")
                         .header("Authorization", "Bearer " + contexto.accessToken())
@@ -382,9 +384,11 @@ class FacturaControllerTest {
         when(objectStorageService.subir(any(byte[].class), anyString())).thenReturn(referenciaEsperada);
 
         CrearFacturaRequest request = new CrearFacturaRequest(
-                contexto.clienteId(), null, null, null, null, null,
+                contexto.clienteId(), null, null, null, null, null, null, null, null,
                 java.util.List.of(new LineaFacturaItemRequest(
-                        contexto.productoId(), new BigDecimal("2"), new BigDecimal("1000.00000"), null)));
+                        contexto.productoId(), new BigDecimal("2"), new BigDecimal("1000.00000"), null,
+                        null, null, null, null, null, null, null)),
+                null, null, null);
 
         String cuerpoRespuesta = mockMvc.perform(post("/facturas")
                         .header("Authorization", "Bearer " + contexto.accessToken())
@@ -423,9 +427,11 @@ class FacturaControllerTest {
                 .ifPresent(credencialHaciendaRepository::delete));
 
         CrearFacturaRequest request = new CrearFacturaRequest(
-                contexto.clienteId(), null, null, null, null, null,
+                contexto.clienteId(), null, null, null, null, null, null, null, null,
                 java.util.List.of(new LineaFacturaItemRequest(
-                        contexto.productoId(), BigDecimal.ONE, new BigDecimal("1000.00000"), null)));
+                        contexto.productoId(), BigDecimal.ONE, new BigDecimal("1000.00000"), null,
+                        null, null, null, null, null, null, null)),
+                null, null, null);
 
         mockMvc.perform(post("/facturas")
                         .header("Authorization", "Bearer " + contexto.accessToken())
@@ -440,9 +446,11 @@ class FacturaControllerTest {
         ContextoDePrueba contextoB = crearContextoCompleto();
 
         CrearFacturaRequest request = new CrearFacturaRequest(
-                contextoA.clienteId(), null, null, null, null, null,
+                contextoA.clienteId(), null, null, null, null, null, null, null, null,
                 java.util.List.of(new LineaFacturaItemRequest(
-                        contextoA.productoId(), BigDecimal.ONE, BigDecimal.TEN, null)));
+                        contextoA.productoId(), BigDecimal.ONE, BigDecimal.TEN, null,
+                        null, null, null, null, null, null, null)),
+                null, null, null);
 
         // El cliente y producto pertenecen al tenant A, pero se solicita con el token del tenant B.
         mockMvc.perform(post("/facturas")

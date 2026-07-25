@@ -4,7 +4,9 @@ import java.math.BigDecimal;
 import java.util.List;
 import java.util.UUID;
 
+import cr.ac.fractall.facturacion.validacion.OtrosRequiereTexto;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.AssertTrue;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
@@ -19,7 +21,11 @@ import jakarta.validation.constraints.Size;
  * si se omiten, {@code FacturaService} aplica los mismos valores por defecto que
  * {@code V4__catalogo_y_facturacion.sql} define a nivel de columna ({@code '01'}, {@code '01'},
  * {@code 'CRC'}, {@code 1.00000} respectivamente).
+ *
+ * <p>{@code medioPago} (String) is deprecated — use {@code mediosPago} instead.
+ * Legacy field is kept for backward compatibility; service falls back to it when mediosPago empty.
  */
+@OtrosRequiereTexto(codigo = "condicionVenta", texto = "condicionVentaOtros")
 public record CrearFacturaRequest(
 
         @NotNull
@@ -29,6 +35,14 @@ public record CrearFacturaRequest(
         String condicionVenta,
 
         Integer plazoCredito,
+
+        @Size(max = 100)
+        String condicionVentaOtros,
+
+        @Size(min = 6, max = 6)
+        String codigoActividadReceptor,
+
+        BigDecimal totalIvaDevuelto,
 
         @Size(max = 2)
         String medioPago,
@@ -40,5 +54,22 @@ public record CrearFacturaRequest(
 
         @NotEmpty
         @Valid
-        List<LineaFacturaItemRequest> lineas) {
+        List<LineaFacturaItemRequest> lineas,
+
+        @Size(max = 4)
+        @Valid
+        List<MedioPagoRequest> mediosPago,
+
+        @Size(max = 15)
+        @Valid
+        List<OtrosCargoRequest> otrosCargos,
+
+        @Size(max = 10)
+        @Valid
+        List<ReferenciaRequest> informacionReferencia) {
+
+    @AssertTrue(message = "plazoCredito es obligatorio cuando condicionVenta es '02'")
+    boolean isPlazoCreditoValido() {
+        return !"02".equals(condicionVenta) || plazoCredito != null;
+    }
 }

@@ -52,6 +52,18 @@ public class LineaFactura extends TenantAwareEntity {
     @Column(name = "porcentaje_impuesto_aplicado", nullable = false, precision = 5, scale = 2)
     private BigDecimal porcentajeImpuestoAplicado;
 
+    @Column(name = "tipo_transaccion", nullable = false, length = 2)
+    private String tipoTransaccion;
+
+    @Column(name = "unidad_medida_comercial", length = 20)
+    private String unidadMedidaComercial;
+
+    @Column(name = "iva_cobrado_fabrica", nullable = false, precision = 18, scale = 5)
+    private BigDecimal ivaCobradoFabrica;
+
+    @Column(name = "factor_calculo_iva", precision = 5, scale = 4)
+    private BigDecimal factorCalculoIva;
+
     @Column(name = "exoneracion_id")
     private UUID exoneracionId;
 

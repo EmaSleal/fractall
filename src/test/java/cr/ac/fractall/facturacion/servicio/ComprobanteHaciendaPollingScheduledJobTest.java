@@ -262,6 +262,7 @@ class ComprobanteHaciendaPollingScheduledJobTest {
         factura.setCreadoPor(usuarioId);
         factura.setCreateDate(LocalDateTime.now());
         factura.setUpdateDate(LocalDateTime.now());
+        factura.setTotalIvaDevuelto(BigDecimal.ZERO);
         factura = facturaRepository.saveAndFlush(factura);
 
         String consecutivo = (sufijoClave + "00000000000000000000").substring(0, 20);

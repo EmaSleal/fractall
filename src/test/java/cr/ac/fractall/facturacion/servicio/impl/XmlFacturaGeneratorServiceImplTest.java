@@ -215,6 +215,7 @@ class XmlFacturaGeneratorServiceImplTest {
         factura.setCreadoPor(usuarioId);
         factura.setCreateDate(LocalDateTime.now());
         factura.setUpdateDate(LocalDateTime.now());
+        factura.setTotalIvaDevuelto(BigDecimal.ZERO);
         return facturaRepository.saveAndFlush(factura);
     }
 
@@ -253,6 +254,8 @@ class XmlFacturaGeneratorServiceImplTest {
         linea.setCodigoCabysAplicado(producto.getCodigoCabys());
         linea.setGravadoAplicado(producto.isGravado());
         linea.setPorcentajeImpuestoAplicado(producto.getPorcentajeImpuesto());
+        linea.setTipoTransaccion("01");
+        linea.setIvaCobradoFabrica(BigDecimal.ZERO);
         return linea;
     }
 

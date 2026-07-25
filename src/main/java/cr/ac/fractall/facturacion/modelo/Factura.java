@@ -50,6 +50,15 @@ public class Factura extends TenantAwareEntity {
     @Column(name = "total", nullable = false, precision = 14, scale = 5)
     private BigDecimal total;
 
+    @Column(name = "condicion_venta_otros", length = 100)
+    private String condicionVentaOtros;
+
+    @Column(name = "codigo_actividad_receptor", length = 6)
+    private String codigoActividadReceptor;
+
+    @Column(name = "total_iva_devuelto", nullable = false, precision = 18, scale = 5)
+    private BigDecimal totalIvaDevuelto;
+
     @Column(name = "creado_por", nullable = false)
     private UUID creadoPor;
 

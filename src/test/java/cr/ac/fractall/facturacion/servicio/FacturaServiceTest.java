@@ -212,12 +212,16 @@ class FacturaServiceTest {
                 cliente.getId(), "08", new BigDecimal("100.00"), true, null);
 
         LineaFacturaItemRequest lineaSinExoneracion = new LineaFacturaItemRequest(
-                productoGravado.getId(), new BigDecimal("2"), new BigDecimal("1000.00000"), null);
+                productoGravado.getId(), new BigDecimal("2"), new BigDecimal("1000.00000"), null,
+                null, null, null, null, null, null, null);
         LineaFacturaItemRequest lineaConExoneracion = new LineaFacturaItemRequest(
-                productoExonerado.getId(), new BigDecimal("1"), new BigDecimal("2000.00000"), exoneracion.getId());
+                productoExonerado.getId(), new BigDecimal("1"), new BigDecimal("2000.00000"), exoneracion.getId(),
+                null, null, null, null, null, null, null);
 
         CrearFacturaRequest request = new CrearFacturaRequest(
-                cliente.getId(), null, null, null, null, null, List.of(lineaSinExoneracion, lineaConExoneracion));
+                cliente.getId(), null, null, null, null, null,
+                null, null, null, List.of(lineaSinExoneracion, lineaConExoneracion),
+                null, null, null);
 
         FacturaResponse response = facturaService.crear(request);
 
@@ -270,7 +274,10 @@ class FacturaServiceTest {
         Producto producto = crearProducto("PROD-C-" + UUID.randomUUID(), new BigDecimal("13.00"));
         CrearFacturaRequest request = new CrearFacturaRequest(
                 UUID.randomUUID(), null, null, null, null, null,
-                List.of(new LineaFacturaItemRequest(producto.getId(), BigDecimal.ONE, BigDecimal.TEN, null)));
+                null, null, null,
+                List.of(new LineaFacturaItemRequest(producto.getId(), BigDecimal.ONE, BigDecimal.TEN, null,
+                        null, null, null, null, null, null, null)),
+                null, null, null);
 
         assertThatThrownBy(() -> facturaService.crear(request))
                 .isInstanceOf(ClienteNoEncontradoException.class);
@@ -281,7 +288,10 @@ class FacturaServiceTest {
         Cliente cliente = crearCliente("310299" + System.nanoTime() % 1_000_000);
         CrearFacturaRequest request = new CrearFacturaRequest(
                 cliente.getId(), null, null, null, null, null,
-                List.of(new LineaFacturaItemRequest(UUID.randomUUID(), BigDecimal.ONE, BigDecimal.TEN, null)));
+                null, null, null,
+                List.of(new LineaFacturaItemRequest(UUID.randomUUID(), BigDecimal.ONE, BigDecimal.TEN, null,
+                        null, null, null, null, null, null, null)),
+                null, null, null);
 
         assertThatThrownBy(() -> facturaService.crear(request))
                 .isInstanceOf(ProductoNoEncontradoException.class);
@@ -299,7 +309,10 @@ class FacturaServiceTest {
         Producto producto = crearProducto("PROD-CV-" + UUID.randomUUID(), new BigDecimal("13.00"));
         CrearFacturaRequest request = new CrearFacturaRequest(
                 cliente.getId(), "02", null, null, null, null,
-                List.of(new LineaFacturaItemRequest(producto.getId(), BigDecimal.ONE, BigDecimal.TEN, null)));
+                null, null, null,
+                List.of(new LineaFacturaItemRequest(producto.getId(), BigDecimal.ONE, BigDecimal.TEN, null,
+                        null, null, null, null, null, null, null)),
+                null, null, null);
 
         assertThatThrownBy(() -> facturaService.crear(request))
                 .isInstanceOf(CondicionVentaInvalidaException.class);
@@ -314,7 +327,10 @@ class FacturaServiceTest {
 
         CrearFacturaRequest request = new CrearFacturaRequest(
                 clienteB.getId(), null, null, null, null, null,
-                List.of(new LineaFacturaItemRequest(producto.getId(), BigDecimal.ONE, BigDecimal.TEN, exoneracionDeA.getId())));
+                null, null, null,
+                List.of(new LineaFacturaItemRequest(producto.getId(), BigDecimal.ONE, BigDecimal.TEN, exoneracionDeA.getId(),
+                        null, null, null, null, null, null, null)),
+                null, null, null);
 
         assertThatThrownBy(() -> facturaService.crear(request))
                 .isInstanceOf(ExoneracionNoPerteneceAlClienteException.class);
@@ -329,7 +345,10 @@ class FacturaServiceTest {
 
         CrearFacturaRequest request = new CrearFacturaRequest(
                 cliente.getId(), null, null, null, null, null,
-                List.of(new LineaFacturaItemRequest(producto.getId(), BigDecimal.ONE, BigDecimal.TEN, exoneracionExcluida.getId())));
+                null, null, null,
+                List.of(new LineaFacturaItemRequest(producto.getId(), BigDecimal.ONE, BigDecimal.TEN, exoneracionExcluida.getId(),
+                        null, null, null, null, null, null, null)),
+                null, null, null);
 
         assertThatThrownBy(() -> facturaService.crear(request))
                 .isInstanceOf(ExoneracionNoAplicableAFacturaElectronicaException.class);
@@ -344,7 +363,10 @@ class FacturaServiceTest {
 
         CrearFacturaRequest request = new CrearFacturaRequest(
                 cliente.getId(), null, null, null, null, null,
-                List.of(new LineaFacturaItemRequest(producto.getId(), BigDecimal.ONE, BigDecimal.TEN, exoneracionVencida.getId())));
+                null, null, null,
+                List.of(new LineaFacturaItemRequest(producto.getId(), BigDecimal.ONE, BigDecimal.TEN, exoneracionVencida.getId(),
+                        null, null, null, null, null, null, null)),
+                null, null, null);
 
         assertThatThrownBy(() -> facturaService.crear(request))
                 .isInstanceOf(ExoneracionNoVigenteException.class);
@@ -359,7 +381,10 @@ class FacturaServiceTest {
 
         CrearFacturaRequest request = new CrearFacturaRequest(
                 cliente.getId(), null, null, null, null, null,
-                List.of(new LineaFacturaItemRequest(producto.getId(), BigDecimal.ONE, BigDecimal.TEN, exoneracionInactiva.getId())));
+                null, null, null,
+                List.of(new LineaFacturaItemRequest(producto.getId(), BigDecimal.ONE, BigDecimal.TEN, exoneracionInactiva.getId(),
+                        null, null, null, null, null, null, null)),
+                null, null, null);
 
         assertThatThrownBy(() -> facturaService.crear(request))
                 .isInstanceOf(ExoneracionNoVigenteException.class);
@@ -372,7 +397,10 @@ class FacturaServiceTest {
 
         CrearFacturaRequest request = new CrearFacturaRequest(
                 cliente.getId(), null, null, null, null, null,
-                List.of(new LineaFacturaItemRequest(producto.getId(), BigDecimal.ONE, BigDecimal.TEN, UUID.randomUUID())));
+                null, null, null,
+                List.of(new LineaFacturaItemRequest(producto.getId(), BigDecimal.ONE, BigDecimal.TEN, UUID.randomUUID(),
+                        null, null, null, null, null, null, null)),
+                null, null, null);
 
         assertThatThrownBy(() -> facturaService.crear(request))
                 .isInstanceOf(ClienteExoneracionNoEncontradaException.class);
@@ -397,10 +425,16 @@ class FacturaServiceTest {
 
         CrearFacturaRequest requestHilo1 = new CrearFacturaRequest(
                 clienteHilo1.getId(), null, null, null, null, null,
-                List.of(new LineaFacturaItemRequest(productoHilo1.getId(), BigDecimal.ONE, new BigDecimal("100.00000"), null)));
+                null, null, null,
+                List.of(new LineaFacturaItemRequest(productoHilo1.getId(), BigDecimal.ONE, new BigDecimal("100.00000"), null,
+                        null, null, null, null, null, null, null)),
+                null, null, null);
         CrearFacturaRequest requestHilo2 = new CrearFacturaRequest(
                 clienteHilo2.getId(), null, null, null, null, null,
-                List.of(new LineaFacturaItemRequest(productoHilo2.getId(), BigDecimal.ONE, new BigDecimal("200.00000"), null)));
+                null, null, null,
+                List.of(new LineaFacturaItemRequest(productoHilo2.getId(), BigDecimal.ONE, new BigDecimal("200.00000"), null,
+                        null, null, null, null, null, null, null)),
+                null, null, null);
 
         ExecutorService executor = Executors.newFixedThreadPool(2);
         try {
@@ -473,9 +507,13 @@ class FacturaServiceTest {
 
         CrearFacturaRequest requestQueFalla = new CrearFacturaRequest(
                 cliente.getId(), null, null, null, null, null,
+                null, null, null,
                 List.of(
-                        new LineaFacturaItemRequest(productoValido.getId(), BigDecimal.ONE, BigDecimal.TEN, null),
-                        new LineaFacturaItemRequest(UUID.randomUUID(), BigDecimal.ONE, BigDecimal.TEN, null)));
+                        new LineaFacturaItemRequest(productoValido.getId(), BigDecimal.ONE, BigDecimal.TEN, null,
+                                null, null, null, null, null, null, null),
+                        new LineaFacturaItemRequest(UUID.randomUUID(), BigDecimal.ONE, BigDecimal.TEN, null,
+                                null, null, null, null, null, null, null)),
+                null, null, null);
 
         assertThatThrownBy(() -> facturaService.crear(requestQueFalla))
                 .isInstanceOf(ProductoNoEncontradoException.class);
@@ -492,7 +530,10 @@ class FacturaServiceTest {
 
         CrearFacturaRequest requestExitosa = new CrearFacturaRequest(
                 cliente.getId(), null, null, null, null, null,
-                List.of(new LineaFacturaItemRequest(productoValido.getId(), BigDecimal.ONE, BigDecimal.TEN, null)));
+                null, null, null,
+                List.of(new LineaFacturaItemRequest(productoValido.getId(), BigDecimal.ONE, BigDecimal.TEN, null,
+                        null, null, null, null, null, null, null)),
+                null, null, null);
         FacturaResponse respuestaExitosa = facturaService.crear(requestExitosa);
 
         long numeroReclamado = Long.parseLong(respuestaExitosa.consecutivo().substring(10));
@@ -535,7 +576,10 @@ class FacturaServiceTest {
 
         CrearFacturaRequest request = new CrearFacturaRequest(
                 cliente.getId(), null, null, null, null, null,
-                List.of(new LineaFacturaItemRequest(producto.getId(), BigDecimal.ONE, BigDecimal.TEN, null)));
+                null, null, null,
+                List.of(new LineaFacturaItemRequest(producto.getId(), BigDecimal.ONE, BigDecimal.TEN, null,
+                        null, null, null, null, null, null, null)),
+                null, null, null);
 
         assertThatThrownBy(() -> facturaService.crear(request))
                 .isInstanceOf(NumberFormatException.class);

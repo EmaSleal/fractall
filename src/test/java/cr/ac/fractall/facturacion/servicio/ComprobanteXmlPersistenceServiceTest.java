@@ -327,6 +327,7 @@ class ComprobanteXmlPersistenceServiceTest {
         factura.setCreadoPor(usuarioId);
         factura.setCreateDate(LocalDateTime.now());
         factura.setUpdateDate(LocalDateTime.now());
+        factura.setTotalIvaDevuelto(BigDecimal.ZERO);
         factura = facturaRepository.saveAndFlush(factura);
 
         LineaFactura linea = new LineaFactura();
@@ -339,6 +340,8 @@ class ComprobanteXmlPersistenceServiceTest {
         linea.setCodigoCabysAplicado(producto.getCodigoCabys());
         linea.setGravadoAplicado(producto.isGravado());
         linea.setPorcentajeImpuestoAplicado(producto.getPorcentajeImpuesto());
+        linea.setTipoTransaccion("01");
+        linea.setIvaCobradoFabrica(BigDecimal.ZERO);
         lineaFacturaRepository.saveAndFlush(linea);
 
         String consecutivo = String.format(

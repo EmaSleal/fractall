@@ -7,6 +7,9 @@ import java.util.UUID;
 
 import cr.ac.fractall.facturacion.modelo.ComprobanteElectronico;
 import cr.ac.fractall.facturacion.modelo.Factura;
+import cr.ac.fractall.facturacion.modelo.FacturaInformacionReferencia;
+import cr.ac.fractall.facturacion.modelo.FacturaMedioPago;
+import cr.ac.fractall.facturacion.modelo.FacturaOtrosCargos;
 
 public record FacturaResponse(
         UUID id,
@@ -21,10 +24,26 @@ public record FacturaResponse(
         String consecutivo,
         String claveNumerica,
         String estado,
-        LocalDateTime fechaEmision) {
+        LocalDateTime fechaEmision,
+        String condicionVentaOtros,
+        String codigoActividadReceptor,
+        BigDecimal totalIvaDevuelto,
+        List<OtrosCargoResponse> otrosCargos,
+        List<ReferenciaResponse> informacionReferencia,
+        List<MedioPagoResponse> mediosPago) {
 
     public static FacturaResponse desde(
             Factura factura, ComprobanteElectronico comprobante, List<LineaFacturaResponse> lineas) {
+        return desde(factura, comprobante, lineas, List.of(), List.of(), List.of());
+    }
+
+    public static FacturaResponse desde(
+            Factura factura,
+            ComprobanteElectronico comprobante,
+            List<LineaFacturaResponse> lineas,
+            List<FacturaOtrosCargos> otrosCargosEntidades,
+            List<FacturaInformacionReferencia> referenciasEntidades,
+            List<FacturaMedioPago> mediosPagoEntidades) {
         return new FacturaResponse(
                 factura.getId(),
                 factura.getClienteId(),
@@ -38,6 +57,12 @@ public record FacturaResponse(
                 comprobante.getConsecutivo(),
                 comprobante.getClaveNumerica(),
                 comprobante.getEstado(),
-                comprobante.getFechaEmision());
+                comprobante.getFechaEmision(),
+                factura.getCondicionVentaOtros(),
+                factura.getCodigoActividadReceptor(),
+                factura.getTotalIvaDevuelto(),
+                otrosCargosEntidades.stream().map(OtrosCargoResponse::desde).toList(),
+                referenciasEntidades.stream().map(ReferenciaResponse::desde).toList(),
+                mediosPagoEntidades.stream().map(MedioPagoResponse::desde).toList());
     }
 }
