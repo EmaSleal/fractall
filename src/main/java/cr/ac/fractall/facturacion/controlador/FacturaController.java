@@ -5,6 +5,7 @@ import java.util.UUID;
 
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.format.annotation.DateTimeFormat.ISO;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -29,6 +30,7 @@ import cr.ac.fractall.catalogo.servicio.ProductoNoEncontradoException;
 import cr.ac.fractall.facturacion.dto.CrearFacturaRequest;
 import cr.ac.fractall.facturacion.dto.FacturaResponse;
 import cr.ac.fractall.facturacion.servicio.CondicionVentaInvalidaException;
+import cr.ac.fractall.facturacion.pdf.FacturaPdfService;
 import cr.ac.fractall.facturacion.servicio.ComprobanteXmlPersistenceService;
 import cr.ac.fractall.facturacion.servicio.ContadorConsecutivoNoEncontradoException;
 import cr.ac.fractall.facturacion.servicio.CredencialHaciendaNoEncontradaException;
@@ -61,11 +63,57 @@ public class FacturaController {
 
     private final FacturaService facturaService;
     private final ComprobanteXmlPersistenceService comprobanteXmlPersistenceService;
+    private final FacturaPdfService facturaPdfService;
 
     public FacturaController(
-            FacturaService facturaService, ComprobanteXmlPersistenceService comprobanteXmlPersistenceService) {
+            FacturaService facturaService,
+            ComprobanteXmlPersistenceService comprobanteXmlPersistenceService,
+            FacturaPdfService facturaPdfService) {
         this.facturaService = facturaService;
         this.comprobanteXmlPersistenceService = comprobanteXmlPersistenceService;
+        this.facturaPdfService = facturaPdfService;
+    }
+
+    /**
+     * Genera el PDF de la factura indicada al vuelo y lo devuelve como {@code application/pdf}.
+     * No persiste el PDF ({@code pdf_referencia} permanece null).
+     * {@code FacturaNoEncontradaException} se propaga al {@code GlobalExceptionHandler} → 404.
+     */
+    @GetMapping(path = "/{id}/pdf", produces = MediaType.APPLICATION_PDF_VALUE)
+    public ResponseEntity<byte[]> descargarPdf(@PathVariable UUID id) {
+        var doc = facturaPdfService.generarPdfPorFacturaId(id);
+        return ResponseEntity.ok()
+                .contentType(MediaType.APPLICATION_PDF)
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + doc.claveNumerica() + ".pdf\"")
+                .body(doc.contenido());
+    }
+
+    /**
+     * Descarga el XML de factura firmado (XAdES-BES) desde OCI para la factura indicada.
+     * {@code FacturaNoEncontradaException} → 404; {@code DocumentoNoDisponibleException} → 404
+     * cuando la referencia OCI aún es null (estado anterior a FIRMADO).
+     */
+    @GetMapping(path = "/{id}/xml/factura", produces = MediaType.APPLICATION_XML_VALUE)
+    public ResponseEntity<String> descargarXmlFactura(@PathVariable UUID id) {
+        var doc = comprobanteXmlPersistenceService.obtenerXmlFactura(id);
+        return ResponseEntity.ok()
+                .contentType(MediaType.APPLICATION_XML)
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + doc.claveNumerica() + "_factura.xml\"")
+                .body(doc.contenido());
+    }
+
+    /**
+     * Descarga el XML de respuesta de Hacienda desde OCI para la factura indicada.
+     * {@code FacturaNoEncontradaException} → 404; {@code DocumentoNoDisponibleException} → 404
+     * cuando la referencia OCI aún es null (Hacienda no ha respondido — estado pre-ENVIADO).
+     */
+    @GetMapping(path = "/{id}/xml/respuesta", produces = MediaType.APPLICATION_XML_VALUE)
+    public ResponseEntity<String> descargarXmlRespuesta(@PathVariable UUID id) {
+        var doc = comprobanteXmlPersistenceService.obtenerXmlRespuestaPorFactura(id);
+        return ResponseEntity.ok()
+                .contentType(MediaType.APPLICATION_XML)
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + doc.claveNumerica() + "_respuesta.xml\"")
+                .body(doc.contenido());
     }
 
     @GetMapping(path = "/diagnostico/{comprobanteId}/xml-respuesta", produces = MediaType.TEXT_XML_VALUE)

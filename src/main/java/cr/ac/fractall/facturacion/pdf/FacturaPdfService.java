@@ -26,9 +26,11 @@ import cr.ac.fractall.facturacion.modelo.ComprobanteElectronico;
 import cr.ac.fractall.facturacion.modelo.Factura;
 import cr.ac.fractall.facturacion.modelo.LineaFactura;
 import cr.ac.fractall.facturacion.repositorio.ComprobanteElectronicoRepository;
+import cr.ac.fractall.facturacion.dto.DocumentoDescargable;
 import cr.ac.fractall.facturacion.repositorio.FacturaRepository;
 import cr.ac.fractall.facturacion.repositorio.LineaFacturaRepository;
 import cr.ac.fractall.facturacion.servicio.ComprobanteElectronicoNoEncontradoException;
+import cr.ac.fractall.facturacion.servicio.FacturaNoEncontradaException;
 import lombok.extern.slf4j.Slf4j;
 
 /**
@@ -77,6 +79,26 @@ public class FacturaPdfService {
         this.clienteRepository = clienteRepository;
         this.productoRepository = productoRepository;
         this.empresaRepository = empresaRepository;
+    }
+
+    /**
+     * Genera el PDF para la factura indicada por su {@code facturaId} y lo devuelve como
+     * {@code byte[]}.
+     *
+     * <p>Resuelve el {@link ComprobanteElectronico} vía {@code facturaId} (filtrado por tenant)
+     * y delega a {@link #generarPdf(UUID)} con el {@code comprobanteId} resuelto. No lanza
+     * {@link cr.ac.fractall.facturacion.servicio.DocumentoNoDisponibleException}: el PDF se
+     * genera al vuelo y no requiere ninguna referencia OCI preexistente.
+     *
+     * @param facturaId id de la {@link cr.ac.fractall.facturacion.modelo.Factura} del tenant actual
+     * @return PDF en bytes — siempre no vacío
+     * @throws FacturaNoEncontradaException si no existe comprobante para esa factura en el tenant
+     * @throws IllegalStateException si alguna FK interna no resuelve entidad (bug de invariante)
+     */
+    public DocumentoDescargable<byte[]> generarPdfPorFacturaId(UUID facturaId) {
+        ComprobanteElectronico comprobante = comprobanteElectronicoRepository.findByFacturaId(facturaId)
+                .orElseThrow(() -> new FacturaNoEncontradaException(facturaId));
+        return new DocumentoDescargable<>(generarPdf(comprobante.getId()), comprobante.getClaveNumerica());
     }
 
     /**

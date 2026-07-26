@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -16,6 +17,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -641,6 +643,239 @@ class FacturaControllerTest {
         // Tenant B tries to access tenant A's factura — must get 404, not 200
         mockMvc.perform(get("/facturas/" + facturaIdA)
                         .header("Authorization", "Bearer " + ctxB.accessToken()))
+                .andExpect(status().isNotFound());
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // GET /facturas/{id}/pdf tests (FR-1, AC-1, AC-4, AC-8)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    @Test
+    void getPdfRetorna200ConPdfApplicationYContentDispositionCuandoFacturaExiste() throws Exception {
+        ContextoDePrueba ctx = crearContextoCompleto();
+        UUID facturaId = crearFactura(ctx);
+
+        byte[] cuerpo = mockMvc.perform(get("/facturas/" + facturaId + "/pdf")
+                        .header("Authorization", "Bearer " + ctx.accessToken()))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Content-Type", org.hamcrest.Matchers.containsString("application/pdf")))
+                .andExpect(header().string("Content-Disposition",
+                        org.hamcrest.Matchers.containsString("attachment")))
+                .andExpect(header().string("Content-Disposition",
+                        org.hamcrest.Matchers.containsString(".pdf")))
+                .andReturn().getResponse().getContentAsByteArray();
+
+        // %PDF magic bytes
+        assertThat(cuerpo).hasSizeGreaterThan(4);
+        assertThat(new String(cuerpo, 0, 4, StandardCharsets.ISO_8859_1)).isEqualTo("%PDF");
+    }
+
+    @Test
+    void getPdfConFacturaIdDesconocidoRetorna404() throws Exception {
+        ContextoDePrueba ctx = crearContextoCompleto();
+
+        mockMvc.perform(get("/facturas/" + UUID.randomUUID() + "/pdf")
+                        .header("Authorization", "Bearer " + ctx.accessToken()))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.mensaje").isString());
+    }
+
+    @Test
+    void getPdfDeOtroTenantRetorna404() throws Exception {
+        ContextoDePrueba ctxA = crearContextoCompleto();
+        ContextoDePrueba ctxB = crearContextoCompleto();
+        UUID facturaIdA = crearFactura(ctxA);
+
+        mockMvc.perform(get("/facturas/" + facturaIdA + "/pdf")
+                        .header("Authorization", "Bearer " + ctxB.accessToken()))
+                .andExpect(status().isNotFound());
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // GET /facturas/{id}/xml/factura tests (FR-2, AC-2, AC-4, AC-5, AC-8)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Happy path: the signed XML was encrypted and uploaded during crearFactura(). We capture
+     * the encrypted blob bytes passed to the mocked objectStorageService.subir() and replay
+     * them via objectStorageService.descargar() so the real Vault Transit + AES-GCM decryption
+     * chain works end-to-end.
+     */
+    @Test
+    void getXmlFacturaRetorna200ConXmlYContentDispositionCuandoXmlComprobanteDisponible() throws Exception {
+        ContextoDePrueba ctx = crearContextoCompleto();
+
+        AtomicReference<byte[]> blobCapturado = new AtomicReference<>();
+        AtomicReference<String> referenciaCapturada = new AtomicReference<>();
+        String refFija = "empresas/" + ctx.empresaId() + "/comprobantes/test-factura.xml.enc";
+
+        when(objectStorageService.subir(any(byte[].class), anyString())).thenAnswer(invocation -> {
+            byte[] bytes = invocation.getArgument(0);
+            blobCapturado.set(bytes.clone());
+            referenciaCapturada.set(refFija);
+            return refFija;
+        });
+
+        UUID facturaId = crearFactura(ctx);
+
+        // Now replay the encrypted blob on descargar so decryption succeeds
+        when(objectStorageService.descargar(refFija)).thenReturn(blobCapturado.get());
+
+        String cuerpo = mockMvc.perform(get("/facturas/" + facturaId + "/xml/factura")
+                        .header("Authorization", "Bearer " + ctx.accessToken()))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Content-Type", org.hamcrest.Matchers.containsString("application/xml")))
+                .andExpect(header().string("Content-Disposition",
+                        org.hamcrest.Matchers.containsString("attachment")))
+                .andExpect(header().string("Content-Disposition",
+                        org.hamcrest.Matchers.containsString("_factura.xml")))
+                .andReturn().getResponse().getContentAsString();
+
+        assertThat(cuerpo).isNotBlank();
+    }
+
+    @Test
+    void getXmlFacturaConFacturaIdDesconocidoRetorna404() throws Exception {
+        ContextoDePrueba ctx = crearContextoCompleto();
+
+        mockMvc.perform(get("/facturas/" + UUID.randomUUID() + "/xml/factura")
+                        .header("Authorization", "Bearer " + ctx.accessToken()))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.mensaje").isString());
+    }
+
+    @Test
+    void getXmlFacturaCuandoXmlComprobanteReferenciaEsNulaRetorna404() throws Exception {
+        // After crearFactura(), objectStorageService.subir() returns a reference and the comprobante
+        // gets xmlComprobanteReferencia set to a non-null value. To test the null-reference path,
+        // we must force it null again via the repository.
+        ContextoDePrueba ctx = crearContextoCompleto();
+
+        // Mock subir to return a fake reference so the comprobante is saved in FIRMADO state.
+        // Then we'll null it out in the DB to simulate a partial-failure window.
+        when(objectStorageService.subir(any(byte[].class), anyString())).thenReturn("fake-referencia");
+        UUID facturaId = crearFactura(ctx);
+
+        // Null out xmlComprobanteReferencia to simulate unavailable XML
+        TenantContext.set(ctx.empresaId());
+        try {
+            ComprobanteElectronico comprobante = comprobanteElectronicoRepository
+                    .findByFacturaId(facturaId).orElseThrow();
+            comprobante.setXmlComprobanteReferencia(null);
+            comprobanteElectronicoRepository.save(comprobante);
+        } finally {
+            TenantContext.clear();
+        }
+
+        mockMvc.perform(get("/facturas/" + facturaId + "/xml/factura")
+                        .header("Authorization", "Bearer " + ctx.accessToken()))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.mensaje").isString());
+    }
+
+    @Test
+    void getXmlFacturaDeOtroTenantRetorna404() throws Exception {
+        ContextoDePrueba ctxA = crearContextoCompleto();
+        ContextoDePrueba ctxB = crearContextoCompleto();
+        UUID facturaIdA = crearFactura(ctxA);
+
+        mockMvc.perform(get("/facturas/" + facturaIdA + "/xml/factura")
+                        .header("Authorization", "Bearer " + ctxB.accessToken()))
+                .andExpect(status().isNotFound());
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // GET /facturas/{id}/xml/respuesta tests (FR-3, AC-3, AC-4, AC-6, AC-7, AC-8)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    @Test
+    void getXmlRespuestaConRespuestaReferenciaDisponibleRetorna200ConXml() throws Exception {
+        ContextoDePrueba ctx = crearContextoCompleto();
+
+        // Capture the encrypted blob written to OCI during crearFactura (the signed XML blob).
+        // We will reuse the same blob for the response reference since both go through the same
+        // AES-GCM + Transit DEK format.
+        AtomicReference<byte[]> blobCapturado = new AtomicReference<>();
+        String refRespuesta = "empresas/" + ctx.empresaId() + "/comprobantes/test-respuesta.xml.enc";
+        when(objectStorageService.subir(any(byte[].class), anyString())).thenAnswer(invocation -> {
+            byte[] bytes = invocation.getArgument(0);
+            blobCapturado.set(bytes.clone());
+            return "empresas/" + ctx.empresaId() + "/comprobantes/test-factura.xml.enc";
+        });
+
+        UUID facturaId = crearFactura(ctx);
+
+        // Set xmlRespuestaReferencia to a non-null value (simulates Hacienda response received)
+        // and replicate the encrypted blob so descargar decryption succeeds.
+        TenantContext.set(ctx.empresaId());
+        try {
+            ComprobanteElectronico comprobante = comprobanteElectronicoRepository
+                    .findByFacturaId(facturaId).orElseThrow();
+            comprobante.setXmlRespuestaReferencia(refRespuesta);
+            comprobanteElectronicoRepository.save(comprobante);
+        } finally {
+            TenantContext.clear();
+        }
+
+        when(objectStorageService.descargar(refRespuesta)).thenReturn(blobCapturado.get());
+
+        String cuerpo = mockMvc.perform(get("/facturas/" + facturaId + "/xml/respuesta")
+                        .header("Authorization", "Bearer " + ctx.accessToken()))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Content-Type", org.hamcrest.Matchers.containsString("application/xml")))
+                .andExpect(header().string("Content-Disposition",
+                        org.hamcrest.Matchers.containsString("attachment")))
+                .andExpect(header().string("Content-Disposition",
+                        org.hamcrest.Matchers.containsString("_respuesta.xml")))
+                .andReturn().getResponse().getContentAsString();
+
+        assertThat(cuerpo).isNotBlank();
+    }
+
+    @Test
+    void getXmlRespuestaConFacturaIdDesconocidoRetorna404() throws Exception {
+        ContextoDePrueba ctx = crearContextoCompleto();
+
+        mockMvc.perform(get("/facturas/" + UUID.randomUUID() + "/xml/respuesta")
+                        .header("Authorization", "Bearer " + ctx.accessToken()))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.mensaje").isString());
+    }
+
+    @Test
+    void getXmlRespuestaCuandoXmlRespuestaReferenciaEsNulaRetorna404() throws Exception {
+        // xmlRespuestaReferencia is null by default (Hacienda has not responded yet — pre-ENVIADO).
+        ContextoDePrueba ctx = crearContextoCompleto();
+        UUID facturaId = crearFactura(ctx);
+
+        mockMvc.perform(get("/facturas/" + facturaId + "/xml/respuesta")
+                        .header("Authorization", "Bearer " + ctx.accessToken()))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.mensaje").isString());
+    }
+
+    @Test
+    void getXmlRespuestaDeOtroTenantRetorna404() throws Exception {
+        ContextoDePrueba ctxA = crearContextoCompleto();
+        ContextoDePrueba ctxB = crearContextoCompleto();
+        UUID facturaIdA = crearFactura(ctxA);
+
+        mockMvc.perform(get("/facturas/" + facturaIdA + "/xml/respuesta")
+                        .header("Authorization", "Bearer " + ctxB.accessToken()))
+                .andExpect(status().isNotFound());
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // AC-7 — Diagnostico endpoint regression guard (NFR-3)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    @Test
+    void getDiagnosticoXmlRespuestaConComprobanteDesconocidoRetorna404SinRomper() throws Exception {
+        ContextoDePrueba ctx = crearContextoCompleto();
+
+        // Unknown comprobanteId → ComprobanteElectronicoNoEncontradoException → 404 via existing handler
+        mockMvc.perform(get("/facturas/diagnostico/" + UUID.randomUUID() + "/xml-respuesta")
+                        .header("Authorization", "Bearer " + ctx.accessToken()))
                 .andExpect(status().isNotFound());
     }
 }

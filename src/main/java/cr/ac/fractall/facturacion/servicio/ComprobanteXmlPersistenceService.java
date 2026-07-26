@@ -5,6 +5,7 @@ import java.util.UUID;
 
 import org.springframework.stereotype.Service;
 
+import cr.ac.fractall.facturacion.dto.DocumentoDescargable;
 import cr.ac.fractall.facturacion.modelo.ComprobanteElectronico;
 import cr.ac.fractall.facturacion.repositorio.ComprobanteElectronicoRepository;
 import lombok.extern.slf4j.Slf4j;
@@ -167,6 +168,54 @@ public class ComprobanteXmlPersistenceService {
         byte[] xmlBytes = comprobanteXmlCifradoDescargador.descargarYDescifrar(
                 comprobante.getXmlRespuestaReferencia());
         return new String(xmlBytes, StandardCharsets.UTF_8);
+    }
+
+    /**
+     * Descarga y descifra el XML de factura firmado (XAdES-BES) para la factura indicada.
+     *
+     * <p>Resuelve el comprobante vía {@code facturaId} con el filtro de tenant activo.
+     * Si {@code xmlComprobanteReferencia} es {@code null} (e.g. estado anterior a FIRMADO o
+     * ventana de fallo parcial), lanza {@link DocumentoNoDisponibleException} → 404.
+     *
+     * @param facturaId id de la {@link cr.ac.fractall.facturacion.modelo.Factura} del tenant actual
+     * @return XML firmado en texto claro (UTF-8)
+     * @throws FacturaNoEncontradaException si no existe comprobante para esa factura en el tenant
+     * @throws DocumentoNoDisponibleException si la referencia OCI del XML firmado es null
+     */
+    public DocumentoDescargable<String> obtenerXmlFactura(UUID facturaId) {
+        ComprobanteElectronico comprobante = comprobanteElectronicoRepository.findByFacturaId(facturaId)
+                .orElseThrow(() -> new FacturaNoEncontradaException(facturaId));
+        if (comprobante.getXmlComprobanteReferencia() == null) {
+            throw new DocumentoNoDisponibleException(facturaId, "XML de factura");
+        }
+        byte[] xmlBytes = comprobanteXmlCifradoDescargador.descargarYDescifrar(
+                comprobante.getXmlComprobanteReferencia());
+        return new DocumentoDescargable<>(new String(xmlBytes, StandardCharsets.UTF_8), comprobante.getClaveNumerica());
+    }
+
+    /**
+     * Descarga y descifra el XML de respuesta de Hacienda para la factura indicada.
+     *
+     * <p>Resuelve el comprobante vía {@code facturaId} (no comprobanteId) con el filtro de tenant
+     * activo. Método distinto de {@link #obtenerXmlRespuesta(UUID)} que toma un
+     * {@code comprobanteId} -- ADR-1: evitar un overload ambiguo de un único {@code UUID}.
+     * Si {@code xmlRespuestaReferencia} es {@code null} (Hacienda aún no respondió, estado
+     * pre-ENVIADO), lanza {@link DocumentoNoDisponibleException} → 404.
+     *
+     * @param facturaId id de la {@link cr.ac.fractall.facturacion.modelo.Factura} del tenant actual
+     * @return XML de respuesta de Hacienda en texto claro (UTF-8)
+     * @throws FacturaNoEncontradaException si no existe comprobante para esa factura en el tenant
+     * @throws DocumentoNoDisponibleException si la referencia OCI del XML de respuesta es null
+     */
+    public DocumentoDescargable<String> obtenerXmlRespuestaPorFactura(UUID facturaId) {
+        ComprobanteElectronico comprobante = comprobanteElectronicoRepository.findByFacturaId(facturaId)
+                .orElseThrow(() -> new FacturaNoEncontradaException(facturaId));
+        if (comprobante.getXmlRespuestaReferencia() == null) {
+            throw new DocumentoNoDisponibleException(facturaId, "XML de respuesta de Hacienda");
+        }
+        byte[] xmlBytes = comprobanteXmlCifradoDescargador.descargarYDescifrar(
+                comprobante.getXmlRespuestaReferencia());
+        return new DocumentoDescargable<>(new String(xmlBytes, StandardCharsets.UTF_8), comprobante.getClaveNumerica());
     }
 
     private static String construirRutaObjeto(UUID empresaId, String claveNumerica) {
