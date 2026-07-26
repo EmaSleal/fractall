@@ -1,6 +1,7 @@
 package cr.ac.fractall.catalogo.servicio;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.UUID;
 import java.util.function.Consumer;
 
@@ -13,6 +14,7 @@ import cr.ac.fractall.catalogo.modelo.TipoIdentificacion;
 import cr.ac.fractall.catalogo.dto.ActualizarClienteRequest;
 import cr.ac.fractall.catalogo.dto.ClienteResponse;
 import cr.ac.fractall.catalogo.dto.CrearClienteRequest;
+import cr.ac.fractall.shared.PaginaResponse;
 
 /**
  * Alta/edición de {@code cliente} con validación de identificación por tipo y del bloque
@@ -103,6 +105,22 @@ public class ClienteService {
 
         clienteRepository.saveAndFlush(cliente);
         return ClienteResponse.desde(cliente);
+    }
+
+    @Transactional(readOnly = true)
+    public PaginaResponse<ClienteResponse> listar(String q, UUID cursor, int limit) {
+        List<Cliente> filas = clienteRepository.buscar(q, cursor, limit + 1);
+        boolean hayMas = filas.size() > limit;
+        List<Cliente> pagina = hayMas ? filas.subList(0, limit) : filas;
+        UUID next = hayMas ? pagina.get(pagina.size() - 1).getId() : null;
+        return new PaginaResponse<>(pagina.stream().map(ClienteResponse::desde).toList(), next);
+    }
+
+    @Transactional(readOnly = true)
+    public ClienteResponse obtener(UUID id) {
+        return clienteRepository.findById(id)
+                .map(ClienteResponse::desde)
+                .orElseThrow(() -> new ClienteNoEncontradoException(id));
     }
 
     private void validarIdentificacion(String tipoIdentificacion, String numeroIdentificacion) {

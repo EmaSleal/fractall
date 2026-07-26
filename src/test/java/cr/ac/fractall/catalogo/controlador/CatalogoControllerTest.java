@@ -212,10 +212,30 @@ class CatalogoControllerTest {
                         .build());
     }
 
+    /**
+     * Estabiliza {@code buscarCabysPorCodigo} para poder crear productos sin una llamada real a
+     * la API de Hacienda. Los 3 tests de CABYS que ya existían usan {@code simularCabysValido}
+     * que solo stubea {@code buscarCabys}, motivo por el que esos 3 fallaban antes de esta fase.
+     * Los nuevos tests de listado usan esta versión completa que sí cubre el camino de creación.
+     */
+    private void simularCabysPorCodigoValido(String codigo, String descripcion, int impuesto) {
+        CabysBusquedaDTO respuesta = CabysBusquedaDTO.builder()
+                .exitosa(true)
+                .total(1)
+                .cantidad(1)
+                .cabys(List.of(CabysDTO.builder()
+                        .codigo(codigo)
+                        .descripcion(descripcion)
+                        .impuesto(impuesto)
+                        .build()))
+                .build();
+        when(haciendaApiService.buscarCabysPorCodigo(codigo)).thenReturn(respuesta);
+    }
+
     @Test
     void postProductoConCabysValidoRetorna201ConCamposDerivados() throws Exception {
         String accessToken = crearUsuarioEmpresaYToken();
-        simularCabysValido("2132100000100", "Jugo de tomate concentrado", 13);
+        simularCabysPorCodigoValido("2132100000100", "Jugo de tomate concentrado", 13);
 
         CrearProductoRequest request = new CrearProductoRequest(
                 "PROD-HTTP-001", "Jugo de tomate", "2132100000100", null, new java.math.BigDecimal("1500"), null);
@@ -233,7 +253,7 @@ class CatalogoControllerTest {
     @Test
     void postProductoConCabysSinCoincidenciaRetorna400() throws Exception {
         String accessToken = crearUsuarioEmpresaYToken();
-        when(haciendaApiService.buscarCabys(anyString(), anyInt())).thenReturn(
+        when(haciendaApiService.buscarCabysPorCodigo(anyString())).thenReturn(
                 CabysBusquedaDTO.builder().exitosa(true).total(0).cantidad(0).cabys(List.of()).build());
 
         CrearProductoRequest request = new CrearProductoRequest(
@@ -249,7 +269,7 @@ class CatalogoControllerTest {
     @Test
     void postProductoCuandoLaLlamadaAHaciendaFallaRetorna503() throws Exception {
         String accessToken = crearUsuarioEmpresaYToken();
-        when(haciendaApiService.buscarCabys(anyString(), anyInt())).thenReturn(
+        when(haciendaApiService.buscarCabysPorCodigo(anyString())).thenReturn(
                 CabysBusquedaDTO.builder().exitosa(false).mensajeError("Timeout").build());
 
         CrearProductoRequest request = new CrearProductoRequest(
@@ -425,6 +445,164 @@ class CatalogoControllerTest {
                         .header("Authorization", "Bearer " + accessTokenTenantB)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(crearExoneracion)))
+                .andExpect(status().isNotFound());
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // GET /catalogo/productos tests (Tasks 4.1–4.4)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    @Test
+    void getProductosRetorna200ConItemsActivosDelTenantYNextCursorNullCuandoHayMenosItemsQueLimit() throws Exception {
+        String accessToken = crearUsuarioEmpresaYToken();
+        simularCabysPorCodigoValido("2132100000100", "Jugo de tomate concentrado", 13);
+
+        // Create 2 active productos for this tenant.
+        for (int i = 0; i < 2; i++) {
+            CrearProductoRequest req = new CrearProductoRequest(
+                    "LISTA-ACT-" + i + "-" + UUID.randomUUID(), "Producto activo " + i, "2132100000100",
+                    null, new java.math.BigDecimal("500"), null);
+            mockMvc.perform(post("/catalogo/productos")
+                            .header("Authorization", "Bearer " + accessToken)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(req)))
+                    .andExpect(status().isCreated());
+        }
+
+        mockMvc.perform(get("/catalogo/productos")
+                        .header("Authorization", "Bearer " + accessToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items").isArray())
+                .andExpect(jsonPath("$.items.length()").value(2))
+                .andExpect(jsonPath("$.nextCursor").doesNotExist());
+    }
+
+    @Test
+    void getProductosConActivoFalseRetornaProductosInactivos() throws Exception {
+        String accessToken = crearUsuarioEmpresaYToken();
+        simularCabysPorCodigoValido("2132100000100", "Jugo de tomate concentrado", 13);
+
+        // Create 1 inactive producto.
+        CrearProductoRequest req = new CrearProductoRequest(
+                "LISTA-INACT-" + UUID.randomUUID(), "Producto inactivo", "2132100000100",
+                null, new java.math.BigDecimal("500"), false);
+        mockMvc.perform(post("/catalogo/productos")
+                        .header("Authorization", "Bearer " + accessToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isCreated());
+
+        mockMvc.perform(get("/catalogo/productos")
+                        .param("activo", "false")
+                        .header("Authorization", "Bearer " + accessToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items").isArray())
+                .andExpect(jsonPath("$.items[0].activo").value(false));
+    }
+
+    @Test
+    void getProductosConLimitMayorA100Retorna400() throws Exception {
+        String accessToken = crearUsuarioEmpresaYToken();
+
+        mockMvc.perform(get("/catalogo/productos")
+                        .param("limit", "201")
+                        .header("Authorization", "Bearer " + accessToken))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void getProductoPorIdRetorna200CuandoExisteYRetorna404CuandoNoExiste() throws Exception {
+        String accessToken = crearUsuarioEmpresaYToken();
+        simularCabysPorCodigoValido("2132100000100", "Jugo de tomate concentrado", 13);
+
+        CrearProductoRequest req = new CrearProductoRequest(
+                "GET-BY-ID-" + UUID.randomUUID(), "Producto para buscar", "2132100000100",
+                null, new java.math.BigDecimal("999"), null);
+        String cuerpo = mockMvc.perform(post("/catalogo/productos")
+                        .header("Authorization", "Bearer " + accessToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        UUID idProducto = UUID.fromString(objectMapper.readTree(cuerpo).get("id").asText());
+
+        // GET by existing id → 200
+        mockMvc.perform(get("/catalogo/productos/" + idProducto)
+                        .header("Authorization", "Bearer " + accessToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(idProducto.toString()));
+
+        // GET by unknown id → 404
+        mockMvc.perform(get("/catalogo/productos/" + UUID.randomUUID())
+                        .header("Authorization", "Bearer " + accessToken))
+                .andExpect(status().isNotFound());
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // GET /catalogo/clientes tests (Tasks 4.5–4.7)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    @Test
+    void getClientesRetorna200ConPaginaResponseYConFiltroQCaseInsensitive() throws Exception {
+        String accessToken = crearUsuarioEmpresaYToken();
+
+        // Create 2 clients: one matching, one not.
+        CrearClienteRequest empresa = new CrearClienteRequest(
+                "EMPRESA TICO S.A.", "02", "3102" + (int)(Math.random() * 900000 + 100000),
+                null, null, null, null, null, null, null, null);
+        CrearClienteRequest otro = new CrearClienteRequest(
+                "Otro Corp", "01", "1" + String.format("%08d", (int)(Math.random() * 90000000 + 10000000)),
+                null, null, null, null, null, null, null, null);
+        mockMvc.perform(post("/catalogo/clientes")
+                        .header("Authorization", "Bearer " + accessToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(empresa)))
+                .andExpect(status().isCreated());
+        mockMvc.perform(post("/catalogo/clientes")
+                        .header("Authorization", "Bearer " + accessToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(otro)))
+                .andExpect(status().isCreated());
+
+        // List all — should return at least 2 items
+        mockMvc.perform(get("/catalogo/clientes")
+                        .header("Authorization", "Bearer " + accessToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items").isArray());
+
+        // Filter q=tico (lowercase) should match "EMPRESA TICO S.A." (uppercase nombre)
+        mockMvc.perform(get("/catalogo/clientes")
+                        .param("q", "tico")
+                        .header("Authorization", "Bearer " + accessToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items").isArray())
+                .andExpect(jsonPath("$.items[0].nombre").value("EMPRESA TICO S.A."));
+    }
+
+    @Test
+    void getClientePorIdRetorna200CuandoExisteYRetorna404CuandoNoExiste() throws Exception {
+        String accessToken = crearUsuarioEmpresaYToken();
+
+        CrearClienteRequest req = new CrearClienteRequest(
+                "Cliente para buscar", "01", "1" + String.format("%08d", (int)(Math.random() * 90000000 + 10000000)),
+                null, null, null, null, null, null, null, null);
+        String cuerpo = mockMvc.perform(post("/catalogo/clientes")
+                        .header("Authorization", "Bearer " + accessToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        UUID idCliente = UUID.fromString(objectMapper.readTree(cuerpo).get("id").asText());
+
+        // GET by existing id → 200
+        mockMvc.perform(get("/catalogo/clientes/" + idCliente)
+                        .header("Authorization", "Bearer " + accessToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(idCliente.toString()));
+
+        // GET by unknown id → 404
+        mockMvc.perform(get("/catalogo/clientes/" + UUID.randomUUID())
+                        .header("Authorization", "Bearer " + accessToken))
                 .andExpect(status().isNotFound());
     }
 }

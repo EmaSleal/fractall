@@ -7,6 +7,7 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 import cr.ac.fractall.seguridad.dto.MensajeResponse;
+import jakarta.validation.ConstraintViolationException;
 
 /**
  * Backstop de defensa en profundidad para el patrón "check-then-act" de los pre-chequeos
@@ -28,5 +29,19 @@ public class GlobalExceptionHandler {
     public ResponseEntity<MensajeResponse> manejarViolacionDeIntegridad(DataIntegrityViolationException excepcion) {
         return ResponseEntity.status(HttpStatus.CONFLICT)
                 .body(new MensajeResponse("El recurso ya existe o viola una restricción de unicidad."));
+    }
+
+    /**
+     * Convierte {@link ConstraintViolationException} (lanzada por Bean Validation cuando se violan
+     * restricciones en {@code @RequestParam} de un controlador anotado con {@code @Validated})
+     * en una respuesta 400 con mensaje legible. Sin este handler, el error escalaría como 500.
+     */
+    @ExceptionHandler(ConstraintViolationException.class)
+    public ResponseEntity<MensajeResponse> manejarViolacionDeRestriccion(ConstraintViolationException excepcion) {
+        String mensaje = excepcion.getConstraintViolations().stream()
+                .map(v -> v.getPropertyPath() + ": " + v.getMessage())
+                .reduce((a, b) -> a + "; " + b)
+                .orElse(excepcion.getMessage());
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(new MensajeResponse(mensaje));
     }
 }

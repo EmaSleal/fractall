@@ -1,9 +1,12 @@
 package cr.ac.fractall.catalogo.repositorio;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 import cr.ac.fractall.catalogo.modelo.Producto;
 
@@ -17,4 +20,16 @@ import cr.ac.fractall.catalogo.modelo.Producto;
 public interface ProductoRepository extends JpaRepository<Producto, UUID> {
 
     Optional<Producto> findByCodigo(String codigo);
+
+    @Query("""
+            SELECT p FROM Producto p
+            WHERE (:activo IS NULL OR p.activo = :activo)
+              AND (:cursor IS NULL OR p.id > :cursor)
+            ORDER BY p.id ASC
+            LIMIT :limit
+            """)
+    List<Producto> buscar(
+            @Param("activo") Boolean activo,
+            @Param("cursor") UUID cursor,
+            @Param("limit") int limit);
 }

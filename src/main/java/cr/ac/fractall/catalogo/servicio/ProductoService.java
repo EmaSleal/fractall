@@ -3,6 +3,7 @@ package cr.ac.fractall.catalogo.servicio;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.UUID;
 import java.util.function.Consumer;
 
 import org.springframework.stereotype.Service;
@@ -16,8 +17,7 @@ import cr.ac.fractall.catalogo.dto.ProductoResponse;
 import cr.ac.fractall.hacienda.servicio.HaciendaApiService;
 import cr.ac.fractall.hacienda.dto.CabysBusquedaDTO;
 import cr.ac.fractall.hacienda.dto.CabysDTO;
-
-import java.util.UUID;
+import cr.ac.fractall.shared.PaginaResponse;
 
 /**
  * Alta/edición de {@code producto} con validación de CABYS contra la API de Hacienda (Fase 6,
@@ -102,6 +102,22 @@ public class ProductoService {
 
         productoRepository.saveAndFlush(producto);
         return ProductoResponse.desde(producto);
+    }
+
+    @Transactional(readOnly = true)
+    public PaginaResponse<ProductoResponse> listar(Boolean activo, UUID cursor, int limit) {
+        List<Producto> filas = productoRepository.buscar(activo, cursor, limit + 1);
+        boolean hayMas = filas.size() > limit;
+        List<Producto> pagina = hayMas ? filas.subList(0, limit) : filas;
+        UUID next = hayMas ? pagina.get(pagina.size() - 1).getId() : null;
+        return new PaginaResponse<>(pagina.stream().map(ProductoResponse::desde).toList(), next);
+    }
+
+    @Transactional(readOnly = true)
+    public ProductoResponse obtener(UUID id) {
+        return productoRepository.findById(id)
+                .map(ProductoResponse::desde)
+                .orElseThrow(() -> new ProductoNoEncontradoException(id));
     }
 
     /**

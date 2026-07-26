@@ -4,14 +4,18 @@ import java.util.UUID;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.validation.annotation.Validated;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import cr.ac.fractall.catalogo.dto.ActualizarClienteRequest;
+import cr.ac.fractall.catalogo.dto.ClienteResponse;
 import cr.ac.fractall.catalogo.dto.CrearClienteRequest;
 import cr.ac.fractall.catalogo.servicio.ClienteDuplicadoException;
 import cr.ac.fractall.catalogo.servicio.ClienteNoEncontradoException;
@@ -19,13 +23,21 @@ import cr.ac.fractall.catalogo.servicio.ClienteService;
 import cr.ac.fractall.catalogo.servicio.IdentificacionInvalidaException;
 import cr.ac.fractall.catalogo.servicio.UbicacionInvalidaException;
 import cr.ac.fractall.seguridad.dto.MensajeResponse;
+import cr.ac.fractall.shared.PaginaResponse;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 
 /**
+ * {@code GET /catalogo/clientes}, {@code GET /catalogo/clientes/{id}},
  * {@code POST /catalogo/clientes} y {@code PATCH /catalogo/clientes/{id}} (Fase 6, sección 4.11
  * de {@code arquitectura-facturacion-electronica-cr.md}). Mismo patrón de resolución de
  * {@code empresaId} vía {@code TenantContext} que {@code ProductoController} -- ver su javadoc.
+ *
+ * <p>{@code @Validated} a nivel de clase es necesario para que las restricciones
+ * {@code @Min}/{@code @Max} de los {@code @RequestParam} sean evaluadas por Bean Validation.
  */
+@Validated
 @RestController
 @RequestMapping("/catalogo/clientes")
 public class ClienteController {
@@ -34,6 +46,23 @@ public class ClienteController {
 
     public ClienteController(ClienteService clienteService) {
         this.clienteService = clienteService;
+    }
+
+    @GetMapping
+    public ResponseEntity<PaginaResponse<ClienteResponse>> listar(
+            @RequestParam(required = false) String q,
+            @RequestParam(required = false) UUID cursor,
+            @RequestParam(defaultValue = "20") @Min(1) @Max(100) int limit) {
+        return ResponseEntity.ok(clienteService.listar(q, cursor, limit));
+    }
+
+    @GetMapping("/{id}")
+    public ResponseEntity<?> obtener(@PathVariable UUID id) {
+        try {
+            return ResponseEntity.ok(clienteService.obtener(id));
+        } catch (ClienteNoEncontradoException excepcion) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new MensajeResponse(excepcion.getMessage()));
+        }
     }
 
     @PostMapping

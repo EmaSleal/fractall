@@ -4,6 +4,7 @@ import java.util.UUID;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -15,6 +16,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import cr.ac.fractall.catalogo.dto.ActualizarProductoRequest;
 import cr.ac.fractall.catalogo.dto.CrearProductoRequest;
+import cr.ac.fractall.catalogo.dto.ProductoResponse;
 import cr.ac.fractall.catalogo.servicio.CabysSinImpuestoException;
 import cr.ac.fractall.catalogo.servicio.CodigoCabysInvalidoException;
 import cr.ac.fractall.catalogo.servicio.HaciendaNoDisponibleException;
@@ -23,10 +25,14 @@ import cr.ac.fractall.catalogo.servicio.ProductoNoEncontradoException;
 import cr.ac.fractall.catalogo.servicio.ProductoService;
 import cr.ac.fractall.hacienda.dto.CabysBusquedaDTO;
 import cr.ac.fractall.seguridad.dto.MensajeResponse;
+import cr.ac.fractall.shared.PaginaResponse;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 
 /**
- * {@code GET /catalogo/cabys}, {@code POST /catalogo/productos} y
+ * {@code GET /catalogo/cabys}, {@code GET /catalogo/productos},
+ * {@code GET /catalogo/productos/{id}}, {@code POST /catalogo/productos} y
  * {@code PATCH /catalogo/productos/{id}} (Fase 6, sección 4.10 de
  * {@code arquitectura-facturacion-electronica-cr.md}).
  *
@@ -36,7 +42,11 @@ import jakarta.validation.Valid;
  * {@code empresaId} nunca llega por path variable ni cuerpo de la solicitud, lo resuelve
  * {@code ProductoService} internamente vía {@code TenantContext} (mismo patrón de
  * {@code EmpresaController}, ver su javadoc).
+ *
+ * <p>{@code @Validated} a nivel de clase es necesario para que las restricciones
+ * {@code @Min}/{@code @Max} de los {@code @RequestParam} sean evaluadas por Bean Validation.
  */
+@Validated
 @RestController
 @RequestMapping("/catalogo")
 public class ProductoController {
@@ -52,6 +62,23 @@ public class ProductoController {
             @RequestParam String q,
             @RequestParam(required = false) Integer top) {
         return ResponseEntity.ok(productoService.buscarCabys(q, top));
+    }
+
+    @GetMapping("/productos")
+    public ResponseEntity<PaginaResponse<ProductoResponse>> listar(
+            @RequestParam(defaultValue = "true") Boolean activo,
+            @RequestParam(required = false) UUID cursor,
+            @RequestParam(defaultValue = "20") @Min(1) @Max(100) int limit) {
+        return ResponseEntity.ok(productoService.listar(activo, cursor, limit));
+    }
+
+    @GetMapping("/productos/{id}")
+    public ResponseEntity<?> obtener(@PathVariable UUID id) {
+        try {
+            return ResponseEntity.ok(productoService.obtener(id));
+        } catch (ProductoNoEncontradoException excepcion) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new MensajeResponse(excepcion.getMessage()));
+        }
     }
 
     @PostMapping("/productos")
