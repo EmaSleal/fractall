@@ -65,4 +65,16 @@ public class ComprobanteElectronico extends TenantAwareEntity {
 
     @Column(name = "fecha_respuesta")
     private LocalDateTime fechaRespuesta;
+
+    /** Último resultado recibido de Hacienda para este comprobante (V12). Nullable hasta la primera consulta. */
+    @Column(name = "ultimo_resultado_consulta", length = 20)
+    private String ultimoResultadoConsulta;
+
+    /** Timestamp de la última consulta realizada a Hacienda (V12). Nullable hasta la primera consulta. */
+    @Column(name = "fecha_ultima_consulta_hacienda")
+    private LocalDateTime fechaUltimaConsultaHacienda;
+
+    /** Número de intentos de consulta realizados a Hacienda (V12). Inicia en 0. */
+    @Column(name = "intentos_consulta", columnDefinition = "integer default 0", nullable = false)
+    private int intentosConsulta;
 }

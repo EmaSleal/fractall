@@ -13,6 +13,10 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import lombok.extern.slf4j.Slf4j;
+
+import java.time.LocalDate;
+
 import cr.ac.fractall.catalogo.modelo.Cliente;
 import cr.ac.fractall.catalogo.modelo.ClienteExoneracion;
 import cr.ac.fractall.catalogo.modelo.Producto;
@@ -30,12 +34,14 @@ import cr.ac.fractall.facturacion.dto.CodigoComercialRequest;
 import cr.ac.fractall.facturacion.dto.CrearFacturaRequest;
 import cr.ac.fractall.facturacion.dto.DescuentoRequest;
 import cr.ac.fractall.facturacion.dto.ExoneracionRequest;
+import cr.ac.fractall.facturacion.dto.FacturaResumenResponse;
 import cr.ac.fractall.facturacion.dto.FacturaResponse;
 import cr.ac.fractall.facturacion.dto.LineaFacturaItemRequest;
 import cr.ac.fractall.facturacion.dto.LineaFacturaResponse;
 import cr.ac.fractall.facturacion.dto.MedioPagoRequest;
 import cr.ac.fractall.facturacion.dto.OtrosCargoRequest;
 import cr.ac.fractall.facturacion.dto.ReferenciaRequest;
+import cr.ac.fractall.shared.PaginaResponse;
 import cr.ac.fractall.facturacion.modelo.ComprobanteElectronico;
 import cr.ac.fractall.facturacion.modelo.Factura;
 import cr.ac.fractall.facturacion.modelo.FacturaInformacionReferencia;
@@ -75,6 +81,7 @@ import cr.ac.fractall.tenant.TenantContext;
  * excepciones de dominio limpias que ve el cliente HTTP las lanza este método, ANTES de intentar
  * persistir -- mismo principio ya corregido en revisiones de código de las Fases 5/6.
  */
+@Slf4j
 @Service
 public class FacturaService {
 
@@ -142,6 +149,120 @@ public class FacturaService {
         this.facturaOtrosCargosRepository = facturaOtrosCargosRepository;
         this.facturaInformacionReferenciaRepository = facturaInformacionReferenciaRepository;
         this.facturaMedioPagoRepository = facturaMedioPagoRepository;
+    }
+
+    // =========================================================================
+    // Read operations — listar + obtener (FR-1, FR-2)
+    // =========================================================================
+
+    /**
+     * Lista facturas del tenant activo con paginación keyset y filtros opcionales. Req: FR-1,
+     * NFR-1 (tenant explícito via {@code TenantContext.get()} — la query nativa no tiene
+     * {@code @TenantId} automático), NFR-3 (única query JOIN sin N+1).
+     *
+     * <p>Patrón limit+1: se solicitan {@code limit+1} filas al repositorio para detectar si hay
+     * más páginas sin un COUNT adicional; la lista de resultado se trunca a {@code limit} ítems.
+     *
+     * <p>La query usa {@code nativeQuery = true} porque la expresión JPQL
+     * {@code (:param IS NULL OR ...)} con parámetros de fecha opcionales causa
+     * {@code PSQLException: could not determine data type of parameter} en PostgreSQL cuando el
+     * valor es null — el driver no puede inferir el tipo del parámetro sin contexto adicional.
+     */
+    @Transactional(readOnly = true)
+    public PaginaResponse<FacturaResumenResponse> listar(
+            UUID cursor, UUID clienteId, LocalDate desde, LocalDate hasta, String estado, int limit) {
+        UUID empresaId = TenantContext.get();
+        List<Object[]> filas = facturaRepository.buscarNativo(
+                empresaId,
+                cursor != null ? cursor.toString() : null,
+                clienteId != null ? clienteId.toString() : null,
+                desde != null ? desde.toString() : null,
+                hasta != null ? hasta.toString() : null,
+                estado,
+                limit + 1);
+        List<FacturaResumenResponse> resumen = filas.stream()
+                .map(FacturaService::mapearFila)
+                .toList();
+        boolean hayMas = resumen.size() > limit;
+        List<FacturaResumenResponse> pagina = hayMas
+                ? resumen.subList(0, limit).stream().toList()
+                : resumen;
+        UUID nextCursor = hayMas ? pagina.get(pagina.size() - 1).id() : null;
+        return new PaginaResponse<>(pagina, nextCursor);
+    }
+
+    /**
+     * Mapea una fila {@code Object[]} del resultado de la query nativa a {@link FacturaResumenResponse}.
+     * Orden de columnas: id, consecutivo, cliente_id, nombre, ambiente_hacienda, moneda, total,
+     * estado, ultimo_resultado_consulta, fecha_emision.
+     */
+    private static FacturaResumenResponse mapearFila(Object[] row) {
+        UUID id = row[0] instanceof UUID u ? u : UUID.fromString(row[0].toString());
+        String consecutivo = row[1] != null ? row[1].toString() : null;
+        UUID clienteId = row[2] != null
+                ? (row[2] instanceof UUID u ? u : UUID.fromString(row[2].toString()))
+                : null;
+        String clienteNombre = row[3] != null ? row[3].toString() : null;
+        String ambienteHacienda = row[4] != null ? row[4].toString() : null;
+        String moneda = row[5] != null ? row[5].toString() : null;
+        BigDecimal total = row[6] != null ? new BigDecimal(row[6].toString()) : null;
+        String estado = row[7] != null ? row[7].toString() : null;
+        String ultimoResultadoConsulta = row[8] != null ? row[8].toString() : null;
+        LocalDate fechaEmision = null;
+        if (row[9] != null) {
+            Object raw = row[9];
+            if (raw instanceof java.sql.Timestamp ts) {
+                fechaEmision = ts.toLocalDateTime().toLocalDate();
+            } else if (raw instanceof java.sql.Date d) {
+                fechaEmision = d.toLocalDate();
+            } else if (raw instanceof LocalDate ld) {
+                fechaEmision = ld;
+            } else {
+                fechaEmision = LocalDate.parse(raw.toString().substring(0, 10));
+            }
+        }
+        return new FacturaResumenResponse(id, consecutivo, clienteId, clienteNombre,
+                ambienteHacienda, moneda, total, estado, ultimoResultadoConsulta, fechaEmision);
+    }
+
+    /**
+     * Carga el detalle completo de una factura por id. Req: FR-2.
+     *
+     * <p>El filtro {@code @TenantId} de {@code findById} hace que un id de otro tenant resuelva
+     * vacío — tratado igual que "no encontrado" para no revelar existencia de recursos cruzados.
+     *
+     * <p>Si la factura existe pero no tiene comprobante, se lanza {@link IllegalStateException}
+     * (HTTP 500): factura y comprobante se crean en la misma transacción atómica (sección 4.9), su
+     * ausencia indica una violación de invariante de datos, no un estado de negocio válido. Un 404
+     * aquí mentiría al frontend y ocultaría el bug de integridad real.
+     */
+    @Transactional(readOnly = true)
+    public FacturaResponse obtener(UUID id) {
+        Factura factura = facturaRepository.findById(id)
+                .orElseThrow(() -> new FacturaNoEncontradaException(id));
+
+        ComprobanteElectronico comprobante = comprobanteElectronicoRepository.findByFacturaId(id)
+                .orElseThrow(() -> {
+                    log.error("Integridad violada: factura {} existe sin comprobante_electronico", id);
+                    return new IllegalStateException(
+                            "Integridad violada: factura " + id + " no tiene comprobante_electronico");
+                });
+
+        List<LineaFactura> lineas =
+                lineaFacturaRepository.findByFacturaIdOrderByNumeroLinea(factura.getId());
+
+        List<LineaFacturaResponse> lineasResponse = lineas.stream().map(linea -> {
+            var codigos = lineaCodigoComercialRepository.findByLineaIdOrderByOrden(linea.getId());
+            var descuentos = lineaDescuentoRepository.findByLineaIdOrderByOrden(linea.getId());
+            var exo = impuestoLineaExoneracionRepository.findByLineaId(linea.getId()).orElse(null);
+            return LineaFacturaResponse.desde(linea, codigos, descuentos, exo);
+        }).toList();
+
+        var otrosCargos = facturaOtrosCargosRepository.findByFacturaIdOrderByOrden(factura.getId());
+        var referencias = facturaInformacionReferenciaRepository.findByFacturaIdOrderByOrden(factura.getId());
+        var mediosPago = facturaMedioPagoRepository.findByFacturaIdOrderByOrden(factura.getId());
+
+        return FacturaResponse.desde(factura, comprobante, lineasResponse, otrosCargos, referencias, mediosPago);
     }
 
     @Transactional

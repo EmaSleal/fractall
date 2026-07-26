@@ -1,16 +1,26 @@
 package cr.ac.fractall.facturacion.controlador;
 
+import java.time.LocalDate;
 import java.util.UUID;
 
+import org.springframework.format.annotation.DateTimeFormat;
+import org.springframework.format.annotation.DateTimeFormat.ISO;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+
+import cr.ac.fractall.facturacion.dto.FacturaResumenResponse;
+import cr.ac.fractall.shared.PaginaResponse;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 
 import cr.ac.fractall.catalogo.servicio.ClienteExoneracionNoEncontradaException;
 import cr.ac.fractall.facturacion.servicio.ComprobanteElectronicoNoEncontradoException;
@@ -44,6 +54,7 @@ import jakarta.validation.Valid;
  * persistidos, pero el cliente HTTP recibe un error en vez de un 201 -- riesgo de fallo parcial
  * documentado y aceptado, ver el javadoc de {@code ComprobanteXmlPersistenceService}.
  */
+@Validated
 @RestController
 @RequestMapping("/facturas")
 public class FacturaController {
@@ -64,6 +75,32 @@ public class FacturaController {
         } catch (ComprobanteElectronicoNoEncontradoException e) {
             return ResponseEntity.notFound().build();
         }
+    }
+
+    /**
+     * Lista facturas del tenant activo con paginación keyset y filtros opcionales (FR-1).
+     * {@code @Validated} en la clase habilita {@code @Min}/{@code @Max} en el parámetro
+     * {@code limit}: violations lanzan {@code ConstraintViolationException} → 400 via
+     * {@code GlobalExceptionHandler}.
+     */
+    @GetMapping
+    public ResponseEntity<PaginaResponse<FacturaResumenResponse>> listar(
+            @RequestParam(required = false) UUID cursor,
+            @RequestParam(required = false) UUID clienteId,
+            @RequestParam(required = false) @DateTimeFormat(iso = ISO.DATE) LocalDate desde,
+            @RequestParam(required = false) @DateTimeFormat(iso = ISO.DATE) LocalDate hasta,
+            @RequestParam(required = false) String estado,
+            @RequestParam(defaultValue = "20") @Min(1) @Max(100) int limit) {
+        return ResponseEntity.ok(facturaService.listar(cursor, clienteId, desde, hasta, estado, limit));
+    }
+
+    /**
+     * Devuelve el detalle completo de una factura por id (FR-2). {@code FacturaNoEncontradaException}
+     * se propaga al {@code GlobalExceptionHandler} → 404; no se necesita try/catch aquí.
+     */
+    @GetMapping("/{id}")
+    public ResponseEntity<FacturaResponse> obtener(@PathVariable UUID id) {
+        return ResponseEntity.ok(facturaService.obtener(id));
     }
 
     @PostMapping

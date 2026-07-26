@@ -1,6 +1,7 @@
 package cr.ac.fractall.facturacion.repositorio;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -23,6 +24,14 @@ public interface ComprobanteElectronicoRepository extends JpaRepository<Comproba
      * Usado por {@code ComprobanteHaciendaPollingScheduledJob} DESPUÉS de fijar el tenant real de
      * cada iteración -- ver el javadoc de ese job y de {@link #findEmpresaIdsConEstado}.
      */
+    /**
+     * Consulta JPQL derivada — el filtro {@code @TenantId} (empresa_id) se aplica automáticamente,
+     * garantizando que solo devuelve el comprobante del tenant actual. Usado por
+     * {@link cr.ac.fractall.facturacion.servicio.FacturaService#obtener} para cargar el comprobante
+     * dado el id de factura. Req: FR-2.
+     */
+    Optional<ComprobanteElectronico> findByFacturaId(UUID facturaId);
+
     List<ComprobanteElectronico> findByEstado(String estado);
 
     /**

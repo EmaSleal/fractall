@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -457,6 +458,189 @@ class FacturaControllerTest {
                         .header("Authorization", "Bearer " + contextoB.accessToken())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isNotFound());
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // GET /facturas tests (Batch 2 — FR-1, FR-2)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /** Crea una factura via POST /facturas y devuelve su id. */
+    private UUID crearFactura(ContextoDePrueba ctx) throws Exception {
+        CrearFacturaRequest request = new CrearFacturaRequest(
+                ctx.clienteId(), null, null, null, null, null, null, null, null,
+                java.util.List.of(new LineaFacturaItemRequest(
+                        ctx.productoId(), BigDecimal.ONE, new BigDecimal("1000.00000"), null,
+                        null, null, null, null, null, null, null)),
+                null, null, null);
+        String cuerpo = mockMvc.perform(post("/facturas")
+                        .header("Authorization", "Bearer " + ctx.accessToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        return UUID.fromString(objectMapper.readTree(cuerpo).get("id").asText());
+    }
+
+    @Test
+    void getFacturasRetorna200ConPaginaResponseCuandoHayMenosItemsQueLimit() throws Exception {
+        ContextoDePrueba ctx = crearContextoCompleto();
+        crearFactura(ctx);
+        crearFactura(ctx);
+
+        mockMvc.perform(get("/facturas")
+                        .header("Authorization", "Bearer " + ctx.accessToken()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items").isArray())
+                .andExpect(jsonPath("$.items.length()").value(2))
+                .andExpect(jsonPath("$.nextCursor").doesNotExist());
+    }
+
+    @Test
+    void getFacturasConPaginacionCursorDevuelveSliceYNextCursorYLuegoPaginaFinal() throws Exception {
+        ContextoDePrueba ctx = crearContextoCompleto();
+        // Create 25 facturas; limit=20 → first page has 20 + nextCursor; second page has 5 + null cursor.
+        for (int i = 0; i < 25; i++) {
+            crearFactura(ctx);
+        }
+
+        // First page: limit=20
+        String primeraCuerpo = mockMvc.perform(get("/facturas")
+                        .param("limit", "20")
+                        .header("Authorization", "Bearer " + ctx.accessToken()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items.length()").value(20))
+                .andExpect(jsonPath("$.nextCursor").isNotEmpty())
+                .andReturn().getResponse().getContentAsString();
+
+        String nextCursor = objectMapper.readTree(primeraCuerpo).get("nextCursor").asText();
+
+        // Second page: follow cursor
+        mockMvc.perform(get("/facturas")
+                        .param("limit", "20")
+                        .param("cursor", nextCursor)
+                        .header("Authorization", "Bearer " + ctx.accessToken()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items.length()").value(5))
+                .andExpect(jsonPath("$.nextCursor").doesNotExist());
+    }
+
+    @Test
+    void getFacturasConClienteIdFiltroDevuelveSoloFacturasDeEseCliente() throws Exception {
+        ContextoDePrueba ctx = crearContextoCompleto();
+        crearFactura(ctx);
+
+        // Create a second cliente in the same tenant and a factura for it -- that factura must NOT appear
+        ContextoDePrueba ctx2 = crearContextoCompleto();
+        crearFactura(ctx2);
+
+        // Filter by ctx's clienteId -- should only return ctx's factura(s)
+        String cuerpo = mockMvc.perform(get("/facturas")
+                        .param("clienteId", ctx.clienteId().toString())
+                        .header("Authorization", "Bearer " + ctx.accessToken()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items").isArray())
+                .andReturn().getResponse().getContentAsString();
+
+        var items = objectMapper.readTree(cuerpo).get("items");
+        assertThat(items).allSatisfy(item ->
+                assertThat(item.get("clienteId").asText()).isEqualTo(ctx.clienteId().toString()));
+    }
+
+    @Test
+    void getFacturasConEstadoFiltroDevuelveSoloFacturasConEseEstado() throws Exception {
+        // Facturas recién creadas have estado GENERADO on the comprobante.
+        // Filtering by ACEPTADO should return 0 results (none have been accepted by Hacienda yet).
+        ContextoDePrueba ctx = crearContextoCompleto();
+        crearFactura(ctx);
+
+        mockMvc.perform(get("/facturas")
+                        .param("estado", "ACEPTADO")
+                        .header("Authorization", "Bearer " + ctx.accessToken()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items").isArray())
+                .andExpect(jsonPath("$.items.length()").value(0));
+    }
+
+    @Test
+    void getFacturasConDesdeHastaFiltroDevuelveSoloFacturasEnRango() throws Exception {
+        ContextoDePrueba ctx = crearContextoCompleto();
+        crearFactura(ctx);
+
+        String hoy = java.time.LocalDate.now().toString();
+        String manana = java.time.LocalDate.now().plusDays(1).toString();
+
+        // Facturas created today should appear with desde=today, hasta=tomorrow
+        mockMvc.perform(get("/facturas")
+                        .param("desde", hoy)
+                        .param("hasta", manana)
+                        .header("Authorization", "Bearer " + ctx.accessToken()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items").isArray())
+                .andExpect(jsonPath("$.items.length()").value(1));
+
+        // Facturas from yesterday range should NOT include today's facturas
+        String ayer = java.time.LocalDate.now().minusDays(1).toString();
+        mockMvc.perform(get("/facturas")
+                        .param("desde", ayer)
+                        .param("hasta", ayer)
+                        .header("Authorization", "Bearer " + ctx.accessToken()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items.length()").value(0));
+    }
+
+    @Test
+    void getFacturasConLimitMayorA100Retorna400() throws Exception {
+        ContextoDePrueba ctx = crearContextoCompleto();
+
+        mockMvc.perform(get("/facturas")
+                        .param("limit", "101")
+                        .header("Authorization", "Bearer " + ctx.accessToken()))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void getFacturasConLimitCeroRetorna400() throws Exception {
+        ContextoDePrueba ctx = crearContextoCompleto();
+
+        mockMvc.perform(get("/facturas")
+                        .param("limit", "0")
+                        .header("Authorization", "Bearer " + ctx.accessToken()))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void getFacturaPorIdRetorna200ConDetalleCompleto() throws Exception {
+        ContextoDePrueba ctx = crearContextoCompleto();
+        UUID facturaId = crearFactura(ctx);
+
+        mockMvc.perform(get("/facturas/" + facturaId)
+                        .header("Authorization", "Bearer " + ctx.accessToken()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(facturaId.toString()))
+                .andExpect(jsonPath("$.lineas").isArray())
+                .andExpect(jsonPath("$.lineas.length()").value(1));
+    }
+
+    @Test
+    void getFacturaPorIdDesconocidoRetorna404ConMensajeResponse() throws Exception {
+        ContextoDePrueba ctx = crearContextoCompleto();
+
+        mockMvc.perform(get("/facturas/" + UUID.randomUUID())
+                        .header("Authorization", "Bearer " + ctx.accessToken()))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.mensaje").isString());
+    }
+
+    @Test
+    void getFacturaPorIdDeOtroTenantRetorna404() throws Exception {
+        ContextoDePrueba ctxA = crearContextoCompleto();
+        ContextoDePrueba ctxB = crearContextoCompleto();
+        UUID facturaIdA = crearFactura(ctxA);
+
+        // Tenant B tries to access tenant A's factura — must get 404, not 200
+        mockMvc.perform(get("/facturas/" + facturaIdA)
+                        .header("Authorization", "Bearer " + ctxB.accessToken()))
                 .andExpect(status().isNotFound());
     }
 }
