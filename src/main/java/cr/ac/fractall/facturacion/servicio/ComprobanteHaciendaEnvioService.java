@@ -1,5 +1,6 @@
 package cr.ac.fractall.facturacion.servicio;
 
+import java.time.LocalDateTime;
 import java.util.Base64;
 import java.util.UUID;
 
@@ -153,6 +154,8 @@ public class ComprobanteHaciendaEnvioService {
         comprobante.setMensajeRespuesta(truncar(respuesta.getMensaje(), LONGITUD_MAXIMA_MENSAJE_RESPUESTA));
         comprobante.setFechaRespuesta(respuesta.getFechaRespuesta());
         comprobante.setIntentosEnvio(comprobante.getIntentosEnvio() + 1);
+        comprobante.setUltimoResultadoConsulta(mapearResultadoConsulta(respuesta.getCodigoMensaje()));
+        comprobante.setFechaUltimaConsultaHacienda(LocalDateTime.now());
 
         if (Boolean.TRUE.equals(respuesta.getExitoso())) {
             comprobante.setEstado(ESTADO_ACEPTADO);
@@ -171,6 +174,24 @@ public class ComprobanteHaciendaEnvioService {
             log.info("XML de respuesta de Hacienda para comprobante {} subido a Object Storage: {}",
                     comprobante.getId(), referencia);
         }
+    }
+
+    /**
+     * Mapea un {@link MensajeHacienda} a los 4 valores permitidos por el CHECK de la columna
+     * {@code ultimo_resultado_consulta} (V12): PENDIENTE, ACEPTADO, RECHAZADO, ERROR_COMUNICACION.
+     * El mapeo es total e independiente de la lógica de transición de estado de
+     * {@code aplicarRespuesta} para no mezclar dos responsabilidades distintas.
+     */
+    private static String mapearResultadoConsulta(MensajeHacienda codigoMensaje) {
+        if (codigoMensaje == null) {
+            return "ERROR_COMUNICACION";
+        }
+        return switch (codigoMensaje) {
+            case ACEPTADO -> "ACEPTADO";
+            case PROCESANDO -> "PENDIENTE";
+            case RECHAZADO, RECHAZADO_PARCIAL -> "RECHAZADO";
+            default -> "ERROR_COMUNICACION";
+        };
     }
 
     private static String truncar(String valor, int longitudMaxima) {

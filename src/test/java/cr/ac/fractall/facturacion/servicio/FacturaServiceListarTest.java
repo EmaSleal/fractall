@@ -92,7 +92,9 @@ class FacturaServiceListarTest {
                 impuestoLineaExoneracionRepository,
                 facturaOtrosCargosRepository,
                 facturaInformacionReferenciaRepository,
-                facturaMedioPagoRepository);
+                facturaMedioPagoRepository,
+                mock(ComprobanteXmlCifradoDescargador.class),
+                mock(ComprobanteHaciendaEnvioService.class));
     }
 
     @AfterEach

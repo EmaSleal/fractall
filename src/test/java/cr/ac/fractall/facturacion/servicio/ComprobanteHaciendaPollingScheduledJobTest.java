@@ -407,4 +407,47 @@ class ComprobanteHaciendaPollingScheduledJobTest {
         assertThat(recargado.getEstado()).isEqualTo("ENVIADO");
         assertThat(recargado.getIntentosEnvio()).isEqualTo(1);
     }
+
+    // ========== T-B1: intentosConsulta increment ==========
+
+    @Test
+    void procesarEmpresa_incrementaIntentosConsulta_enRutaExitosa() {
+        TenantContext.set(empresaA.getId());
+        ComprobanteElectronico comprobante = nuevoComprobanteEnviado(
+                empresaA.getId(), empresaA.getCreadoPor(), "CLAVECNT1",
+                0, LocalDateTime.now().minusHours(1));
+        int intentosConsultaAntes = comprobante.getIntentosConsulta();
+
+        when(haciendaComprobanteApiService.consultarComprobante(any(), any()))
+                .thenReturn(respuesta(MensajeHacienda.PROCESANDO, false, true));
+
+        TenantContext.clear();
+        job.consultarPendientes();
+
+        TenantContext.set(empresaA.getId());
+        ComprobanteElectronico recargado = comprobanteElectronicoRepository
+                .findById(comprobante.getId()).orElseThrow();
+        assertThat(recargado.getIntentosConsulta()).isEqualTo(intentosConsultaAntes + 1);
+    }
+
+    @Test
+    void procesarEmpresa_incrementaIntentosConsulta_enRutaFallida() {
+        TenantContext.set(empresaA.getId());
+        ComprobanteElectronico comprobante = nuevoComprobanteEnviado(
+                empresaA.getId(), empresaA.getCreadoPor(), "CLAVECNT2",
+                0, LocalDateTime.now().minusHours(1));
+        int intentosConsultaAntes = comprobante.getIntentosConsulta();
+
+        // Deleting the credencial forces consultarYActualizar to throw before reaching Hacienda,
+        // exercising the catch/registrarIntentoFallidoYGuardar path.
+        credencialHaciendaRepository.delete(credencialA);
+
+        TenantContext.clear();
+        job.consultarPendientes();
+
+        TenantContext.set(empresaA.getId());
+        ComprobanteElectronico recargado = comprobanteElectronicoRepository
+                .findById(comprobante.getId()).orElseThrow();
+        assertThat(recargado.getIntentosConsulta()).isEqualTo(intentosConsultaAntes + 1);
+    }
 }

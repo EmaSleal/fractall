@@ -878,4 +878,82 @@ class FacturaControllerTest {
                         .header("Authorization", "Bearer " + ctx.accessToken()))
                 .andExpect(status().isNotFound());
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // POST /facturas/{id}/reenviar tests (T-E1)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    @Test
+    void postReenviarConComprobanteEnFirmadoDevuelve200YFacturaResponse() throws Exception {
+        ContextoDePrueba ctx = crearContextoCompleto();
+
+        // Capture the encrypted blob written to OCI so we can replay it for the reenviar download.
+        java.util.concurrent.atomic.AtomicReference<byte[]> blobCapturado =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        String xmlRef = "empresas/" + ctx.empresaId() + "/comprobantes/reenviar-test.xml.enc";
+        when(objectStorageService.subir(any(byte[].class), anyString())).thenAnswer(invocation -> {
+            byte[] bytes = invocation.getArgument(0);
+            blobCapturado.set(bytes.clone());
+            return xmlRef;
+        });
+
+        UUID facturaId = crearFactura(ctx);
+
+        // After crearFactura, the comprobante estado is ENVIADO (mocked Hacienda returns PROCESANDO).
+        // Force it to RECHAZADO so it is reenvíable, while keeping xmlComprobanteReferencia.
+        TenantContext.set(ctx.empresaId());
+        try {
+            ComprobanteElectronico comprobante = comprobanteElectronicoRepository
+                    .findByFacturaId(facturaId).orElseThrow();
+            comprobante.setEstado("RECHAZADO");
+            comprobanteElectronicoRepository.save(comprobante);
+        } finally {
+            TenantContext.clear();
+        }
+
+        // Replay the encrypted blob so descargar succeeds during reenviar decryption
+        when(objectStorageService.descargar(xmlRef)).thenReturn(blobCapturado.get());
+
+        mockMvc.perform(post("/facturas/" + facturaId + "/reenviar")
+                        .header("Authorization", "Bearer " + ctx.accessToken()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(facturaId.toString()));
+    }
+
+    @Test
+    void postReenviarConComprobanteNoReenviableDevuelve409() throws Exception {
+        ContextoDePrueba ctx = crearContextoCompleto();
+        // A newly created factura starts in GENERADO state on the comprobante → non-reenvíable
+        UUID facturaId = crearFactura(ctx);
+
+        // The comprobante for a new factura is in GENERADO (before XML generation finishes),
+        // but in the test objectStorageService.subir returns null by default → the comprobante
+        // ends in FIRMADO after generarYPersistirXml. We need to force it to a non-reenvíable
+        // state. Force estado = GENERADO via repository.
+        TenantContext.set(ctx.empresaId());
+        try {
+            ComprobanteElectronico comprobante = comprobanteElectronicoRepository
+                    .findByFacturaId(facturaId).orElseThrow();
+            comprobante.setEstado("GENERADO");
+            comprobante.setXmlComprobanteReferencia(null);
+            comprobanteElectronicoRepository.save(comprobante);
+        } finally {
+            TenantContext.clear();
+        }
+
+        mockMvc.perform(post("/facturas/" + facturaId + "/reenviar")
+                        .header("Authorization", "Bearer " + ctx.accessToken()))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.mensaje").isString());
+    }
+
+    @Test
+    void postReenviarConFacturaIdDesconocidoDevuelve404() throws Exception {
+        ContextoDePrueba ctx = crearContextoCompleto();
+
+        mockMvc.perform(post("/facturas/" + UUID.randomUUID() + "/reenviar")
+                        .header("Authorization", "Bearer " + ctx.accessToken()))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.mensaje").isString());
+    }
 }

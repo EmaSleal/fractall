@@ -6,6 +6,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
+import cr.ac.fractall.facturacion.servicio.ComprobanteNoReenviableException;
 import cr.ac.fractall.facturacion.servicio.DocumentoNoDisponibleException;
 import cr.ac.fractall.facturacion.servicio.FacturaNoEncontradaException;
 import cr.ac.fractall.seguridad.dto.MensajeResponse;
@@ -36,6 +37,12 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(DocumentoNoDisponibleException.class)
     public ResponseEntity<MensajeResponse> manejarDocumentoNoDisponible(DocumentoNoDisponibleException excepcion) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(new MensajeResponse(excepcion.getMessage()));
+    }
+
+    @ExceptionHandler(ComprobanteNoReenviableException.class)
+    public ResponseEntity<MensajeResponse> manejarComprobanteNoReenviable(ComprobanteNoReenviableException excepcion) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
                 .body(new MensajeResponse(excepcion.getMessage()));
     }
 

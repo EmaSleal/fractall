@@ -2,6 +2,7 @@ package cr.ac.fractall.facturacion.servicio;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -119,6 +120,8 @@ public class FacturaService {
     private final FacturaOtrosCargosRepository facturaOtrosCargosRepository;
     private final FacturaInformacionReferenciaRepository facturaInformacionReferenciaRepository;
     private final FacturaMedioPagoRepository facturaMedioPagoRepository;
+    private final ComprobanteXmlCifradoDescargador comprobanteXmlCifradoDescargador;
+    private final ComprobanteHaciendaEnvioService comprobanteHaciendaEnvioService;
 
     public FacturaService(
             ClienteRepository clienteRepository,
@@ -134,7 +137,9 @@ public class FacturaService {
             ImpuestoLineaExoneracionRepository impuestoLineaExoneracionRepository,
             FacturaOtrosCargosRepository facturaOtrosCargosRepository,
             FacturaInformacionReferenciaRepository facturaInformacionReferenciaRepository,
-            FacturaMedioPagoRepository facturaMedioPagoRepository) {
+            FacturaMedioPagoRepository facturaMedioPagoRepository,
+            ComprobanteXmlCifradoDescargador comprobanteXmlCifradoDescargador,
+            ComprobanteHaciendaEnvioService comprobanteHaciendaEnvioService) {
         this.clienteRepository = clienteRepository;
         this.productoRepository = productoRepository;
         this.clienteExoneracionRepository = clienteExoneracionRepository;
@@ -149,6 +154,8 @@ public class FacturaService {
         this.facturaOtrosCargosRepository = facturaOtrosCargosRepository;
         this.facturaInformacionReferenciaRepository = facturaInformacionReferenciaRepository;
         this.facturaMedioPagoRepository = facturaMedioPagoRepository;
+        this.comprobanteXmlCifradoDescargador = comprobanteXmlCifradoDescargador;
+        this.comprobanteHaciendaEnvioService = comprobanteHaciendaEnvioService;
     }
 
     // =========================================================================
@@ -263,6 +270,45 @@ public class FacturaService {
         var mediosPago = facturaMedioPagoRepository.findByFacturaIdOrderByOrden(factura.getId());
 
         return FacturaResponse.desde(factura, comprobante, lineasResponse, otrosCargos, referencias, mediosPago);
+    }
+
+    /**
+     * Reenvía a Hacienda un comprobante atascado en un estado terminal/inalcanzable (FIRMADO,
+     * RECHAZADO, ERROR). Descarga el XML firmado desde Object Storage, restablece el contador de
+     * intentos de envío y llama a {@link ComprobanteHaciendaEnvioService#enviarComprobante}.
+     *
+     * <p>Deliberadamente SIN {@code @Transactional}: la descarga del XML y el envío a Hacienda son
+     * operaciones de red que no deben correr dentro de una transacción abierta -- mismo principio
+     * ya documentado en {@code ComprobanteXmlPersistenceService} y {@code ComprobanteHaciendaEnvioService}.
+     *
+     * <p>{@code intentosConsulta} no se toca aquí: es un contador de consultas, no de envíos;
+     * el reenvío es una operación de envío a Hacienda, no de consulta.
+     *
+     * @throws FacturaNoEncontradaException si no existe comprobante para {@code facturaId}
+     * @throws ComprobanteNoReenviableException si el estado no es FIRMADO/RECHAZADO/ERROR, o si
+     *     {@code xmlComprobanteReferencia} es null
+     */
+    public FacturaResponse reenviar(UUID facturaId) {
+        ComprobanteElectronico comprobante = comprobanteElectronicoRepository.findByFacturaId(facturaId)
+                .orElseThrow(() -> new FacturaNoEncontradaException(facturaId));
+
+        if (!Set.of("FIRMADO", "RECHAZADO", "ERROR").contains(comprobante.getEstado())) {
+            throw new ComprobanteNoReenviableException(facturaId, comprobante.getEstado());
+        }
+        if (comprobante.getXmlComprobanteReferencia() == null) {
+            throw new ComprobanteNoReenviableException(facturaId, comprobante.getEstado());
+        }
+
+        byte[] xmlBytes = comprobanteXmlCifradoDescargador.descargarYDescifrar(
+                comprobante.getXmlComprobanteReferencia());
+        String xmlFirmado = new String(xmlBytes, StandardCharsets.UTF_8);
+
+        comprobante.setIntentosEnvio(0);
+        comprobanteElectronicoRepository.save(comprobante);
+
+        comprobanteHaciendaEnvioService.enviarComprobante(xmlFirmado, comprobante);
+
+        return obtener(facturaId);
     }
 
     @Transactional

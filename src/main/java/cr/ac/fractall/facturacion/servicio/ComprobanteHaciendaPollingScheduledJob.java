@@ -117,6 +117,7 @@ public class ComprobanteHaciendaPollingScheduledJob {
             }
 
             try {
+                comprobante.setIntentosConsulta(comprobante.getIntentosConsulta() + 1);
                 comprobanteHaciendaEnvioService.consultarYActualizar(comprobante);
                 escalarSiAgotoIntentos(comprobante);
             } catch (RuntimeException excepcion) {
@@ -126,6 +127,7 @@ public class ComprobanteHaciendaPollingScheduledJob {
                 // llegó a Hacienda, el comprobante quedaría reintentando para siempre sin escalar
                 // nunca a ESTADO_ERROR -- por eso esta rama también incrementa/guarda, a diferencia
                 // de simplemente loguear y seguir.
+                // intentosConsulta ya fue incrementado antes de la llamada en el try.
                 log.error("Error consultando el comprobante {} (empresa {}) en Hacienda: {}",
                         comprobante.getId(), empresaId, excepcion.getMessage(), excepcion);
                 registrarIntentoFallidoYGuardar(comprobante);

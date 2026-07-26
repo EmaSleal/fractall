@@ -7,17 +7,23 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import java.util.UUID;
+
 import org.junit.jupiter.api.Test;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RestController;
 
 import tools.jackson.databind.ObjectMapper;
 
 import cr.ac.fractall.catalogo.controlador.ClienteController;
 import cr.ac.fractall.catalogo.dto.CrearClienteRequest;
 import cr.ac.fractall.catalogo.servicio.ClienteService;
+import cr.ac.fractall.facturacion.servicio.ComprobanteNoReenviableException;
 
 /**
  * Prueba unitaria (sin contexto de Spring completo, {@code standaloneSetup}) de
@@ -51,5 +57,34 @@ class GlobalExceptionHandlerTest {
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.mensaje").value("El recurso ya existe o viola una restricción de unicidad."));
+    }
+
+    @Test
+    void handler_comprobanteNoReenviable_devuelve409ConMensajeResponse() throws Exception {
+        UUID facturaId = UUID.randomUUID();
+
+        MockMvc mockMvc = MockMvcBuilders.standaloneSetup(new ControladorDeReenvioStub(facturaId))
+                .setControllerAdvice(new GlobalExceptionHandler())
+                .build();
+
+        mockMvc.perform(post("/test/reenviar/" + facturaId))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.mensaje").isString());
+    }
+
+    /** Controlador mínimo para disparar ComprobanteNoReenviableException desde el advice. */
+    @RestController
+    static class ControladorDeReenvioStub {
+
+        private final UUID facturaId;
+
+        ControladorDeReenvioStub(UUID facturaId) {
+            this.facturaId = facturaId;
+        }
+
+        @PostMapping("/test/reenviar/{id}")
+        public void reenviar(@PathVariable UUID id) {
+            throw new ComprobanteNoReenviableException(facturaId, "ACEPTADO");
+        }
     }
 }

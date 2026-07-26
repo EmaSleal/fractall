@@ -151,6 +151,16 @@ public class FacturaController {
         return ResponseEntity.ok(facturaService.obtener(id));
     }
 
+    /**
+     * Reenvía a Hacienda un comprobante atascado en FIRMADO, RECHAZADO o ERROR.
+     * {@code ComprobanteNoReenviableException} → 409; {@code FacturaNoEncontradaException} → 404.
+     * Ambas se propagan al {@code GlobalExceptionHandler} sin try/catch aquí.
+     */
+    @PostMapping("/{id}/reenviar")
+    public ResponseEntity<FacturaResponse> reenviar(@PathVariable UUID id) {
+        return ResponseEntity.ok(facturaService.reenviar(id));
+    }
+
     @PostMapping
     public ResponseEntity<?> crear(@Valid @RequestBody CrearFacturaRequest request) {
         try {

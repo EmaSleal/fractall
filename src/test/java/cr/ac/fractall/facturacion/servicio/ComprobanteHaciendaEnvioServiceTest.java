@@ -389,4 +389,88 @@ class ComprobanteHaciendaEnvioServiceTest {
 
         verify(comprobanteEntregaService, never()).entregar(any());
     }
+
+    // ========== T-A1: V12 columns — ultimoResultadoConsulta + fechaUltimaConsultaHacienda ==========
+
+    @Test
+    void aplicarRespuesta_conAceptado_escribeUltimoResultadoYFecha() {
+        UUID empresaId = UUID.randomUUID();
+        ComprobanteElectronico comprobante = nuevoComprobante(empresaId, "SANDBOX", "clave-v12a");
+        CredencialHacienda credencial = nuevaCredencial(empresaId, "SANDBOX");
+
+        when(credencialHaciendaRepository.findByEmpresaIdAndAmbiente(empresaId, "SANDBOX"))
+                .thenReturn(Optional.of(credencial));
+        when(haciendaComprobanteApiService.enviarComprobante(any(), any(), any()))
+                .thenReturn(respuesta(MensajeHacienda.ACEPTADO, true, false));
+
+        ArgumentCaptor<ComprobanteElectronico> captor = ArgumentCaptor.forClass(ComprobanteElectronico.class);
+
+        servicio.enviarComprobante("<xml/>", comprobante);
+
+        verify(comprobanteElectronicoRepository).save(captor.capture());
+        ComprobanteElectronico guardado = captor.getValue();
+        assertThat(guardado.getUltimoResultadoConsulta()).isEqualTo("ACEPTADO");
+        assertThat(guardado.getFechaUltimaConsultaHacienda()).isNotNull();
+    }
+
+    @Test
+    void aplicarRespuesta_conProcesando_escribeUltimoResultadoPendiente() {
+        UUID empresaId = UUID.randomUUID();
+        ComprobanteElectronico comprobante = nuevoComprobante(empresaId, "SANDBOX", "clave-v12b");
+        CredencialHacienda credencial = nuevaCredencial(empresaId, "SANDBOX");
+
+        when(credencialHaciendaRepository.findByEmpresaIdAndAmbiente(empresaId, "SANDBOX"))
+                .thenReturn(Optional.of(credencial));
+        when(haciendaComprobanteApiService.enviarComprobante(any(), any(), any()))
+                .thenReturn(respuesta(MensajeHacienda.PROCESANDO, false, true));
+
+        ArgumentCaptor<ComprobanteElectronico> captor = ArgumentCaptor.forClass(ComprobanteElectronico.class);
+
+        servicio.enviarComprobante("<xml/>", comprobante);
+
+        verify(comprobanteElectronicoRepository).save(captor.capture());
+        ComprobanteElectronico guardado = captor.getValue();
+        assertThat(guardado.getUltimoResultadoConsulta()).isEqualTo("PENDIENTE");
+        assertThat(guardado.getFechaUltimaConsultaHacienda()).isNotNull();
+    }
+
+    @Test
+    void aplicarRespuesta_conRechazado_escribeUltimoResultadoRechazado() {
+        UUID empresaId = UUID.randomUUID();
+        ComprobanteElectronico comprobante = nuevoComprobante(empresaId, "SANDBOX", "clave-v12c");
+        CredencialHacienda credencial = nuevaCredencial(empresaId, "SANDBOX");
+
+        when(credencialHaciendaRepository.findByEmpresaIdAndAmbiente(empresaId, "SANDBOX"))
+                .thenReturn(Optional.of(credencial));
+        when(haciendaComprobanteApiService.enviarComprobante(any(), any(), any()))
+                .thenReturn(respuesta(MensajeHacienda.RECHAZADO, false, false));
+
+        ArgumentCaptor<ComprobanteElectronico> captor = ArgumentCaptor.forClass(ComprobanteElectronico.class);
+
+        servicio.enviarComprobante("<xml/>", comprobante);
+
+        verify(comprobanteElectronicoRepository).save(captor.capture());
+        assertThat(captor.getValue().getUltimoResultadoConsulta()).isEqualTo("RECHAZADO");
+        assertThat(captor.getValue().getFechaUltimaConsultaHacienda()).isNotNull();
+    }
+
+    @Test
+    void aplicarRespuesta_conError_escribeUltimoResultadoErrorComunicacion() {
+        UUID empresaId = UUID.randomUUID();
+        ComprobanteElectronico comprobante = nuevoComprobante(empresaId, "SANDBOX", "clave-v12d");
+        CredencialHacienda credencial = nuevaCredencial(empresaId, "SANDBOX");
+
+        when(credencialHaciendaRepository.findByEmpresaIdAndAmbiente(empresaId, "SANDBOX"))
+                .thenReturn(Optional.of(credencial));
+        when(haciendaComprobanteApiService.enviarComprobante(any(), any(), any()))
+                .thenReturn(respuesta(MensajeHacienda.ERROR, false, false));
+
+        ArgumentCaptor<ComprobanteElectronico> captor = ArgumentCaptor.forClass(ComprobanteElectronico.class);
+
+        servicio.enviarComprobante("<xml/>", comprobante);
+
+        verify(comprobanteElectronicoRepository).save(captor.capture());
+        assertThat(captor.getValue().getUltimoResultadoConsulta()).isEqualTo("ERROR_COMUNICACION");
+        assertThat(captor.getValue().getFechaUltimaConsultaHacienda()).isNotNull();
+    }
 }
