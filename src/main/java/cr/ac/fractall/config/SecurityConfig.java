@@ -43,7 +43,13 @@ public class SecurityConfig {
                 .csrf(AbstractHttpConfigurer::disable)
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(autorizacion -> autorizacion
-                        .requestMatchers("/auth/**", "/actuator/health").permitAll()
+                        .requestMatchers(
+                                "/auth/**",
+                                "/actuator/health",
+                                "/v3/api-docs/**",
+                                "/swagger-ui/**",
+                                "/swagger-ui.html"
+                        ).permitAll()
                         .anyRequest().authenticated())
                 // Sin esto, Spring Security no tiene ningún mecanismo de autenticación
                 // (no hay httpBasic/formLogin) y cae de vuelta a Http403ForbiddenEntryPoint
