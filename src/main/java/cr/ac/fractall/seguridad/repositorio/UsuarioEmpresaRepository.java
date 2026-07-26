@@ -5,6 +5,8 @@ import java.util.Optional;
 import java.util.UUID;
 
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 import cr.ac.fractall.seguridad.modelo.UsuarioEmpresa;
 
@@ -24,4 +26,20 @@ public interface UsuarioEmpresaRepository extends JpaRepository<UsuarioEmpresa, 
      * emitir un access token para esa empresa.
      */
     Optional<UsuarioEmpresa> findByUsuarioIdAndEmpresaIdAndEstado(UUID usuarioId, UUID empresaId, String estado);
+
+    /**
+     * Permisos efectivos del usuario en la empresa indicada, leídos desde la vista
+     * {@code permisos_efectivos} (V3). La vista está indexada por {@code usuario_empresa_id},
+     * y se accede a ella vía JOIN con {@code usuario_empresa} para filtrar por el par
+     * (usuarioId, empresaId) -- la vista en sí no contiene esas columnas directamente.
+     *
+     * <p>Native query obligatorio porque {@code permisos_efectivos} es una vista sin entidad
+     * JPA mapeada; JPQL no puede referenciarla directamente.
+     */
+    @Query(value = """
+            SELECT pe.permiso_codigo FROM permisos_efectivos pe
+            JOIN usuario_empresa ue ON ue.id = pe.usuario_empresa_id
+            WHERE ue.usuario_id = :usuarioId AND ue.empresa_id = :empresaId
+            """, nativeQuery = true)
+    List<String> findPermisoCodigos(@Param("usuarioId") UUID usuarioId, @Param("empresaId") UUID empresaId);
 }

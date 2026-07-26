@@ -15,17 +15,24 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.List;
+
 import cr.ac.fractall.notificaciones.servicio.EmailNotificacionService;
 import cr.ac.fractall.seguridad.dto.AccessTokenResponse;
+import cr.ac.fractall.seguridad.dto.EmpresaResumenResponse;
 import cr.ac.fractall.seguridad.dto.LoginRequest;
+import cr.ac.fractall.seguridad.dto.LogoutRequest;
 import cr.ac.fractall.seguridad.dto.MensajeResponse;
 import cr.ac.fractall.seguridad.dto.MfaCodigoRequest;
 import cr.ac.fractall.seguridad.dto.MfaEnrolamientoResponse;
 import cr.ac.fractall.seguridad.dto.MfaPendienteResponse;
+import cr.ac.fractall.seguridad.dto.PerfilResponse;
 import cr.ac.fractall.seguridad.dto.ReenviarVerificacionRequest;
+import cr.ac.fractall.seguridad.dto.RecuperarPasswordRequest;
 import cr.ac.fractall.seguridad.dto.RefrescarTokenRequest;
 import cr.ac.fractall.seguridad.dto.RegistroRequest;
 import cr.ac.fractall.seguridad.dto.RegistroResponse;
+import cr.ac.fractall.seguridad.dto.RestablecerPasswordRequest;
 import cr.ac.fractall.seguridad.dto.SeleccionEmpresaRequest;
 import cr.ac.fractall.seguridad.dto.SeleccionTenantRequeridaResponse;
 import cr.ac.fractall.seguridad.servicio.CodigoMfaInvalidoException;
@@ -34,10 +41,14 @@ import cr.ac.fractall.seguridad.servicio.CuentaBloqueadaException;
 import cr.ac.fractall.seguridad.servicio.CuentaNoVerificadaException;
 import cr.ac.fractall.seguridad.servicio.JwtService;
 import cr.ac.fractall.seguridad.servicio.LoginService;
+import cr.ac.fractall.seguridad.servicio.LogoutService;
 import cr.ac.fractall.seguridad.servicio.MembresiaInactivaException;
 import cr.ac.fractall.seguridad.servicio.MfaNoEnroladoException;
 import cr.ac.fractall.seguridad.servicio.MfaService;
 import cr.ac.fractall.seguridad.servicio.MfaYaHabilitadoException;
+import cr.ac.fractall.seguridad.servicio.MisEmpresasService;
+import cr.ac.fractall.seguridad.servicio.PerfilService;
+import cr.ac.fractall.seguridad.servicio.RecuperacionPasswordService;
 import cr.ac.fractall.seguridad.servicio.RefreshTokenInvalidoException;
 import cr.ac.fractall.seguridad.servicio.RegistroDuplicadoException;
 import cr.ac.fractall.seguridad.servicio.RegistroService;
@@ -66,6 +77,7 @@ public class AuthController {
     private static final String PREFIJO_BEARER = "Bearer ";
 
     private static final String ASUNTO_VERIFICACION = "Verifica tu correo - Fractall";
+    private static final String ASUNTO_RECUPERACION = "Restablece tu contraseña - Fractall";
 
     private static final MensajeResponse MENSAJE_VERIFICADO =
             new MensajeResponse("Correo verificado correctamente. Ya puedes iniciar sesión.");
@@ -109,6 +121,18 @@ public class AuthController {
     private static final MensajeResponse MENSAJE_CODIGO_MFA_INVALIDO =
             new MensajeResponse("El código MFA no es válido o ya expiró.");
 
+    // Mensajes de los nuevos endpoints de gestión de sesión y recuperación de contraseña.
+    private static final MensajeResponse LOGOUT_OK =
+            new MensajeResponse("Sesión cerrada correctamente.");
+    // Anti-enumeración: mismo mensaje siempre, sin revelar si el email existe o no.
+    private static final MensajeResponse RECUPERAR_GENERICA =
+            new MensajeResponse("Si el correo existe en nuestro sistema y está verificado, "
+                    + "recibirás un enlace para restablecer tu contraseña en unos minutos.");
+    private static final MensajeResponse RESET_OK =
+            new MensajeResponse("Contraseña actualizada correctamente.");
+    private static final MensajeResponse TOKEN_INVALIDO =
+            new MensajeResponse("El enlace de restablecimiento no es válido o ya expiró.");
+
     private final String appBaseUrl;
 
     private final RegistroService registroService;
@@ -119,6 +143,10 @@ public class AuthController {
     private final SesionService sesionService;
     private final JwtService jwtService;
     private final MfaService mfaService;
+    private final MisEmpresasService misEmpresasService;
+    private final PerfilService perfilService;
+    private final LogoutService logoutService;
+    private final RecuperacionPasswordService recuperacionPasswordService;
 
     public AuthController(
             @Value("${application.app-base-url}") String appBaseUrl,
@@ -129,7 +157,11 @@ public class AuthController {
             LoginService loginService,
             SesionService sesionService,
             JwtService jwtService,
-            MfaService mfaService) {
+            MfaService mfaService,
+            MisEmpresasService misEmpresasService,
+            PerfilService perfilService,
+            LogoutService logoutService,
+            RecuperacionPasswordService recuperacionPasswordService) {
         this.appBaseUrl = appBaseUrl;
         this.registroService = registroService;
         this.verificacionEmailService = verificacionEmailService;
@@ -139,6 +171,10 @@ public class AuthController {
         this.sesionService = sesionService;
         this.jwtService = jwtService;
         this.mfaService = mfaService;
+        this.misEmpresasService = misEmpresasService;
+        this.perfilService = perfilService;
+        this.logoutService = logoutService;
+        this.recuperacionPasswordService = recuperacionPasswordService;
     }
 
     @PostMapping("/registro")
@@ -338,6 +374,81 @@ public class AuthController {
         }
     }
 
+    @GetMapping("/mis-empresas")
+    public ResponseEntity<?> misEmpresas(
+            @RequestHeader(value = "Authorization", required = false) String authorizationHeader) {
+        String token = extraerBearer(authorizationHeader);
+        if (token == null || !jwtService.esValido(token) || jwtService.esTokenDePropositoEspecial(token)) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(MENSAJE_SIN_AUTENTICAR);
+        }
+
+        UUID usuarioId = jwtService.extraerUsuarioId(token);
+        List<EmpresaResumenResponse> empresas = misEmpresasService.listar(usuarioId);
+        return ResponseEntity.ok(empresas);
+    }
+
+    @GetMapping("/perfil")
+    public ResponseEntity<?> perfil(
+            @RequestHeader(value = "Authorization", required = false) String authorizationHeader) {
+        String token = extraerBearer(authorizationHeader);
+        if (token == null || !jwtService.esValido(token) || jwtService.esTokenDePropositoEspecial(token)) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(MENSAJE_SIN_AUTENTICAR);
+        }
+
+        UUID usuarioId = jwtService.extraerUsuarioId(token);
+        UUID empresaId = jwtService.extraerEmpresaId(token);
+        PerfilResponse perfil = perfilService.obtener(usuarioId, empresaId);
+        return ResponseEntity.ok(perfil);
+    }
+
+    @PostMapping("/logout")
+    public ResponseEntity<?> logout(
+            @RequestHeader(value = "Authorization", required = false) String authorizationHeader,
+            @Valid @RequestBody LogoutRequest request) {
+        String token = extraerBearer(authorizationHeader);
+        if (token == null || !jwtService.esValido(token) || jwtService.esTokenDePropositoEspecial(token)) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(MENSAJE_SIN_AUTENTICAR);
+        }
+
+        UUID usuarioId = jwtService.extraerUsuarioId(token);
+        logoutService.logout(request.refreshToken(), request.todasLasSesiones(), usuarioId);
+        return ResponseEntity.ok(LOGOUT_OK);
+    }
+
+    @PostMapping("/recuperar-password")
+    public ResponseEntity<MensajeResponse> recuperarPassword(
+            @Valid @RequestBody RecuperarPasswordRequest request,
+            HttpServletRequest httpRequest) {
+        String ip = resolverIp(httpRequest);
+
+        if (!reenvioVerificacionRateLimiter.permitido(ip)) {
+            return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).body(RECUPERAR_GENERICA);
+        }
+
+        Optional<RecuperacionPasswordService.RecuperacionResultado> resultado =
+                TenantContextDescartable.ejecutar(
+                        () -> recuperacionPasswordService.generarTokenSiElegible(request.email()));
+
+        resultado.ifPresent(r -> TenantContextDescartable.ejecutar((Runnable) () ->
+                emailNotificacionService.enviarConReintento(
+                        r.email(), ASUNTO_RECUPERACION, construirHtmlRecuperacion(r.tokenCrudo()))));
+
+        // SIEMPRE responder con el mensaje genérico -- anti-enumeración.
+        return ResponseEntity.ok(RECUPERAR_GENERICA);
+    }
+
+    @PostMapping("/restablecer-password")
+    public ResponseEntity<MensajeResponse> restablecerPassword(
+            @Valid @RequestBody RestablecerPasswordRequest request) {
+        boolean exitoso = TenantContextDescartable.ejecutar(
+                () -> recuperacionPasswordService.restablecer(request.token(), request.nuevaPassword()));
+
+        if (exitoso) {
+            return ResponseEntity.ok(RESET_OK);
+        }
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(TOKEN_INVALIDO);
+    }
+
     private AccessTokenResponse aRespuesta(TokensAcceso tokens) {
         return new AccessTokenResponse(tokens.accessToken(), tokens.refreshToken(), tokens.empresaId());
     }
@@ -386,7 +497,22 @@ public class AuthController {
                 + "<p>Este enlace expira en 24 horas.</p>";
     }
 
+    private String construirHtmlRecuperacion(String tokenCrudo) {
+        String enlace = appBaseUrl + "/auth/restablecer-password?token=" + tokenCrudo;
+        return "<p>Recibimos una solicitud para restablecer tu contraseña en Fractall.</p>"
+                + "<p>Haz clic en el siguiente enlace para continuar:</p>"
+                + "<p><a href=\"" + enlace + "\">" + enlace + "</a></p>"
+                + "<p>Este enlace expira en 1 hora. Si no solicitaste esto, puedes ignorar este correo.</p>";
+    }
+
     private String resolverIp(HttpServletRequest request) {
+        // X-Forwarded-For tomado del primer salto, solo si está presente -- en producción
+        // el proxy inverso pone la IP real del cliente aquí. Si no hay cabecera, se usa
+        // la IP de conexión directa (útil en tests y despliegues sin proxy).
+        String xForwardedFor = request.getHeader("X-Forwarded-For");
+        if (xForwardedFor != null && !xForwardedFor.isBlank()) {
+            return xForwardedFor.split(",")[0].trim();
+        }
         return request.getRemoteAddr();
     }
 }

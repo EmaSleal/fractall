@@ -1,6 +1,7 @@
 package cr.ac.fractall.seguridad.repositorio;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -17,4 +18,12 @@ public interface SesionRefreshTokenRepository extends JpaRepository<SesionRefres
      * expirado) debe tratarse como "refresh token inválido" sin distinguir el motivo.
      */
     Optional<SesionRefreshToken> findByTokenHashAndRevocadoFalseAndExpiraEnAfter(String tokenHash, LocalDateTime ahora);
+
+    /**
+     * Todas las sesiones activas (no revocadas) del usuario -- usado por {@code LogoutService}
+     * para revocar todas las sesiones cuando {@code todasLasSesiones = true}, y por
+     * {@code RecuperacionPasswordService} para revocar todas al cambiar la contraseña
+     * (sección de requisitos de seguridad: restablecimiento invalida sesiones activas).
+     */
+    List<SesionRefreshToken> findByUsuarioIdAndRevocadoFalse(UUID usuarioId);
 }
