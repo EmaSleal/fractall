@@ -39,3 +39,6 @@ docs/proyecto-referencia/
 !.env.example
 
 AGENTS.md
+
+.atl/
+graphify-out/
