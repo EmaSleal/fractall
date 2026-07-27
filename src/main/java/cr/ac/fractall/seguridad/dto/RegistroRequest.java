@@ -1,5 +1,6 @@
 package cr.ac.fractall.seguridad.dto;
 
+import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
@@ -14,19 +15,23 @@ import jakarta.validation.constraints.Size;
  */
 public record RegistroRequest(
 
+        @Schema(description = "Full name of the account owner", example = "María García")
         @NotBlank(message = "El nombre es obligatorio")
         @Size(max = 255)
         String nombre,
 
+        @Schema(description = "Login email address", example = "empresa@correo.com")
         @NotBlank(message = "El correo es obligatorio")
         @Email(message = "El correo no tiene un formato válido")
         @Size(max = 255)
         String email,
 
+        @Schema(description = "Password (8–72 characters)", example = "S3cr3t!abc")
         @NotBlank(message = "La contraseña es obligatoria")
         @Size(min = 8, max = 72, message = "La contraseña debe tener entre 8 y 72 caracteres")
         String password,
 
+        @Schema(description = "Legal company name (razón social)", example = "Mi Empresa S.A.")
         @NotBlank(message = "La razón social es obligatoria")
         @Size(max = 255)
         String razonSocial) {

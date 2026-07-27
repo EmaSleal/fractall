@@ -5,6 +5,7 @@ import java.util.List;
 import java.util.UUID;
 
 import cr.ac.fractall.facturacion.validacion.OtrosRequiereTexto;
+import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.AssertTrue;
 import jakarta.validation.constraints.NotEmpty;
@@ -28,42 +29,55 @@ import jakarta.validation.constraints.Size;
 @OtrosRequiereTexto(codigo = "condicionVenta", texto = "condicionVentaOtros")
 public record CrearFacturaRequest(
 
+        @Schema(description = "UUID of the target client", example = "550e8400-e29b-41d4-a716-446655440000")
         @NotNull
         UUID clienteId,
 
+        @Schema(description = "Sale condition code (default '01' — cash). 01=Contado, 02=Crédito, 03=Consignación, 04=Apartado, 05=Arrendamiento con opción de compra, 06=Arrendamiento en función financiera, 99=Otros.", example = "01")
         @Size(max = 2)
         String condicionVenta,
 
+        @Schema(description = "Credit term in days; required when condicionVenta='02'", example = "30")
         Integer plazoCredito,
 
+        @Schema(description = "Free-text description of sale condition; required when condicionVenta='99'", example = "Pago en especie")
         @Size(max = 100)
         String condicionVentaOtros,
 
+        @Schema(description = "Receptor economic activity code (6 digits); required when the receptor is a taxpayer", example = "620100")
         @Size(min = 6, max = 6)
         String codigoActividadReceptor,
 
+        @Schema(description = "Total VAT returned to the client (IVA devuelto)", example = "0.00")
         BigDecimal totalIvaDevuelto,
 
+        @Schema(description = "Deprecated — use mediosPago list instead. Payment method code (max 2 chars).", example = "01", deprecated = true)
         @Size(max = 2)
         String medioPago,
 
+        @Schema(description = "Currency code (ISO 4217). Defaults to 'CRC' if omitted.", example = "CRC")
         @Size(max = 3)
         String moneda,
 
+        @Schema(description = "Exchange rate to CRC; required when moneda != 'CRC'. Defaults to 1.00 if omitted.", example = "530.50")
         BigDecimal tipoCambio,
 
+        @Schema(description = "Invoice line items (at least one required)")
         @NotEmpty
         @Valid
         List<LineaFacturaItemRequest> lineas,
 
+        @Schema(description = "List of payment methods (up to 4). Preferred over the deprecated medioPago field.")
         @Size(max = 4)
         @Valid
         List<MedioPagoRequest> mediosPago,
 
+        @Schema(description = "Other charges to include in the invoice (up to 15)")
         @Size(max = 15)
         @Valid
         List<OtrosCargoRequest> otrosCargos,
 
+        @Schema(description = "Reference documents linked to this invoice (up to 10)")
         @Size(max = 10)
         @Valid
         List<ReferenciaRequest> informacionReferencia) {

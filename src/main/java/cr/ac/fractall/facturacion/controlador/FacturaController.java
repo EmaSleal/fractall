@@ -4,6 +4,10 @@ import java.time.LocalDate;
 import java.util.UUID;
 
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.format.annotation.DateTimeFormat;
@@ -180,6 +184,16 @@ public class FacturaController {
     }
 
     @Operation(summary = "Emitir factura electrónica")
+    @ApiResponses({
+        @ApiResponse(responseCode = "201", description = "Factura emitida exitosamente",
+            content = @Content(schema = @Schema(implementation = FacturaResponse.class))),
+        @ApiResponse(responseCode = "400", description = "Error de validación o regla de negocio",
+            content = @Content(schema = @Schema(implementation = MensajeResponse.class))),
+        @ApiResponse(responseCode = "404", description = "Recurso referenciado no encontrado",
+            content = @Content(schema = @Schema(implementation = MensajeResponse.class))),
+        @ApiResponse(responseCode = "503", description = "Configuración de empresa incompleta",
+            content = @Content(schema = @Schema(implementation = MensajeResponse.class)))
+    })
     @SecurityRequirement(name = "bearerAuth")
     @PostMapping
     public ResponseEntity<?> crear(@Valid @RequestBody CrearFacturaRequest request) {
