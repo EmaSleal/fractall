@@ -88,6 +88,11 @@ class ComprobanteEntregaService {
         ComprobanteElectronico comprobante = comprobanteElectronicoRepository.findById(comprobanteId)
                 .orElseThrow(() -> new ComprobanteElectronicoNoEncontradoException(comprobanteId));
 
+        if (comprobante.getPdfReferencia() != null) {
+            log.info("Comprobante {} ya entregado (pdfReferencia existente), omitiendo re-entrega", comprobanteId);
+            return;
+        }
+
         Factura factura = facturaRepository.findById(comprobante.getFacturaId())
                 .orElseThrow(() -> new IllegalStateException(
                         "Factura no encontrada para comprobante " + comprobanteId

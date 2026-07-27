@@ -247,6 +247,25 @@ class ComprobanteEntregaServiceTest {
     }
 
     // -------------------------------------------------------------------------
+    // SC-07: pdfReferencia ya existe — entregar() es idempotente, no re-entrega
+    // -------------------------------------------------------------------------
+
+    @Test
+    void sc07PdfReferenciaYaExisteSaltaEntregaCompleta() {
+        ComprobanteElectronico comprobante = nuevoComprobante(XML_RESPUESTA_REF);
+        comprobante.setPdfReferencia(PDF_REF); // ya entregado
+
+        when(comprobanteElectronicoRepository.findById(COMPROBANTE_ID)).thenReturn(Optional.of(comprobante));
+
+        servicio.entregar(COMPROBANTE_ID);
+
+        verifyNoInteractions(facturaPdfService);
+        verifyNoInteractions(comprobanteXmlCifradoUploader);
+        verifyNoInteractions(resendEmailClient);
+        verify(comprobanteElectronicoRepository, never()).save(any());
+    }
+
+    // -------------------------------------------------------------------------
     // SC-04: Phase A failure (uploader throws) — exception propagates, no save
     // -------------------------------------------------------------------------
 
