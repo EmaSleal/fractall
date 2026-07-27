@@ -21,6 +21,7 @@ import cr.ac.fractall.catalogo.servicio.ClienteExoneracionService;
 import cr.ac.fractall.catalogo.servicio.ClienteNoEncontradoException;
 import cr.ac.fractall.catalogo.servicio.TipoDocumentoExoneracionInvalidoException;
 import cr.ac.fractall.seguridad.dto.MensajeResponse;
+import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import jakarta.validation.Valid;
 
 /**
@@ -30,6 +31,7 @@ import jakarta.validation.Valid;
  * {@code arquitectura-facturacion-electronica-cr.md}). Mismo patrón de resolución de
  * {@code empresaId} vía {@code TenantContext} que {@code ProductoController} -- ver su javadoc.
  */
+@SecurityRequirement(name = "bearerAuth")
 @RestController
 @RequestMapping("/catalogo")
 public class ClienteExoneracionController {

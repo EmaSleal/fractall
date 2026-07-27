@@ -67,500 +67,506 @@ import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Value;
 
 /**
- * {@code /auth/registro}, {@code /auth/verificar-email}, {@code /auth/reenviar-verificacion}
+ * {@code /auth/registro}, {@code /auth/verificar-email},
+ * {@code /auth/reenviar-verificacion}
  * (sección 3.1); {@code /auth/login}, {@code /auth/seleccionar-tenant},
  * {@code /auth/cambiar-tenant}, {@code /auth/refrescar} (sección 3.2 y 3.4); y
- * {@code /auth/mfa/enrolar}, {@code /auth/mfa/confirmar}, {@code /auth/mfa/verificar}
- * (sección 3.3, batch final de la Fase 4) de {@code arquitectura-facturacion-electronica-cr.md}.
+ * {@code /auth/mfa/enrolar}, {@code /auth/mfa/confirmar},
+ * {@code /auth/mfa/verificar}
+ * (sección 3.3, batch final de la Fase 4) de
+ * {@code arquitectura-facturacion-electronica-cr.md}.
  */
 @Tag(name = "Autenticación", description = "Registro, login, MFA, sesión y recuperación de contraseña")
 @RestController
 @RequestMapping("/auth")
 public class AuthController {
 
-    private static final String PREFIJO_BEARER = "Bearer ";
+  private static final String PREFIJO_BEARER = "Bearer ";
 
-    private static final String ASUNTO_VERIFICACION = "Verifica tu correo - Fractall";
-    private static final String ASUNTO_RECUPERACION = "Restablece tu contraseña - Fractall";
+  private static final String ASUNTO_VERIFICACION = "Verifica tu correo - Fractall";
+  private static final String ASUNTO_RECUPERACION = "Restablece tu contraseña - Fractall";
 
-    private static final MensajeResponse MENSAJE_VERIFICADO =
-            new MensajeResponse("Correo verificado correctamente. Ya puedes iniciar sesión.");
-    private static final MensajeResponse MENSAJE_TOKEN_INVALIDO =
-            new MensajeResponse("El enlace de verificación no es válido o ya expiró.");
-    // Misma respuesta sin importar el motivo real (rate-limit por IP, rate-limit por email,
-    // email inexistente, o ya verificado) -- anti-enumeración, sección 3.1.
-    private static final MensajeResponse MENSAJE_REENVIO_GENERICO =
-            new MensajeResponse("Si el correo existe en nuestro sistema y aún no ha sido verificado, "
-                    + "se enviará un nuevo enlace de verificación en unos minutos.");
+  private static final MensajeResponse MENSAJE_VERIFICADO = new MensajeResponse(
+      "Correo verificado correctamente. Ya puedes iniciar sesión.");
+  private static final MensajeResponse MENSAJE_TOKEN_INVALIDO = new MensajeResponse(
+      "El enlace de verificación no es válido o ya expiró.");
+  // Misma respuesta sin importar el motivo real (rate-limit por IP, rate-limit
+  // por email,
+  // email inexistente, o ya verificado) -- anti-enumeración, sección 3.1.
+  private static final MensajeResponse MENSAJE_REENVIO_GENERICO = new MensajeResponse(
+      "Si el correo existe en nuestro sistema y aún no ha sido verificado, "
+          + "se enviará un nuevo enlace de verificación en unos minutos.");
 
-    // Mensajes de login -- cada uno DELIBERADAMENTE distinto entre sí (secciones 3.1, 3.2, 3.4):
-    // reutilizar el mismo texto para credenciales inválidas / cuenta no verificada / cuenta
-    // bloqueada le ocultaría al usuario legítimo por qué no puede entrar.
-    private static final MensajeResponse MENSAJE_CREDENCIALES_INVALIDAS =
-            new MensajeResponse("Correo o contraseña incorrectos.");
-    private static final MensajeResponse MENSAJE_CUENTA_NO_VERIFICADA =
-            new MensajeResponse("Tu cuenta aún no ha sido verificada. Revisa tu correo para activarla.");
-    private static final MensajeResponse MENSAJE_CUENTA_BLOQUEADA =
-            new MensajeResponse("Tu cuenta está bloqueada temporalmente por múltiples intentos fallidos. "
-                    + "Intenta de nuevo más tarde.");
-    private static final MensajeResponse MENSAJE_SIN_EMPRESA_ACTIVA =
-            new MensajeResponse("Tu cuenta no tiene ninguna empresa activa asociada.");
-    private static final MensajeResponse MENSAJE_MEMBRESIA_INACTIVA =
-            new MensajeResponse("No tienes acceso activo a la empresa solicitada.");
-    private static final MensajeResponse MENSAJE_TOKEN_SELECCION_INVALIDO =
-            new MensajeResponse("El token de selección de tenant no es válido o ya expiró.");
-    private static final MensajeResponse MENSAJE_SIN_AUTENTICAR =
-            new MensajeResponse("No autenticado.");
-    private static final MensajeResponse MENSAJE_REFRESH_TOKEN_INVALIDO =
-            new MensajeResponse("El refresh token no es válido, expiró o fue revocado.");
+  // Mensajes de login -- cada uno DELIBERADAMENTE distinto entre sí (secciones
+  // 3.1, 3.2, 3.4):
+  // reutilizar el mismo texto para credenciales inválidas / cuenta no verificada
+  // / cuenta
+  // bloqueada le ocultaría al usuario legítimo por qué no puede entrar.
+  private static final MensajeResponse MENSAJE_CREDENCIALES_INVALIDAS = new MensajeResponse(
+      "Correo o contraseña incorrectos.");
+  private static final MensajeResponse MENSAJE_CUENTA_NO_VERIFICADA = new MensajeResponse(
+      "Tu cuenta aún no ha sido verificada. Revisa tu correo para activarla.");
+  private static final MensajeResponse MENSAJE_CUENTA_BLOQUEADA = new MensajeResponse(
+      "Tu cuenta está bloqueada temporalmente por múltiples intentos fallidos. "
+          + "Intenta de nuevo más tarde.");
+  private static final MensajeResponse MENSAJE_SIN_EMPRESA_ACTIVA = new MensajeResponse(
+      "Tu cuenta no tiene ninguna empresa activa asociada.");
+  private static final MensajeResponse MENSAJE_MEMBRESIA_INACTIVA = new MensajeResponse(
+      "No tienes acceso activo a la empresa solicitada.");
+  private static final MensajeResponse MENSAJE_TOKEN_SELECCION_INVALIDO = new MensajeResponse(
+      "El token de selección de tenant no es válido o ya expiró.");
+  private static final MensajeResponse MENSAJE_SIN_AUTENTICAR = new MensajeResponse("No autenticado.");
+  private static final MensajeResponse MENSAJE_REFRESH_TOKEN_INVALIDO = new MensajeResponse(
+      "El refresh token no es válido, expiró o fue revocado.");
 
-    // Mensajes de MFA (sección 3.3) -- mismo criterio que los de login: cada motivo de
-    // rechazo con un mensaje distinto.
-    private static final MensajeResponse MENSAJE_TOKEN_MFA_PENDIENTE_INVALIDO =
-            new MensajeResponse("El token de MFA pendiente no es válido o ya expiró.");
-    private static final MensajeResponse MENSAJE_MFA_YA_HABILITADO =
-            new MensajeResponse("El MFA ya está habilitado para esta cuenta.");
-    private static final MensajeResponse MENSAJE_MFA_NO_ENROLADO =
-            new MensajeResponse("Debes completar el enrolamiento MFA antes de confirmarlo.");
-    private static final MensajeResponse MENSAJE_CODIGO_MFA_INVALIDO =
-            new MensajeResponse("El código MFA no es válido o ya expiró.");
+  // Mensajes de MFA (sección 3.3) -- mismo criterio que los de login: cada motivo
+  // de
+  // rechazo con un mensaje distinto.
+  private static final MensajeResponse MENSAJE_TOKEN_MFA_PENDIENTE_INVALIDO = new MensajeResponse(
+      "El token de MFA pendiente no es válido o ya expiró.");
+  private static final MensajeResponse MENSAJE_MFA_YA_HABILITADO = new MensajeResponse(
+      "El MFA ya está habilitado para esta cuenta.");
+  private static final MensajeResponse MENSAJE_MFA_NO_ENROLADO = new MensajeResponse(
+      "Debes completar el enrolamiento MFA antes de confirmarlo.");
+  private static final MensajeResponse MENSAJE_CODIGO_MFA_INVALIDO = new MensajeResponse(
+      "El código MFA no es válido o ya expiró.");
 
-    // Mensajes de los nuevos endpoints de gestión de sesión y recuperación de contraseña.
-    private static final MensajeResponse LOGOUT_OK =
-            new MensajeResponse("Sesión cerrada correctamente.");
-    // Anti-enumeración: mismo mensaje siempre, sin revelar si el email existe o no.
-    private static final MensajeResponse RECUPERAR_GENERICA =
-            new MensajeResponse("Si el correo existe en nuestro sistema y está verificado, "
-                    + "recibirás un enlace para restablecer tu contraseña en unos minutos.");
-    private static final MensajeResponse RESET_OK =
-            new MensajeResponse("Contraseña actualizada correctamente.");
-    private static final MensajeResponse TOKEN_INVALIDO =
-            new MensajeResponse("El enlace de restablecimiento no es válido o ya expiró.");
+  // Mensajes de los nuevos endpoints de gestión de sesión y recuperación de
+  // contraseña.
+  private static final MensajeResponse LOGOUT_OK = new MensajeResponse("Sesión cerrada correctamente.");
+  // Anti-enumeración: mismo mensaje siempre, sin revelar si el email existe o no.
+  private static final MensajeResponse RECUPERAR_GENERICA = new MensajeResponse(
+      "Si el correo existe en nuestro sistema y está verificado, "
+          + "recibirás un enlace para restablecer tu contraseña en unos minutos.");
+  private static final MensajeResponse RESET_OK = new MensajeResponse("Contraseña actualizada correctamente.");
+  private static final MensajeResponse TOKEN_INVALIDO = new MensajeResponse(
+      "El enlace de restablecimiento no es válido o ya expiró.");
 
-    private final String appBaseUrl;
+  private final String appBaseUrl;
 
-    private final RegistroService registroService;
-    private final VerificacionEmailService verificacionEmailService;
-    private final EmailNotificacionService emailNotificacionService;
-    private final ReenvioVerificacionRateLimiter reenvioVerificacionRateLimiter;
-    private final LoginService loginService;
-    private final SesionService sesionService;
-    private final JwtService jwtService;
-    private final MfaService mfaService;
-    private final MisEmpresasService misEmpresasService;
-    private final PerfilService perfilService;
-    private final LogoutService logoutService;
-    private final RecuperacionPasswordService recuperacionPasswordService;
+  private final RegistroService registroService;
+  private final VerificacionEmailService verificacionEmailService;
+  private final EmailNotificacionService emailNotificacionService;
+  private final ReenvioVerificacionRateLimiter reenvioVerificacionRateLimiter;
+  private final LoginService loginService;
+  private final SesionService sesionService;
+  private final JwtService jwtService;
+  private final MfaService mfaService;
+  private final MisEmpresasService misEmpresasService;
+  private final PerfilService perfilService;
+  private final LogoutService logoutService;
+  private final RecuperacionPasswordService recuperacionPasswordService;
 
-    public AuthController(
-            @Value("${application.app-base-url}") String appBaseUrl,
-            RegistroService registroService,
-            VerificacionEmailService verificacionEmailService,
-            EmailNotificacionService emailNotificacionService,
-            ReenvioVerificacionRateLimiter reenvioVerificacionRateLimiter,
-            LoginService loginService,
-            SesionService sesionService,
-            JwtService jwtService,
-            MfaService mfaService,
-            MisEmpresasService misEmpresasService,
-            PerfilService perfilService,
-            LogoutService logoutService,
-            RecuperacionPasswordService recuperacionPasswordService) {
-        this.appBaseUrl = appBaseUrl;
-        this.registroService = registroService;
-        this.verificacionEmailService = verificacionEmailService;
-        this.emailNotificacionService = emailNotificacionService;
-        this.reenvioVerificacionRateLimiter = reenvioVerificacionRateLimiter;
-        this.loginService = loginService;
-        this.sesionService = sesionService;
-        this.jwtService = jwtService;
-        this.mfaService = mfaService;
-        this.misEmpresasService = misEmpresasService;
-        this.perfilService = perfilService;
-        this.logoutService = logoutService;
-        this.recuperacionPasswordService = recuperacionPasswordService;
+  public AuthController(
+      @Value("${application.app-base-url}") String appBaseUrl,
+      RegistroService registroService,
+      VerificacionEmailService verificacionEmailService,
+      EmailNotificacionService emailNotificacionService,
+      ReenvioVerificacionRateLimiter reenvioVerificacionRateLimiter,
+      LoginService loginService,
+      SesionService sesionService,
+      JwtService jwtService,
+      MfaService mfaService,
+      MisEmpresasService misEmpresasService,
+      PerfilService perfilService,
+      LogoutService logoutService,
+      RecuperacionPasswordService recuperacionPasswordService) {
+    this.appBaseUrl = appBaseUrl;
+    this.registroService = registroService;
+    this.verificacionEmailService = verificacionEmailService;
+    this.emailNotificacionService = emailNotificacionService;
+    this.reenvioVerificacionRateLimiter = reenvioVerificacionRateLimiter;
+    this.loginService = loginService;
+    this.sesionService = sesionService;
+    this.jwtService = jwtService;
+    this.mfaService = mfaService;
+    this.misEmpresasService = misEmpresasService;
+    this.perfilService = perfilService;
+    this.logoutService = logoutService;
+    this.recuperacionPasswordService = recuperacionPasswordService;
+  }
+
+  @Operation(summary = "Registrar nuevo usuario y empresa")
+  @PostMapping("/registro")
+  public ResponseEntity<RegistroResponse> registrar(@Valid @RequestBody RegistroRequest request) {
+    try {
+      RegistroService.RegistroResultado resultado = TenantContextDescartable
+          .ejecutar(() -> registroService.registrar(request));
+
+      // El envío ocurre DESPUÉS de que la transacción de registro ya hizo commit (la
+      // llamada anterior ya retornó): un fallo de Resend nunca debe revertir el
+      // registro. enviarConReintento absorbe ese fallo encolando un reintento.
+      TenantContextDescartable.ejecutar((Runnable) () -> emailNotificacionService.enviarConReintento(
+          resultado.email(), ASUNTO_VERIFICACION, construirHtmlVerificacion(resultado.tokenCrudo())));
+
+      RegistroResponse cuerpo = new RegistroResponse(resultado.usuarioId(), resultado.empresaId(),
+          "Registro exitoso. Revisa tu correo para verificar la cuenta.");
+      return ResponseEntity.status(HttpStatus.CREATED).body(cuerpo);
+    } catch (RegistroDuplicadoException excepcion) {
+      return ResponseEntity.status(HttpStatus.CONFLICT)
+          .body(new RegistroResponse(null, null, excepcion.getMessage()));
+    }
+  }
+
+  @Operation(summary = "Verificar correo electrónico con token")
+  @GetMapping("/verificar-email")
+  public ResponseEntity<MensajeResponse> verificarEmail(@RequestParam String token) {
+    boolean verificado = TenantContextDescartable.ejecutar(() -> verificacionEmailService.verificar(token));
+    if (verificado) {
+      return ResponseEntity.ok(MENSAJE_VERIFICADO);
+    }
+    return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(MENSAJE_TOKEN_INVALIDO);
+  }
+
+  @Operation(summary = "Reenviar correo de verificación")
+  @PostMapping("/reenviar-verificacion")
+  public ResponseEntity<MensajeResponse> reenviarVerificacion(
+      @Valid @RequestBody ReenviarVerificacionRequest request,
+      HttpServletRequest httpRequest) {
+    String ip = resolverIp(httpRequest);
+
+    if (reenvioVerificacionRateLimiter.permitido(ip)) {
+      Optional<VerificacionEmailService.ReenvioResultado> resultado = TenantContextDescartable.ejecutar(
+          () -> verificacionEmailService.generarTokenReenvioSiElegible(request.email()));
+
+      resultado.ifPresent(
+          r -> TenantContextDescartable.ejecutar((Runnable) () -> emailNotificacionService.enviarConReintento(
+              r.email(), ASUNTO_VERIFICACION, construirHtmlVerificacion(r.tokenCrudo()))));
     }
 
-    @Operation(summary = "Registrar nuevo usuario y empresa")
-    @PostMapping("/registro")
-    public ResponseEntity<RegistroResponse> registrar(@Valid @RequestBody RegistroRequest request) {
-        try {
-            RegistroService.RegistroResultado resultado =
-                    TenantContextDescartable.ejecutar(() -> registroService.registrar(request));
+    return ResponseEntity.ok(MENSAJE_REENVIO_GENERICO);
+  }
 
-            // El envío ocurre DESPUÉS de que la transacción de registro ya hizo commit (la
-            // llamada anterior ya retornó): un fallo de Resend nunca debe revertir el
-            // registro. enviarConReintento absorbe ese fallo encolando un reintento.
-            TenantContextDescartable.ejecutar((Runnable) () -> emailNotificacionService.enviarConReintento(
-                    resultado.email(), ASUNTO_VERIFICACION, construirHtmlVerificacion(resultado.tokenCrudo())));
+  @Operation(summary = "Iniciar sesión")
+  @PostMapping("/login")
+  public ResponseEntity<?> login(@Valid @RequestBody LoginRequest request) {
+    try {
+      LoginService.LoginResultado resultado = TenantContextDescartable.ejecutar(
+          () -> loginService.login(request.email(), request.password()));
 
-            RegistroResponse cuerpo = new RegistroResponse(resultado.usuarioId(), resultado.empresaId(),
-                    "Registro exitoso. Revisa tu correo para verificar la cuenta.");
-            return ResponseEntity.status(HttpStatus.CREATED).body(cuerpo);
-        } catch (RegistroDuplicadoException excepcion) {
-            return ResponseEntity.status(HttpStatus.CONFLICT)
-                    .body(new RegistroResponse(null, null, excepcion.getMessage()));
-        }
+      if (resultado.requiereSeleccionTenant()) {
+        return ResponseEntity.ok(new SeleccionTenantRequeridaResponse(resultado.tokenSeleccionTenant()));
+      }
+      if (resultado.requiereMfa()) {
+        return ResponseEntity.ok(
+            new MfaPendienteResponse(resultado.tokenMfaPendiente(), resultado.mfaRequiereEnrolamiento()));
+      }
+      return ResponseEntity.ok(aRespuesta(resultado.tokens()));
+    } catch (CuentaNoVerificadaException excepcion) {
+      return ResponseEntity.status(HttpStatus.FORBIDDEN).body(MENSAJE_CUENTA_NO_VERIFICADA);
+    } catch (CuentaBloqueadaException excepcion) {
+      return ResponseEntity.status(HttpStatus.LOCKED).body(MENSAJE_CUENTA_BLOQUEADA);
+    } catch (CredencialesInvalidasException excepcion) {
+      return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(MENSAJE_CREDENCIALES_INVALIDAS);
+    } catch (SinEmpresaActivaException excepcion) {
+      return ResponseEntity.status(HttpStatus.CONFLICT).body(MENSAJE_SIN_EMPRESA_ACTIVA);
+    }
+  }
+
+  @Operation(summary = "Seleccionar empresa con token de selección", description = "Requiere un token de selección de tenant (selection-tenant JWT) en el header "
+      + "`Authorization: Bearer {token}`. Este token se obtiene del campo `seleccionTenantToken` "
+      + "en la respuesta de /auth/login cuando el usuario pertenece a múltiples empresas. "
+      + "No es un access token estándar — el botón Authorize de Swagger UI no aplica aquí.")
+  @PostMapping("/seleccionar-tenant")
+  public ResponseEntity<?> seleccionarTenant(
+      @RequestHeader(value = "Authorization", required = false) String authorizationHeader,
+      @Valid @RequestBody SeleccionEmpresaRequest request) {
+    String token = extraerBearer(authorizationHeader);
+    // Validado aquí, NO vía SecurityContextHolder: JwtAuthenticationFilter deja
+    // este
+    // token deliberadamente sin autenticar (ver su javadoc) porque es de alcance
+    // mínimo -- este endpoint es precisamente el único lugar autorizado a
+    // aceptarlo, así
+    // que lo parsea y valida por su cuenta.
+    if (token == null || !jwtService.esValido(token) || !jwtService.esTokenSeleccionTenant(token)) {
+      return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(MENSAJE_TOKEN_SELECCION_INVALIDO);
     }
 
-    @Operation(summary = "Verificar correo electrónico con token")
-    @GetMapping("/verificar-email")
-    public ResponseEntity<MensajeResponse> verificarEmail(@RequestParam String token) {
-        boolean verificado = TenantContextDescartable.ejecutar(() -> verificacionEmailService.verificar(token));
-        if (verificado) {
-            return ResponseEntity.ok(MENSAJE_VERIFICADO);
-        }
-        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(MENSAJE_TOKEN_INVALIDO);
+    UUID usuarioId = jwtService.extraerUsuarioId(token);
+    try {
+      SesionResultado resultado = TenantContextDescartable.ejecutar(
+          () -> sesionService.seleccionarTenant(usuarioId, request.empresaId()));
+      if (resultado.requiereMfa()) {
+        return ResponseEntity.ok(
+            new MfaPendienteResponse(resultado.tokenMfaPendiente(), resultado.mfaRequiereEnrolamiento()));
+      }
+      return ResponseEntity.ok(aRespuesta(resultado.tokens()));
+    } catch (MembresiaInactivaException excepcion) {
+      return ResponseEntity.status(HttpStatus.FORBIDDEN).body(MENSAJE_MEMBRESIA_INACTIVA);
+    }
+  }
+
+  @Operation(summary = "Cambiar empresa activa en la sesión")
+  @SecurityRequirement(name = "bearerAuth")
+  @PostMapping("/cambiar-tenant")
+  public ResponseEntity<?> cambiarTenant(@Valid @RequestBody SeleccionEmpresaRequest request) {
+    Optional<UUID> usuarioId = usuarioIdAutenticado();
+    if (usuarioId.isEmpty()) {
+      return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(MENSAJE_SIN_AUTENTICAR);
     }
 
-    @Operation(summary = "Reenviar correo de verificación")
-    @PostMapping("/reenviar-verificacion")
-    public ResponseEntity<MensajeResponse> reenviarVerificacion(
-            @Valid @RequestBody ReenviarVerificacionRequest request,
-            HttpServletRequest httpRequest) {
-        String ip = resolverIp(httpRequest);
+    try {
+      // "Invalida el token de la empresa actual" (sección 3.2 punto 3): con access
+      // tokens de vida corta (15 min) y sin blacklist server-side en este diseño
+      // (solo
+      // el refresh token es revocable), no hay nada que invalidar activamente del
+      // lado
+      // del servidor para el token anterior -- la propia corta expiración ES la
+      // mitigación aceptada. Inventar un blacklist aquí sería contradecir esa
+      // decisión
+      // de arquitectura, no reforzarla.
+      TokensAcceso resultado = TenantContextDescartable.ejecutar(
+          () -> sesionService.cambiarTenant(usuarioId.get(), request.empresaId()));
+      return ResponseEntity.ok(aRespuesta(resultado));
+    } catch (MembresiaInactivaException excepcion) {
+      return ResponseEntity.status(HttpStatus.FORBIDDEN).body(MENSAJE_MEMBRESIA_INACTIVA);
+    }
+  }
 
-        if (reenvioVerificacionRateLimiter.permitido(ip)) {
-            Optional<VerificacionEmailService.ReenvioResultado> resultado = TenantContextDescartable.ejecutar(
-                    () -> verificacionEmailService.generarTokenReenvioSiElegible(request.email()));
+  @Operation(summary = "Refrescar access token")
+  @PostMapping("/refrescar")
+  public ResponseEntity<?> refrescar(@Valid @RequestBody RefrescarTokenRequest request) {
+    try {
+      TokensAcceso resultado = TenantContextDescartable.ejecutar(
+          () -> sesionService.refrescar(request.refreshToken(), request.empresaId()));
+      return ResponseEntity.ok(aRespuesta(resultado));
+    } catch (RefreshTokenInvalidoException excepcion) {
+      return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(MENSAJE_REFRESH_TOKEN_INVALIDO);
+    } catch (MembresiaInactivaException excepcion) {
+      return ResponseEntity.status(HttpStatus.FORBIDDEN).body(MENSAJE_MEMBRESIA_INACTIVA);
+    }
+  }
 
-            resultado.ifPresent(r -> TenantContextDescartable.ejecutar((Runnable) () ->
-                    emailNotificacionService.enviarConReintento(
-                            r.email(), ASUNTO_VERIFICACION, construirHtmlVerificacion(r.tokenCrudo()))));
-        }
-
-        return ResponseEntity.ok(MENSAJE_REENVIO_GENERICO);
+  @Operation(summary = "Iniciar enrolamiento MFA (TOTP)", description = "Requiere un token MFA pendiente (mfa-pending JWT) en el header "
+      + "`Authorization: Bearer {token}`. Este token se obtiene del campo `tokenMfaPendiente` "
+      + "en la respuesta de /auth/login o /auth/seleccionar-tenant cuando MFA está habilitado. "
+      + "No es un access token estándar — el botón Authorize de Swagger UI no aplica aquí.")
+  @PostMapping("/mfa/enrolar")
+  public ResponseEntity<?> mfaEnrolar(
+      @RequestHeader(value = "Authorization", required = false) String authorizationHeader) {
+    String token = extraerBearer(authorizationHeader);
+    if (!esTokenMfaPendienteValido(token)) {
+      return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(MENSAJE_TOKEN_MFA_PENDIENTE_INVALIDO);
     }
 
-    @Operation(summary = "Iniciar sesión")
-    @PostMapping("/login")
-    public ResponseEntity<?> login(@Valid @RequestBody LoginRequest request) {
-        try {
-            LoginService.LoginResultado resultado = TenantContextDescartable.ejecutar(
-                    () -> loginService.login(request.email(), request.password()));
+    UUID usuarioId = jwtService.extraerUsuarioId(token);
+    try {
+      MfaService.EnrolamientoResultado resultado = TenantContextDescartable
+          .ejecutar(() -> mfaService.enrolar(usuarioId));
+      return ResponseEntity.ok(new MfaEnrolamientoResponse(resultado.qrCodeBase64Png(), resultado.secretoBase32()));
+    } catch (MfaYaHabilitadoException excepcion) {
+      return ResponseEntity.status(HttpStatus.CONFLICT).body(MENSAJE_MFA_YA_HABILITADO);
+    }
+  }
 
-            if (resultado.requiereSeleccionTenant()) {
-                return ResponseEntity.ok(new SeleccionTenantRequeridaResponse(resultado.tokenSeleccionTenant()));
-            }
-            if (resultado.requiereMfa()) {
-                return ResponseEntity.ok(
-                        new MfaPendienteResponse(resultado.tokenMfaPendiente(), resultado.mfaRequiereEnrolamiento()));
-            }
-            return ResponseEntity.ok(aRespuesta(resultado.tokens()));
-        } catch (CuentaNoVerificadaException excepcion) {
-            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(MENSAJE_CUENTA_NO_VERIFICADA);
-        } catch (CuentaBloqueadaException excepcion) {
-            return ResponseEntity.status(HttpStatus.LOCKED).body(MENSAJE_CUENTA_BLOQUEADA);
-        } catch (CredencialesInvalidasException excepcion) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(MENSAJE_CREDENCIALES_INVALIDAS);
-        } catch (SinEmpresaActivaException excepcion) {
-            return ResponseEntity.status(HttpStatus.CONFLICT).body(MENSAJE_SIN_EMPRESA_ACTIVA);
-        }
+  @Operation(summary = "Confirmar enrolamiento MFA con código TOTP", description = "Requiere un token MFA pendiente (mfa-pending JWT) en el header "
+      + "`Authorization: Bearer {token}`. Este token se obtiene del campo `tokenMfaPendiente` "
+      + "en la respuesta de /auth/login o /auth/seleccionar-tenant cuando MFA está habilitado. "
+      + "No es un access token estándar — el botón Authorize de Swagger UI no aplica aquí.")
+  @PostMapping("/mfa/confirmar")
+  public ResponseEntity<?> mfaConfirmar(
+      @RequestHeader(value = "Authorization", required = false) String authorizationHeader,
+      @Valid @RequestBody MfaCodigoRequest request) {
+    String token = extraerBearer(authorizationHeader);
+    if (!esTokenMfaPendienteValido(token)) {
+      return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(MENSAJE_TOKEN_MFA_PENDIENTE_INVALIDO);
     }
 
-    @Operation(
-        summary = "Seleccionar empresa con token de selección",
-        description = "Requiere un token de selección de tenant (selection-tenant JWT) en el header "
-            + "`Authorization: Bearer {token}`. Este token se obtiene del campo `seleccionTenantToken` "
-            + "en la respuesta de /auth/login cuando el usuario pertenece a múltiples empresas. "
-            + "No es un access token estándar — el botón Authorize de Swagger UI no aplica aquí."
-    )
-    @PostMapping("/seleccionar-tenant")
-    public ResponseEntity<?> seleccionarTenant(
-            @RequestHeader(value = "Authorization", required = false) String authorizationHeader,
-            @Valid @RequestBody SeleccionEmpresaRequest request) {
-        String token = extraerBearer(authorizationHeader);
-        // Validado aquí, NO vía SecurityContextHolder: JwtAuthenticationFilter deja este
-        // token deliberadamente sin autenticar (ver su javadoc) porque es de alcance
-        // mínimo -- este endpoint es precisamente el único lugar autorizado a aceptarlo, así
-        // que lo parsea y valida por su cuenta.
-        if (token == null || !jwtService.esValido(token) || !jwtService.esTokenSeleccionTenant(token)) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(MENSAJE_TOKEN_SELECCION_INVALIDO);
-        }
+    UUID usuarioId = jwtService.extraerUsuarioId(token);
+    UUID empresaId = jwtService.extraerEmpresaId(token);
+    try {
+      TokensAcceso resultado = TenantContextDescartable.ejecutar(
+          () -> mfaService.confirmar(usuarioId, empresaId, request.codigo()));
+      return ResponseEntity.ok(aRespuesta(resultado));
+    } catch (MfaNoEnroladoException excepcion) {
+      return ResponseEntity.status(HttpStatus.CONFLICT).body(MENSAJE_MFA_NO_ENROLADO);
+    } catch (CodigoMfaInvalidoException excepcion) {
+      return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(MENSAJE_CODIGO_MFA_INVALIDO);
+    }
+  }
 
-        UUID usuarioId = jwtService.extraerUsuarioId(token);
-        try {
-            SesionResultado resultado = TenantContextDescartable.ejecutar(
-                    () -> sesionService.seleccionarTenant(usuarioId, request.empresaId()));
-            if (resultado.requiereMfa()) {
-                return ResponseEntity.ok(
-                        new MfaPendienteResponse(resultado.tokenMfaPendiente(), resultado.mfaRequiereEnrolamiento()));
-            }
-            return ResponseEntity.ok(aRespuesta(resultado.tokens()));
-        } catch (MembresiaInactivaException excepcion) {
-            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(MENSAJE_MEMBRESIA_INACTIVA);
-        }
+  @Operation(summary = "Verificar código MFA en login", description = "Requiere un token MFA pendiente (mfa-pending JWT) en el header "
+      + "`Authorization: Bearer {token}`. Este token se obtiene del campo `tokenMfaPendiente` "
+      + "en la respuesta de /auth/login o /auth/seleccionar-tenant cuando MFA está habilitado. "
+      + "No es un access token estándar — el botón Authorize de Swagger UI no aplica aquí.")
+  @PostMapping("/mfa/verificar")
+  public ResponseEntity<?> mfaVerificar(
+      @RequestHeader(value = "Authorization", required = false) String authorizationHeader,
+      @Valid @RequestBody MfaCodigoRequest request) {
+    String token = extraerBearer(authorizationHeader);
+    if (!esTokenMfaPendienteValido(token)) {
+      return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(MENSAJE_TOKEN_MFA_PENDIENTE_INVALIDO);
     }
 
-    @Operation(summary = "Cambiar empresa activa en la sesión")
-    @SecurityRequirement(name = "bearerAuth")
-    @PostMapping("/cambiar-tenant")
-    public ResponseEntity<?> cambiarTenant(@Valid @RequestBody SeleccionEmpresaRequest request) {
-        Optional<UUID> usuarioId = usuarioIdAutenticado();
-        if (usuarioId.isEmpty()) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(MENSAJE_SIN_AUTENTICAR);
-        }
+    UUID usuarioId = jwtService.extraerUsuarioId(token);
+    UUID empresaId = jwtService.extraerEmpresaId(token);
+    try {
+      TokensAcceso resultado = TenantContextDescartable.ejecutar(
+          () -> mfaService.verificar(usuarioId, empresaId, request.codigo()));
+      return ResponseEntity.ok(aRespuesta(resultado));
+    } catch (MfaNoEnroladoException excepcion) {
+      return ResponseEntity.status(HttpStatus.CONFLICT).body(MENSAJE_MFA_NO_ENROLADO);
+    } catch (CodigoMfaInvalidoException excepcion) {
+      return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(MENSAJE_CODIGO_MFA_INVALIDO);
+    }
+  }
 
-        try {
-            // "Invalida el token de la empresa actual" (sección 3.2 punto 3): con access
-            // tokens de vida corta (15 min) y sin blacklist server-side en este diseño (solo
-            // el refresh token es revocable), no hay nada que invalidar activamente del lado
-            // del servidor para el token anterior -- la propia corta expiración ES la
-            // mitigación aceptada. Inventar un blacklist aquí sería contradecir esa decisión
-            // de arquitectura, no reforzarla.
-            TokensAcceso resultado = TenantContextDescartable.ejecutar(
-                    () -> sesionService.cambiarTenant(usuarioId.get(), request.empresaId()));
-            return ResponseEntity.ok(aRespuesta(resultado));
-        } catch (MembresiaInactivaException excepcion) {
-            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(MENSAJE_MEMBRESIA_INACTIVA);
-        }
+  @Operation(summary = "Listar empresas del usuario autenticado")
+  @SecurityRequirement(name = "bearerAuth")
+  @GetMapping("/mis-empresas")
+  public ResponseEntity<?> misEmpresas(
+      @RequestHeader(value = "Authorization", required = false) String authorizationHeader) {
+    String token = extraerBearer(authorizationHeader);
+    if (token == null || !jwtService.esValido(token) || jwtService.esTokenDePropositoEspecial(token)) {
+      return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(MENSAJE_SIN_AUTENTICAR);
     }
 
-    @Operation(summary = "Refrescar access token")
-    @SecurityRequirement(name = "bearerAuth")
-    @PostMapping("/refrescar")
-    public ResponseEntity<?> refrescar(@Valid @RequestBody RefrescarTokenRequest request) {
-        try {
-            TokensAcceso resultado = TenantContextDescartable.ejecutar(
-                    () -> sesionService.refrescar(request.refreshToken(), request.empresaId()));
-            return ResponseEntity.ok(aRespuesta(resultado));
-        } catch (RefreshTokenInvalidoException excepcion) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(MENSAJE_REFRESH_TOKEN_INVALIDO);
-        } catch (MembresiaInactivaException excepcion) {
-            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(MENSAJE_MEMBRESIA_INACTIVA);
-        }
+    UUID usuarioId = jwtService.extraerUsuarioId(token);
+    List<EmpresaResumenResponse> empresas = misEmpresasService.listar(usuarioId);
+    return ResponseEntity.ok(empresas);
+  }
+
+  @Operation(summary = "Obtener perfil del usuario autenticado")
+  @SecurityRequirement(name = "bearerAuth")
+  @GetMapping("/perfil")
+  public ResponseEntity<?> perfil(
+      @RequestHeader(value = "Authorization", required = false) String authorizationHeader) {
+    String token = extraerBearer(authorizationHeader);
+    if (token == null || !jwtService.esValido(token) || jwtService.esTokenDePropositoEspecial(token)) {
+      return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(MENSAJE_SIN_AUTENTICAR);
     }
 
-    @Operation(
-        summary = "Iniciar enrolamiento MFA (TOTP)",
-        description = "Requiere un token MFA pendiente (mfa-pending JWT) en el header "
-            + "`Authorization: Bearer {token}`. Este token se obtiene del campo `tokenMfaPendiente` "
-            + "en la respuesta de /auth/login o /auth/seleccionar-tenant cuando MFA está habilitado. "
-            + "No es un access token estándar — el botón Authorize de Swagger UI no aplica aquí."
-    )
-    @PostMapping("/mfa/enrolar")
-    public ResponseEntity<?> mfaEnrolar(
-            @RequestHeader(value = "Authorization", required = false) String authorizationHeader) {
-        String token = extraerBearer(authorizationHeader);
-        if (!esTokenMfaPendienteValido(token)) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(MENSAJE_TOKEN_MFA_PENDIENTE_INVALIDO);
-        }
+    UUID usuarioId = jwtService.extraerUsuarioId(token);
+    UUID empresaId = jwtService.extraerEmpresaId(token);
+    PerfilResponse perfil = perfilService.obtener(usuarioId, empresaId);
+    return ResponseEntity.ok(perfil);
+  }
 
-        UUID usuarioId = jwtService.extraerUsuarioId(token);
-        try {
-            MfaService.EnrolamientoResultado resultado =
-                    TenantContextDescartable.ejecutar(() -> mfaService.enrolar(usuarioId));
-            return ResponseEntity.ok(new MfaEnrolamientoResponse(resultado.qrCodeBase64Png(), resultado.secretoBase32()));
-        } catch (MfaYaHabilitadoException excepcion) {
-            return ResponseEntity.status(HttpStatus.CONFLICT).body(MENSAJE_MFA_YA_HABILITADO);
-        }
+  @Operation(summary = "Cerrar sesión (revocar refresh token)")
+  @SecurityRequirement(name = "bearerAuth")
+  @PostMapping("/logout")
+  public ResponseEntity<?> logout(
+      @RequestHeader(value = "Authorization", required = false) String authorizationHeader,
+      @Valid @RequestBody LogoutRequest request) {
+    String token = extraerBearer(authorizationHeader);
+    if (token == null || !jwtService.esValido(token) || jwtService.esTokenDePropositoEspecial(token)) {
+      return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(MENSAJE_SIN_AUTENTICAR);
     }
 
-    @Operation(
-        summary = "Confirmar enrolamiento MFA con código TOTP",
-        description = "Requiere un token MFA pendiente (mfa-pending JWT) en el header "
-            + "`Authorization: Bearer {token}`. Este token se obtiene del campo `tokenMfaPendiente` "
-            + "en la respuesta de /auth/login o /auth/seleccionar-tenant cuando MFA está habilitado. "
-            + "No es un access token estándar — el botón Authorize de Swagger UI no aplica aquí."
-    )
-    @PostMapping("/mfa/confirmar")
-    public ResponseEntity<?> mfaConfirmar(
-            @RequestHeader(value = "Authorization", required = false) String authorizationHeader,
-            @Valid @RequestBody MfaCodigoRequest request) {
-        String token = extraerBearer(authorizationHeader);
-        if (!esTokenMfaPendienteValido(token)) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(MENSAJE_TOKEN_MFA_PENDIENTE_INVALIDO);
-        }
+    UUID usuarioId = jwtService.extraerUsuarioId(token);
+    logoutService.logout(request.refreshToken(), request.todasLasSesiones(), usuarioId);
+    return ResponseEntity.ok(LOGOUT_OK);
+  }
 
-        UUID usuarioId = jwtService.extraerUsuarioId(token);
-        UUID empresaId = jwtService.extraerEmpresaId(token);
-        try {
-            TokensAcceso resultado = TenantContextDescartable.ejecutar(
-                    () -> mfaService.confirmar(usuarioId, empresaId, request.codigo()));
-            return ResponseEntity.ok(aRespuesta(resultado));
-        } catch (MfaNoEnroladoException excepcion) {
-            return ResponseEntity.status(HttpStatus.CONFLICT).body(MENSAJE_MFA_NO_ENROLADO);
-        } catch (CodigoMfaInvalidoException excepcion) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(MENSAJE_CODIGO_MFA_INVALIDO);
-        }
+  @Operation(summary = "Solicitar recuperación de contraseña")
+  @PostMapping("/recuperar-password")
+  public ResponseEntity<MensajeResponse> recuperarPassword(
+      @Valid @RequestBody RecuperarPasswordRequest request,
+      HttpServletRequest httpRequest) {
+    String ip = resolverIp(httpRequest);
+
+    if (!reenvioVerificacionRateLimiter.permitido(ip)) {
+      return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).body(RECUPERAR_GENERICA);
     }
 
-    @Operation(
-        summary = "Verificar código MFA en login",
-        description = "Requiere un token MFA pendiente (mfa-pending JWT) en el header "
-            + "`Authorization: Bearer {token}`. Este token se obtiene del campo `tokenMfaPendiente` "
-            + "en la respuesta de /auth/login o /auth/seleccionar-tenant cuando MFA está habilitado. "
-            + "No es un access token estándar — el botón Authorize de Swagger UI no aplica aquí."
-    )
-    @PostMapping("/mfa/verificar")
-    public ResponseEntity<?> mfaVerificar(
-            @RequestHeader(value = "Authorization", required = false) String authorizationHeader,
-            @Valid @RequestBody MfaCodigoRequest request) {
-        String token = extraerBearer(authorizationHeader);
-        if (!esTokenMfaPendienteValido(token)) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(MENSAJE_TOKEN_MFA_PENDIENTE_INVALIDO);
-        }
+    Optional<RecuperacionPasswordService.RecuperacionResultado> resultado = TenantContextDescartable.ejecutar(
+        () -> recuperacionPasswordService.generarTokenSiElegible(request.email()));
 
-        UUID usuarioId = jwtService.extraerUsuarioId(token);
-        UUID empresaId = jwtService.extraerEmpresaId(token);
-        try {
-            TokensAcceso resultado = TenantContextDescartable.ejecutar(
-                    () -> mfaService.verificar(usuarioId, empresaId, request.codigo()));
-            return ResponseEntity.ok(aRespuesta(resultado));
-        } catch (MfaNoEnroladoException excepcion) {
-            return ResponseEntity.status(HttpStatus.CONFLICT).body(MENSAJE_MFA_NO_ENROLADO);
-        } catch (CodigoMfaInvalidoException excepcion) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(MENSAJE_CODIGO_MFA_INVALIDO);
-        }
+    resultado
+        .ifPresent(r -> TenantContextDescartable.ejecutar((Runnable) () -> emailNotificacionService.enviarConReintento(
+            r.email(), ASUNTO_RECUPERACION, construirHtmlRecuperacion(r.tokenCrudo()))));
+
+    // SIEMPRE responder con el mensaje genérico -- anti-enumeración.
+    return ResponseEntity.ok(RECUPERAR_GENERICA);
+  }
+
+  @Operation(summary = "Restablecer contraseña con token de recuperación")
+  @PostMapping("/restablecer-password")
+  public ResponseEntity<MensajeResponse> restablecerPassword(
+      @Valid @RequestBody RestablecerPasswordRequest request) {
+    boolean exitoso = TenantContextDescartable.ejecutar(
+        () -> recuperacionPasswordService.restablecer(request.token(), request.nuevaPassword()));
+
+    if (exitoso) {
+      return ResponseEntity.ok(RESET_OK);
     }
+    return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(TOKEN_INVALIDO);
+  }
 
-    @Operation(summary = "Listar empresas del usuario autenticado")
-    @SecurityRequirement(name = "bearerAuth")
-    @GetMapping("/mis-empresas")
-    public ResponseEntity<?> misEmpresas(
-            @RequestHeader(value = "Authorization", required = false) String authorizationHeader) {
-        String token = extraerBearer(authorizationHeader);
-        if (token == null || !jwtService.esValido(token) || jwtService.esTokenDePropositoEspecial(token)) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(MENSAJE_SIN_AUTENTICAR);
-        }
+  private AccessTokenResponse aRespuesta(TokensAcceso tokens) {
+    return new AccessTokenResponse(tokens.accessToken(), tokens.refreshToken(), tokens.empresaId());
+  }
 
-        UUID usuarioId = jwtService.extraerUsuarioId(token);
-        List<EmpresaResumenResponse> empresas = misEmpresasService.listar(usuarioId);
-        return ResponseEntity.ok(empresas);
+  /**
+   * Validado aquí, NO vía {@code SecurityContextHolder} -- mismo motivo que
+   * {@link #seleccionarTenant}: el token "MFA pendiente" es de alcance mínimo y
+   * {@code JwtAuthenticationFilter}/{@code JwtTenantFilter} lo dejan
+   * deliberadamente sin
+   * autenticar (ver {@code JwtService#esTokenDePropositoEspecial}). Los 3
+   * endpoints
+   * {@code /auth/mfa/*} son los únicos autorizados a aceptarlo, y lo hacen
+   * chequeando el
+   * propósito exacto -- un token de selección de tenant NO pasa este chequeo, ni
+   * viceversa,
+   * a pesar de que ambos son tokens "de alcance mínimo". 
+   */
+  private boolean esTokenMfaPendienteValido(String token) {
+    return token != null && jwtService.esValido(token) && jwtService.esTokenMfaPendiente(token);
+  }
+
+  /**
+   * Lee el {@code usuarioId} ya autenticado por {@code JwtAuthenticationFilter}
+   * para
+   * {@code /auth/cambiar-tenant} -- sin volver a parsear el header, a propósito
+   * (sección
+   * 3.2 punto 3 pide reusar la sesión ya vigente sin contraseña).
+   * {@link Optional#empty()}
+   * cubre tanto "sin autenticar" como "autenticado con un token de selección de
+   * tenant"
+   * (que JwtAuthenticationFilter deja pasar sin poblar el contexto de seguridad,
+   * ver su
+   * javadoc) -- en ambos casos el principal no es un {@link UUID}.
+   */
+  private Optional<UUID> usuarioIdAutenticado() {
+    Authentication autenticacion = SecurityContextHolder.getContext().getAuthentication();
+    if (autenticacion == null || !autenticacion.isAuthenticated()
+        || !(autenticacion.getPrincipal() instanceof UUID usuarioId)) {
+      return Optional.empty();
     }
+    return Optional.of(usuarioId);
+  }
 
-    @Operation(summary = "Obtener perfil del usuario autenticado")
-    @SecurityRequirement(name = "bearerAuth")
-    @GetMapping("/perfil")
-    public ResponseEntity<?> perfil(
-            @RequestHeader(value = "Authorization", required = false) String authorizationHeader) {
-        String token = extraerBearer(authorizationHeader);
-        if (token == null || !jwtService.esValido(token) || jwtService.esTokenDePropositoEspecial(token)) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(MENSAJE_SIN_AUTENTICAR);
-        }
-
-        UUID usuarioId = jwtService.extraerUsuarioId(token);
-        UUID empresaId = jwtService.extraerEmpresaId(token);
-        PerfilResponse perfil = perfilService.obtener(usuarioId, empresaId);
-        return ResponseEntity.ok(perfil);
+  private String extraerBearer(String authorizationHeader) {
+    if (authorizationHeader != null && authorizationHeader.startsWith(PREFIJO_BEARER)) {
+      return authorizationHeader.substring(PREFIJO_BEARER.length());
     }
+    return null;
+  }
 
-    @Operation(summary = "Cerrar sesión (revocar refresh token)")
-    @SecurityRequirement(name = "bearerAuth")
-    @PostMapping("/logout")
-    public ResponseEntity<?> logout(
-            @RequestHeader(value = "Authorization", required = false) String authorizationHeader,
-            @Valid @RequestBody LogoutRequest request) {
-        String token = extraerBearer(authorizationHeader);
-        if (token == null || !jwtService.esValido(token) || jwtService.esTokenDePropositoEspecial(token)) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(MENSAJE_SIN_AUTENTICAR);
-        }
+  private String construirHtmlVerificacion(String tokenCrudo) {
+    String enlace = appBaseUrl + "/auth/verificar-email?token=" + tokenCrudo;
+    return "<p>Gracias por registrarte en Fractall. Confirma tu correo con el siguiente enlace:</p>"
+        + "<p><a href=\"" + enlace + "\">" + enlace + "</a></p>"
+        + "<p>Este enlace expira en 24 horas.</p>";
+  }
 
-        UUID usuarioId = jwtService.extraerUsuarioId(token);
-        logoutService.logout(request.refreshToken(), request.todasLasSesiones(), usuarioId);
-        return ResponseEntity.ok(LOGOUT_OK);
+  private String construirHtmlRecuperacion(String tokenCrudo) {
+    String enlace = appBaseUrl + "/auth/restablecer-password?token=" + tokenCrudo;
+    return "<p>Recibimos una solicitud para restablecer tu contraseña en Fractall.</p>"
+        + "<p>Haz clic en el siguiente enlace para continuar:</p>"
+        + "<p><a href=\"" + enlace + "\">" + enlace + "</a></p>"
+        + "<p>Este enlace expira en 1 hora. Si no solicitaste esto, puedes ignorar este correo.</p>";
+  }
+
+  private String resolverIp(HttpServletRequest request) {
+    // X-Forwarded-For tomado del primer salto, solo si está presente -- en
+    // producción
+    // el proxy inverso pone la IP real del cliente aquí. Si no hay cabecera, se usa
+    // la IP de conexión directa (útil en tests y despliegues sin proxy).
+    String xForwardedFor = request.getHeader("X-Forwarded-For");
+    if (xForwardedFor != null && !xForwardedFor.isBlank()) {
+      return xForwardedFor.split(",")[0].trim();
     }
-
-    @Operation(summary = "Solicitar recuperación de contraseña")
-    @PostMapping("/recuperar-password")
-    public ResponseEntity<MensajeResponse> recuperarPassword(
-            @Valid @RequestBody RecuperarPasswordRequest request,
-            HttpServletRequest httpRequest) {
-        String ip = resolverIp(httpRequest);
-
-        if (!reenvioVerificacionRateLimiter.permitido(ip)) {
-            return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).body(RECUPERAR_GENERICA);
-        }
-
-        Optional<RecuperacionPasswordService.RecuperacionResultado> resultado =
-                TenantContextDescartable.ejecutar(
-                        () -> recuperacionPasswordService.generarTokenSiElegible(request.email()));
-
-        resultado.ifPresent(r -> TenantContextDescartable.ejecutar((Runnable) () ->
-                emailNotificacionService.enviarConReintento(
-                        r.email(), ASUNTO_RECUPERACION, construirHtmlRecuperacion(r.tokenCrudo()))));
-
-        // SIEMPRE responder con el mensaje genérico -- anti-enumeración.
-        return ResponseEntity.ok(RECUPERAR_GENERICA);
-    }
-
-    @Operation(summary = "Restablecer contraseña con token de recuperación")
-    @PostMapping("/restablecer-password")
-    public ResponseEntity<MensajeResponse> restablecerPassword(
-            @Valid @RequestBody RestablecerPasswordRequest request) {
-        boolean exitoso = TenantContextDescartable.ejecutar(
-                () -> recuperacionPasswordService.restablecer(request.token(), request.nuevaPassword()));
-
-        if (exitoso) {
-            return ResponseEntity.ok(RESET_OK);
-        }
-        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(TOKEN_INVALIDO);
-    }
-
-    private AccessTokenResponse aRespuesta(TokensAcceso tokens) {
-        return new AccessTokenResponse(tokens.accessToken(), tokens.refreshToken(), tokens.empresaId());
-    }
-
-    /**
-     * Validado aquí, NO vía {@code SecurityContextHolder} -- mismo motivo que
-     * {@link #seleccionarTenant}: el token "MFA pendiente" es de alcance mínimo y
-     * {@code JwtAuthenticationFilter}/{@code JwtTenantFilter} lo dejan deliberadamente sin
-     * autenticar (ver {@code JwtService#esTokenDePropositoEspecial}). Los 3 endpoints
-     * {@code /auth/mfa/*} son los únicos autorizados a aceptarlo, y lo hacen chequeando el
-     * propósito exacto -- un token de selección de tenant NO pasa este chequeo, ni viceversa,
-     * a pesar de que ambos son tokens "de alcance mínimo".
-     */
-    private boolean esTokenMfaPendienteValido(String token) {
-        return token != null && jwtService.esValido(token) && jwtService.esTokenMfaPendiente(token);
-    }
-
-    /**
-     * Lee el {@code usuarioId} ya autenticado por {@code JwtAuthenticationFilter} para
-     * {@code /auth/cambiar-tenant} -- sin volver a parsear el header, a propósito (sección
-     * 3.2 punto 3 pide reusar la sesión ya vigente sin contraseña). {@link Optional#empty()}
-     * cubre tanto "sin autenticar" como "autenticado con un token de selección de tenant"
-     * (que JwtAuthenticationFilter deja pasar sin poblar el contexto de seguridad, ver su
-     * javadoc) -- en ambos casos el principal no es un {@link UUID}.
-     */
-    private Optional<UUID> usuarioIdAutenticado() {
-        Authentication autenticacion = SecurityContextHolder.getContext().getAuthentication();
-        if (autenticacion == null || !autenticacion.isAuthenticated()
-                || !(autenticacion.getPrincipal() instanceof UUID usuarioId)) {
-            return Optional.empty();
-        }
-        return Optional.of(usuarioId);
-    }
-
-    private String extraerBearer(String authorizationHeader) {
-        if (authorizationHeader != null && authorizationHeader.startsWith(PREFIJO_BEARER)) {
-            return authorizationHeader.substring(PREFIJO_BEARER.length());
-        }
-        return null;
-    }
-
-    private String construirHtmlVerificacion(String tokenCrudo) {
-        String enlace = appBaseUrl + "/auth/verificar-email?token=" + tokenCrudo;
-        return "<p>Gracias por registrarte en Fractall. Confirma tu correo con el siguiente enlace:</p>"
-                + "<p><a href=\"" + enlace + "\">" + enlace + "</a></p>"
-                + "<p>Este enlace expira en 24 horas.</p>";
-    }
-
-    private String construirHtmlRecuperacion(String tokenCrudo) {
-        String enlace = appBaseUrl + "/auth/restablecer-password?token=" + tokenCrudo;
-        return "<p>Recibimos una solicitud para restablecer tu contraseña en Fractall.</p>"
-                + "<p>Haz clic en el siguiente enlace para continuar:</p>"
-                + "<p><a href=\"" + enlace + "\">" + enlace + "</a></p>"
-                + "<p>Este enlace expira en 1 hora. Si no solicitaste esto, puedes ignorar este correo.</p>";
-    }
-
-    private String resolverIp(HttpServletRequest request) {
-        // X-Forwarded-For tomado del primer salto, solo si está presente -- en producción
-        // el proxy inverso pone la IP real del cliente aquí. Si no hay cabecera, se usa
-        // la IP de conexión directa (útil en tests y despliegues sin proxy).
-        String xForwardedFor = request.getHeader("X-Forwarded-For");
-        if (xForwardedFor != null && !xForwardedFor.isBlank()) {
-            return xForwardedFor.split(",")[0].trim();
-        }
-        return request.getRemoteAddr();
-    }
+    return request.getRemoteAddr();
+  }
 }

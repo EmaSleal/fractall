@@ -31,7 +31,6 @@ import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 
 import cr.ac.fractall.catalogo.servicio.ClienteExoneracionNoEncontradaException;
-import cr.ac.fractall.facturacion.servicio.ComprobanteElectronicoNoEncontradoException;
 import cr.ac.fractall.catalogo.servicio.ClienteNoEncontradoException;
 import cr.ac.fractall.catalogo.servicio.ProductoNoEncontradoException;
 import cr.ac.fractall.facturacion.dto.CrearFacturaRequest;
@@ -128,17 +127,6 @@ public class FacturaController {
                 .contentType(MediaType.APPLICATION_XML)
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + doc.claveNumerica() + "_respuesta.xml\"")
                 .body(doc.contenido());
-    }
-
-    @Operation(summary = "Descargar XML de respuesta de Hacienda por id de comprobante (diagnóstico)")
-    @SecurityRequirement(name = "bearerAuth")
-    @GetMapping(path = "/diagnostico/{comprobanteId}/xml-respuesta", produces = MediaType.TEXT_XML_VALUE)
-    public ResponseEntity<?> xmlRespuestaHacienda(@PathVariable UUID comprobanteId) {
-        try {
-            return ResponseEntity.ok(comprobanteXmlPersistenceService.obtenerXmlRespuesta(comprobanteId));
-        } catch (ComprobanteElectronicoNoEncontradoException e) {
-            return ResponseEntity.notFound().build();
-        }
     }
 
     /**

@@ -14,6 +14,7 @@ import cr.ac.fractall.facturacion.modelo.FacturaOtrosCargos;
 public record FacturaResponse(
         UUID id,
         UUID clienteId,
+        String clienteNombre,
         BigDecimal subtotal,
         BigDecimal totalImpuesto,
         BigDecimal total,
@@ -30,11 +31,16 @@ public record FacturaResponse(
         BigDecimal totalIvaDevuelto,
         List<OtrosCargoResponse> otrosCargos,
         List<ReferenciaResponse> informacionReferencia,
-        List<MedioPagoResponse> mediosPago) {
+        List<MedioPagoResponse> mediosPago,
+        String codigoRespuesta,
+        String mensajeRespuesta,
+        LocalDateTime fechaRespuesta,
+        String ultimoResultadoConsulta,
+        Integer intentosEnvio) {
 
     public static FacturaResponse desde(
             Factura factura, ComprobanteElectronico comprobante, List<LineaFacturaResponse> lineas) {
-        return desde(factura, comprobante, lineas, List.of(), List.of(), List.of());
+        return desde(factura, comprobante, lineas, List.of(), List.of(), List.of(), null);
     }
 
     public static FacturaResponse desde(
@@ -43,10 +49,12 @@ public record FacturaResponse(
             List<LineaFacturaResponse> lineas,
             List<FacturaOtrosCargos> otrosCargosEntidades,
             List<FacturaInformacionReferencia> referenciasEntidades,
-            List<FacturaMedioPago> mediosPagoEntidades) {
+            List<FacturaMedioPago> mediosPagoEntidades,
+            String clienteNombre) {
         return new FacturaResponse(
                 factura.getId(),
                 factura.getClienteId(),
+                clienteNombre,
                 factura.getSubtotal(),
                 factura.getTotalImpuesto(),
                 factura.getTotal(),
@@ -63,6 +71,11 @@ public record FacturaResponse(
                 factura.getTotalIvaDevuelto(),
                 otrosCargosEntidades.stream().map(OtrosCargoResponse::desde).toList(),
                 referenciasEntidades.stream().map(ReferenciaResponse::desde).toList(),
-                mediosPagoEntidades.stream().map(MedioPagoResponse::desde).toList());
+                mediosPagoEntidades.stream().map(MedioPagoResponse::desde).toList(),
+                comprobante.getCodigoRespuesta(),
+                comprobante.getMensajeRespuesta(),
+                comprobante.getFechaRespuesta(),
+                comprobante.getUltimoResultadoConsulta(),
+                comprobante.getIntentosEnvio());
     }
 }

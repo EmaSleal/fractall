@@ -263,6 +263,7 @@ class FacturaServiceListarTest {
         when(facturaOtrosCargosRepository.findByFacturaIdOrderByOrden(id)).thenReturn(List.of());
         when(facturaInformacionReferenciaRepository.findByFacturaIdOrderByOrden(id)).thenReturn(List.of());
         when(facturaMedioPagoRepository.findByFacturaIdOrderByOrden(id)).thenReturn(List.of());
+        when(facturaRepository.findClienteNombreByFacturaId(id)).thenReturn(Optional.of("Cliente Test"));
 
         FacturaResponse respuesta = facturaService.obtener(id);
 

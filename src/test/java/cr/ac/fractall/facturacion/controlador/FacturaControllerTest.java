@@ -869,16 +869,6 @@ class FacturaControllerTest {
     // AC-7 — Diagnostico endpoint regression guard (NFR-3)
     // ─────────────────────────────────────────────────────────────────────────
 
-    @Test
-    void getDiagnosticoXmlRespuestaConComprobanteDesconocidoRetorna404SinRomper() throws Exception {
-        ContextoDePrueba ctx = crearContextoCompleto();
-
-        // Unknown comprobanteId → ComprobanteElectronicoNoEncontradoException → 404 via existing handler
-        mockMvc.perform(get("/facturas/diagnostico/" + UUID.randomUUID() + "/xml-respuesta")
-                        .header("Authorization", "Bearer " + ctx.accessToken()))
-                .andExpect(status().isNotFound());
-    }
-
     // ─────────────────────────────────────────────────────────────────────────
     // POST /facturas/{id}/reenviar tests (T-E1)
     // ─────────────────────────────────────────────────────────────────────────

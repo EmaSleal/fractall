@@ -1,6 +1,7 @@
 package cr.ac.fractall.facturacion.repositorio;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -52,4 +53,7 @@ public interface FacturaRepository extends JpaRepository<Factura, UUID> {
             @Param("hasta") String hasta,
             @Param("estado") String estado,
             @Param("limit") int limit);
+
+    @Query(value = "SELECT cl.nombre FROM factura f JOIN cliente cl ON cl.id = f.cliente_id WHERE f.id = :facturaId", nativeQuery = true)
+    Optional<String> findClienteNombreByFacturaId(@Param("facturaId") UUID facturaId);
 }

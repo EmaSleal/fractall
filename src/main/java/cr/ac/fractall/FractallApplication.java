@@ -10,8 +10,8 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 @EnableScheduling
 public class FractallApplication {
 
-	public static void main(String[] args) {
-		SpringApplication.run(FractallApplication.class, args);
-	}
+  public static void main(String[] args) {
+    SpringApplication.run(FractallApplication.class, args);
+  }
 
 }

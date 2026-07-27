@@ -269,7 +269,9 @@ public class FacturaService {
         var referencias = facturaInformacionReferenciaRepository.findByFacturaIdOrderByOrden(factura.getId());
         var mediosPago = facturaMedioPagoRepository.findByFacturaIdOrderByOrden(factura.getId());
 
-        return FacturaResponse.desde(factura, comprobante, lineasResponse, otrosCargos, referencias, mediosPago);
+        String clienteNombre = facturaRepository.findClienteNombreByFacturaId(id).orElse(null);
+
+        return FacturaResponse.desde(factura, comprobante, lineasResponse, otrosCargos, referencias, mediosPago, clienteNombre);
     }
 
     /**
@@ -498,7 +500,7 @@ public class FacturaService {
             return LineaFacturaResponse.desde(linea, codigos, descuentosLinea, exo);
         }).toList();
         return FacturaResponse.desde(factura, comprobante, lineasResponse,
-                otrosCargosGuardados, referenciasGuardadas, mediosPagoGuardados);
+                otrosCargosGuardados, referenciasGuardadas, mediosPagoGuardados, cliente.getNombre());
     }
 
     // =========================================================================
