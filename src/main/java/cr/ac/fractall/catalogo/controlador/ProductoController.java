@@ -17,9 +17,14 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.Arrays;
+import java.util.List;
+
 import cr.ac.fractall.catalogo.dto.ActualizarProductoRequest;
 import cr.ac.fractall.catalogo.dto.CrearProductoRequest;
 import cr.ac.fractall.catalogo.dto.ProductoResponse;
+import cr.ac.fractall.catalogo.dto.UnidadMedidaResponse;
+import cr.ac.fractall.facturacion.fe.UnidadMedida;
 import cr.ac.fractall.catalogo.servicio.CabysSinImpuestoException;
 import cr.ac.fractall.catalogo.servicio.CodigoCabysInvalidoException;
 import cr.ac.fractall.catalogo.servicio.HaciendaNoDisponibleException;
@@ -59,6 +64,16 @@ public class ProductoController {
 
     public ProductoController(ProductoService productoService) {
         this.productoService = productoService;
+    }
+
+    @Operation(summary = "Listar unidades de medida FE v4.4")
+    @SecurityRequirement(name = "bearerAuth")
+    @GetMapping("/unidades-medida")
+    public ResponseEntity<List<UnidadMedidaResponse>> listarUnidadesMedida() {
+        List<UnidadMedidaResponse> unidades = Arrays.stream(UnidadMedida.values())
+                .map(UnidadMedidaResponse::desde)
+                .toList();
+        return ResponseEntity.ok(unidades);
     }
 
     @Operation(summary = "Buscar códigos CABYS")
