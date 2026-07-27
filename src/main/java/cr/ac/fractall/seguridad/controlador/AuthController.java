@@ -417,7 +417,7 @@ public class AuthController {
   public ResponseEntity<?> misEmpresas(
       @RequestHeader(value = "Authorization", required = false) String authorizationHeader) {
     String token = extraerBearer(authorizationHeader);
-    if (token == null || !jwtService.esValido(token) || jwtService.esTokenDePropositoEspecial(token)) {
+    if (token == null || !jwtService.esValido(token) || jwtService.esTokenMfaPendiente(token)) {
       return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(MENSAJE_SIN_AUTENTICAR);
     }
 
