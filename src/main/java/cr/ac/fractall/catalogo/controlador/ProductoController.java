@@ -2,6 +2,9 @@ package cr.ac.fractall.catalogo.controlador;
 
 import java.util.UUID;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.security.SecurityRequirement;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
@@ -46,6 +49,7 @@ import jakarta.validation.constraints.Min;
  * <p>{@code @Validated} a nivel de clase es necesario para que las restricciones
  * {@code @Min}/{@code @Max} de los {@code @RequestParam} sean evaluadas por Bean Validation.
  */
+@Tag(name = "Catálogo — Productos", description = "Gestión de productos y búsqueda CABYS")
 @Validated
 @RestController
 @RequestMapping("/catalogo")
@@ -57,6 +61,8 @@ public class ProductoController {
         this.productoService = productoService;
     }
 
+    @Operation(summary = "Buscar códigos CABYS")
+    @SecurityRequirement(name = "bearerAuth")
     @GetMapping("/cabys")
     public ResponseEntity<CabysBusquedaDTO> buscarCabys(
             @RequestParam String q,
@@ -64,6 +70,8 @@ public class ProductoController {
         return ResponseEntity.ok(productoService.buscarCabys(q, top));
     }
 
+    @Operation(summary = "Listar productos del catálogo")
+    @SecurityRequirement(name = "bearerAuth")
     @GetMapping("/productos")
     public ResponseEntity<PaginaResponse<ProductoResponse>> listar(
             @RequestParam(defaultValue = "true") Boolean activo,
@@ -72,6 +80,8 @@ public class ProductoController {
         return ResponseEntity.ok(productoService.listar(activo, cursor, limit));
     }
 
+    @Operation(summary = "Obtener producto por id")
+    @SecurityRequirement(name = "bearerAuth")
     @GetMapping("/productos/{id}")
     public ResponseEntity<?> obtener(@PathVariable UUID id) {
         try {
@@ -81,6 +91,8 @@ public class ProductoController {
         }
     }
 
+    @Operation(summary = "Crear producto en el catálogo")
+    @SecurityRequirement(name = "bearerAuth")
     @PostMapping("/productos")
     public ResponseEntity<?> crear(@Valid @RequestBody CrearProductoRequest request) {
         try {
@@ -94,6 +106,8 @@ public class ProductoController {
         }
     }
 
+    @Operation(summary = "Actualizar producto del catálogo")
+    @SecurityRequirement(name = "bearerAuth")
     @PatchMapping("/productos/{id}")
     public ResponseEntity<?> actualizar(@PathVariable UUID id, @Valid @RequestBody ActualizarProductoRequest request) {
         try {

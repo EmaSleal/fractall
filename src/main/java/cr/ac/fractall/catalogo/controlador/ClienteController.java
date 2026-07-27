@@ -2,6 +2,9 @@ package cr.ac.fractall.catalogo.controlador;
 
 import java.util.UUID;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.security.SecurityRequirement;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
@@ -37,6 +40,7 @@ import jakarta.validation.constraints.Min;
  * <p>{@code @Validated} a nivel de clase es necesario para que las restricciones
  * {@code @Min}/{@code @Max} de los {@code @RequestParam} sean evaluadas por Bean Validation.
  */
+@Tag(name = "Catálogo — Clientes", description = "Gestión de clientes")
 @Validated
 @RestController
 @RequestMapping("/catalogo/clientes")
@@ -48,6 +52,8 @@ public class ClienteController {
         this.clienteService = clienteService;
     }
 
+    @Operation(summary = "Listar clientes")
+    @SecurityRequirement(name = "bearerAuth")
     @GetMapping
     public ResponseEntity<PaginaResponse<ClienteResponse>> listar(
             @RequestParam(required = false) String q,
@@ -56,6 +62,8 @@ public class ClienteController {
         return ResponseEntity.ok(clienteService.listar(q, cursor, limit));
     }
 
+    @Operation(summary = "Obtener cliente por id")
+    @SecurityRequirement(name = "bearerAuth")
     @GetMapping("/{id}")
     public ResponseEntity<?> obtener(@PathVariable UUID id) {
         try {
@@ -65,6 +73,8 @@ public class ClienteController {
         }
     }
 
+    @Operation(summary = "Crear cliente")
+    @SecurityRequirement(name = "bearerAuth")
     @PostMapping
     public ResponseEntity<?> crear(@Valid @RequestBody CrearClienteRequest request) {
         try {
@@ -76,6 +86,8 @@ public class ClienteController {
         }
     }
 
+    @Operation(summary = "Actualizar cliente")
+    @SecurityRequirement(name = "bearerAuth")
     @PatchMapping("/{id}")
     public ResponseEntity<?> actualizar(@PathVariable UUID id, @Valid @RequestBody ActualizarClienteRequest request) {
         try {

@@ -3,6 +3,9 @@ package cr.ac.fractall.seguridad.controlador;
 import java.util.Optional;
 import java.util.UUID;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.security.SecurityRequirement;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
@@ -70,6 +73,7 @@ import org.springframework.beans.factory.annotation.Value;
  * {@code /auth/mfa/enrolar}, {@code /auth/mfa/confirmar}, {@code /auth/mfa/verificar}
  * (sección 3.3, batch final de la Fase 4) de {@code arquitectura-facturacion-electronica-cr.md}.
  */
+@Tag(name = "Autenticación", description = "Registro, login, MFA, sesión y recuperación de contraseña")
 @RestController
 @RequestMapping("/auth")
 public class AuthController {
@@ -177,6 +181,7 @@ public class AuthController {
         this.recuperacionPasswordService = recuperacionPasswordService;
     }
 
+    @Operation(summary = "Registrar nuevo usuario y empresa")
     @PostMapping("/registro")
     public ResponseEntity<RegistroResponse> registrar(@Valid @RequestBody RegistroRequest request) {
         try {
@@ -198,6 +203,7 @@ public class AuthController {
         }
     }
 
+    @Operation(summary = "Verificar correo electrónico con token")
     @GetMapping("/verificar-email")
     public ResponseEntity<MensajeResponse> verificarEmail(@RequestParam String token) {
         boolean verificado = TenantContextDescartable.ejecutar(() -> verificacionEmailService.verificar(token));
@@ -207,6 +213,7 @@ public class AuthController {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(MENSAJE_TOKEN_INVALIDO);
     }
 
+    @Operation(summary = "Reenviar correo de verificación")
     @PostMapping("/reenviar-verificacion")
     public ResponseEntity<MensajeResponse> reenviarVerificacion(
             @Valid @RequestBody ReenviarVerificacionRequest request,
@@ -225,6 +232,7 @@ public class AuthController {
         return ResponseEntity.ok(MENSAJE_REENVIO_GENERICO);
     }
 
+    @Operation(summary = "Iniciar sesión")
     @PostMapping("/login")
     public ResponseEntity<?> login(@Valid @RequestBody LoginRequest request) {
         try {
@@ -250,6 +258,13 @@ public class AuthController {
         }
     }
 
+    @Operation(
+        summary = "Seleccionar empresa con token de selección",
+        description = "Requiere un token de selección de tenant (selection-tenant JWT) en el header "
+            + "`Authorization: Bearer {token}`. Este token se obtiene del campo `seleccionTenantToken` "
+            + "en la respuesta de /auth/login cuando el usuario pertenece a múltiples empresas. "
+            + "No es un access token estándar — el botón Authorize de Swagger UI no aplica aquí."
+    )
     @PostMapping("/seleccionar-tenant")
     public ResponseEntity<?> seleccionarTenant(
             @RequestHeader(value = "Authorization", required = false) String authorizationHeader,
@@ -277,6 +292,8 @@ public class AuthController {
         }
     }
 
+    @Operation(summary = "Cambiar empresa activa en la sesión")
+    @SecurityRequirement(name = "bearerAuth")
     @PostMapping("/cambiar-tenant")
     public ResponseEntity<?> cambiarTenant(@Valid @RequestBody SeleccionEmpresaRequest request) {
         Optional<UUID> usuarioId = usuarioIdAutenticado();
@@ -299,6 +316,8 @@ public class AuthController {
         }
     }
 
+    @Operation(summary = "Refrescar access token")
+    @SecurityRequirement(name = "bearerAuth")
     @PostMapping("/refrescar")
     public ResponseEntity<?> refrescar(@Valid @RequestBody RefrescarTokenRequest request) {
         try {
@@ -312,6 +331,13 @@ public class AuthController {
         }
     }
 
+    @Operation(
+        summary = "Iniciar enrolamiento MFA (TOTP)",
+        description = "Requiere un token MFA pendiente (mfa-pending JWT) en el header "
+            + "`Authorization: Bearer {token}`. Este token se obtiene del campo `tokenMfaPendiente` "
+            + "en la respuesta de /auth/login o /auth/seleccionar-tenant cuando MFA está habilitado. "
+            + "No es un access token estándar — el botón Authorize de Swagger UI no aplica aquí."
+    )
     @PostMapping("/mfa/enrolar")
     public ResponseEntity<?> mfaEnrolar(
             @RequestHeader(value = "Authorization", required = false) String authorizationHeader) {
@@ -330,6 +356,13 @@ public class AuthController {
         }
     }
 
+    @Operation(
+        summary = "Confirmar enrolamiento MFA con código TOTP",
+        description = "Requiere un token MFA pendiente (mfa-pending JWT) en el header "
+            + "`Authorization: Bearer {token}`. Este token se obtiene del campo `tokenMfaPendiente` "
+            + "en la respuesta de /auth/login o /auth/seleccionar-tenant cuando MFA está habilitado. "
+            + "No es un access token estándar — el botón Authorize de Swagger UI no aplica aquí."
+    )
     @PostMapping("/mfa/confirmar")
     public ResponseEntity<?> mfaConfirmar(
             @RequestHeader(value = "Authorization", required = false) String authorizationHeader,
@@ -352,6 +385,13 @@ public class AuthController {
         }
     }
 
+    @Operation(
+        summary = "Verificar código MFA en login",
+        description = "Requiere un token MFA pendiente (mfa-pending JWT) en el header "
+            + "`Authorization: Bearer {token}`. Este token se obtiene del campo `tokenMfaPendiente` "
+            + "en la respuesta de /auth/login o /auth/seleccionar-tenant cuando MFA está habilitado. "
+            + "No es un access token estándar — el botón Authorize de Swagger UI no aplica aquí."
+    )
     @PostMapping("/mfa/verificar")
     public ResponseEntity<?> mfaVerificar(
             @RequestHeader(value = "Authorization", required = false) String authorizationHeader,
@@ -374,6 +414,8 @@ public class AuthController {
         }
     }
 
+    @Operation(summary = "Listar empresas del usuario autenticado")
+    @SecurityRequirement(name = "bearerAuth")
     @GetMapping("/mis-empresas")
     public ResponseEntity<?> misEmpresas(
             @RequestHeader(value = "Authorization", required = false) String authorizationHeader) {
@@ -387,6 +429,8 @@ public class AuthController {
         return ResponseEntity.ok(empresas);
     }
 
+    @Operation(summary = "Obtener perfil del usuario autenticado")
+    @SecurityRequirement(name = "bearerAuth")
     @GetMapping("/perfil")
     public ResponseEntity<?> perfil(
             @RequestHeader(value = "Authorization", required = false) String authorizationHeader) {
@@ -401,6 +445,8 @@ public class AuthController {
         return ResponseEntity.ok(perfil);
     }
 
+    @Operation(summary = "Cerrar sesión (revocar refresh token)")
+    @SecurityRequirement(name = "bearerAuth")
     @PostMapping("/logout")
     public ResponseEntity<?> logout(
             @RequestHeader(value = "Authorization", required = false) String authorizationHeader,
@@ -415,6 +461,7 @@ public class AuthController {
         return ResponseEntity.ok(LOGOUT_OK);
     }
 
+    @Operation(summary = "Solicitar recuperación de contraseña")
     @PostMapping("/recuperar-password")
     public ResponseEntity<MensajeResponse> recuperarPassword(
             @Valid @RequestBody RecuperarPasswordRequest request,
@@ -437,6 +484,7 @@ public class AuthController {
         return ResponseEntity.ok(RECUPERAR_GENERICA);
     }
 
+    @Operation(summary = "Restablecer contraseña con token de recuperación")
     @PostMapping("/restablecer-password")
     public ResponseEntity<MensajeResponse> restablecerPassword(
             @Valid @RequestBody RestablecerPasswordRequest request) {

@@ -3,6 +3,9 @@ package cr.ac.fractall.facturacion.controlador;
 import java.time.LocalDate;
 import java.util.UUID;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.security.SecurityRequirement;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.format.annotation.DateTimeFormat.ISO;
 import org.springframework.http.HttpHeaders;
@@ -56,6 +59,7 @@ import jakarta.validation.Valid;
  * persistidos, pero el cliente HTTP recibe un error en vez de un 201 -- riesgo de fallo parcial
  * documentado y aceptado, ver el javadoc de {@code ComprobanteXmlPersistenceService}.
  */
+@Tag(name = "Facturas", description = "Emisión, consulta y reenvío de facturas electrónicas")
 @Validated
 @RestController
 @RequestMapping("/facturas")
@@ -79,6 +83,8 @@ public class FacturaController {
      * No persiste el PDF ({@code pdf_referencia} permanece null).
      * {@code FacturaNoEncontradaException} se propaga al {@code GlobalExceptionHandler} → 404.
      */
+    @Operation(summary = "Descargar PDF de la factura")
+    @SecurityRequirement(name = "bearerAuth")
     @GetMapping(path = "/{id}/pdf", produces = MediaType.APPLICATION_PDF_VALUE)
     public ResponseEntity<byte[]> descargarPdf(@PathVariable UUID id) {
         var doc = facturaPdfService.generarPdfPorFacturaId(id);
@@ -93,6 +99,8 @@ public class FacturaController {
      * {@code FacturaNoEncontradaException} → 404; {@code DocumentoNoDisponibleException} → 404
      * cuando la referencia OCI aún es null (estado anterior a FIRMADO).
      */
+    @Operation(summary = "Descargar XML de factura firmado")
+    @SecurityRequirement(name = "bearerAuth")
     @GetMapping(path = "/{id}/xml/factura", produces = MediaType.APPLICATION_XML_VALUE)
     public ResponseEntity<String> descargarXmlFactura(@PathVariable UUID id) {
         var doc = comprobanteXmlPersistenceService.obtenerXmlFactura(id);
@@ -107,6 +115,8 @@ public class FacturaController {
      * {@code FacturaNoEncontradaException} → 404; {@code DocumentoNoDisponibleException} → 404
      * cuando la referencia OCI aún es null (Hacienda no ha respondido — estado pre-ENVIADO).
      */
+    @Operation(summary = "Descargar XML de respuesta de Hacienda")
+    @SecurityRequirement(name = "bearerAuth")
     @GetMapping(path = "/{id}/xml/respuesta", produces = MediaType.APPLICATION_XML_VALUE)
     public ResponseEntity<String> descargarXmlRespuesta(@PathVariable UUID id) {
         var doc = comprobanteXmlPersistenceService.obtenerXmlRespuestaPorFactura(id);
@@ -116,6 +126,8 @@ public class FacturaController {
                 .body(doc.contenido());
     }
 
+    @Operation(summary = "Descargar XML de respuesta de Hacienda por id de comprobante (diagnóstico)")
+    @SecurityRequirement(name = "bearerAuth")
     @GetMapping(path = "/diagnostico/{comprobanteId}/xml-respuesta", produces = MediaType.TEXT_XML_VALUE)
     public ResponseEntity<?> xmlRespuestaHacienda(@PathVariable UUID comprobanteId) {
         try {
@@ -131,6 +143,8 @@ public class FacturaController {
      * {@code limit}: violations lanzan {@code ConstraintViolationException} → 400 via
      * {@code GlobalExceptionHandler}.
      */
+    @Operation(summary = "Listar facturas del tenant activo")
+    @SecurityRequirement(name = "bearerAuth")
     @GetMapping
     public ResponseEntity<PaginaResponse<FacturaResumenResponse>> listar(
             @RequestParam(required = false) UUID cursor,
@@ -146,6 +160,8 @@ public class FacturaController {
      * Devuelve el detalle completo de una factura por id (FR-2). {@code FacturaNoEncontradaException}
      * se propaga al {@code GlobalExceptionHandler} → 404; no se necesita try/catch aquí.
      */
+    @Operation(summary = "Obtener factura por id")
+    @SecurityRequirement(name = "bearerAuth")
     @GetMapping("/{id}")
     public ResponseEntity<FacturaResponse> obtener(@PathVariable UUID id) {
         return ResponseEntity.ok(facturaService.obtener(id));
@@ -156,11 +172,15 @@ public class FacturaController {
      * {@code ComprobanteNoReenviableException} → 409; {@code FacturaNoEncontradaException} → 404.
      * Ambas se propagan al {@code GlobalExceptionHandler} sin try/catch aquí.
      */
+    @Operation(summary = "Reenviar factura a Hacienda")
+    @SecurityRequirement(name = "bearerAuth")
     @PostMapping("/{id}/reenviar")
     public ResponseEntity<FacturaResponse> reenviar(@PathVariable UUID id) {
         return ResponseEntity.ok(facturaService.reenviar(id));
     }
 
+    @Operation(summary = "Emitir factura electrónica")
+    @SecurityRequirement(name = "bearerAuth")
     @PostMapping
     public ResponseEntity<?> crear(@Valid @RequestBody CrearFacturaRequest request) {
         try {

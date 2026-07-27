@@ -4,6 +4,9 @@ import java.io.IOException;
 import java.util.Optional;
 import java.util.UUID;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.security.SecurityRequirement;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -37,6 +40,7 @@ import jakarta.validation.Valid;
  * {@code empresa_id}); lo resuelve internamente {@code EmpresaService} desde
  * {@code TenantContext}.
  */
+@Tag(name = "Empresa", description = "Configuración fiscal, certificado y credenciales de Hacienda")
 @RestController
 @RequestMapping("/empresa")
 public class EmpresaController {
@@ -50,17 +54,23 @@ public class EmpresaController {
         this.empresaService = empresaService;
     }
 
+    @Operation(summary = "Consultar datos fiscales de la empresa activa")
+    @SecurityRequirement(name = "bearerAuth")
     @GetMapping
     public ResponseEntity<EmpresaResponse> consultar() {
         return ResponseEntity.ok(empresaService.consultar());
     }
 
+    @Operation(summary = "Actualizar datos fiscales de la empresa activa")
+    @SecurityRequirement(name = "bearerAuth")
     @PatchMapping
     public ResponseEntity<EmpresaResponse> actualizarDatosFiscales(
             @Valid @RequestBody ActualizarDatosFiscalesRequest request) {
         return ResponseEntity.ok(empresaService.actualizarDatosFiscales(request));
     }
 
+    @Operation(summary = "Cargar certificado digital .p12")
+    @SecurityRequirement(name = "bearerAuth")
     @PostMapping(value = "/certificado", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<?> cargarCertificado(@Valid @ModelAttribute CargarCertificadoRequest request) {
         if (request.certificado().isEmpty()) {
@@ -78,6 +88,8 @@ public class EmpresaController {
         }
     }
 
+    @Operation(summary = "Configurar credenciales de acceso a Hacienda")
+    @SecurityRequirement(name = "bearerAuth")
     @PostMapping("/credenciales-hacienda")
     public ResponseEntity<?> configurarCredencialHacienda(
             @Valid @RequestBody ConfigurarCredencialHaciendaRequest request) {

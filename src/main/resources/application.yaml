@@ -103,3 +103,10 @@ application:
       # onboarding@resend.dev es la dirección sandbox de Resend: funciona sin verificar
       # dominio propio, segura como valor por defecto solo para desarrollo local.
       remitente: ${RESEND_FROM_EMAIL:onboarding@resend.dev}
+
+springdoc:
+  swagger-ui:
+    tagsSorter: alpha
+    operationsSorter: alpha
+    disable-swagger-default-url: true
+  show-actuator: false
