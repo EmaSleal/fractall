@@ -1,7 +1,8 @@
 package cr.ac.fractall.facturacion.servicio;
 
 import java.security.SecureRandom;
-import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 
 /**
  * Generador de la clave numérica de 50 dígitos de un comprobante electrónico, según la
@@ -26,6 +27,7 @@ import java.time.LocalDateTime;
 public final class ClaveNumericaGenerator {
 
     private static final String PAIS_COSTA_RICA = "506";
+    private static final ZoneId CR_ZONE = ZoneId.of("America/Costa_Rica");
 
     /** Sucursal y terminal fijas: Release 1 no modela múltiples puntos de venta (sección 8.1). */
     private static final String SUCURSAL_DEFECTO = "001";
@@ -48,15 +50,18 @@ public final class ClaveNumericaGenerator {
      *                       separadores -- se limpian aquí igual que en el original.
      * @param consecutivo    valor YA reclamado de {@code ConsecutivoService#siguienteConsecutivo}.
      * @param tipoComprobante código de 2 caracteres del catálogo de Hacienda (p. ej. {@code "01"}).
-     * @param fechaEmision   fecha/hora de emisión del comprobante.
+     * @param fechaEmision   instante de emisión del comprobante, con zona horaria. La fecha que se
+     *                       incrusta en la clave (posiciones 4–9) se extrae en hora local de Costa Rica,
+     *                       independientemente de la zona del argumento recibido.
      */
-    public static String generar(String cedula, long consecutivo, String tipoComprobante, LocalDateTime fechaEmision) {
+    public static String generar(String cedula, long consecutivo, String tipoComprobante, ZonedDateTime fechaEmision) {
+        ZonedDateTime fechaCR = fechaEmision.withZoneSameInstant(CR_ZONE);
         StringBuilder clave = new StringBuilder(LONGITUD_CLAVE);
 
         clave.append(PAIS_COSTA_RICA);
-        clave.append(String.format("%02d", fechaEmision.getDayOfMonth()));
-        clave.append(String.format("%02d", fechaEmision.getMonthValue()));
-        clave.append(String.format("%02d", fechaEmision.getYear() % 100));
+        clave.append(String.format("%02d", fechaCR.getDayOfMonth()));
+        clave.append(String.format("%02d", fechaCR.getMonthValue()));
+        clave.append(String.format("%02d", fechaCR.getYear() % 100));
 
         String cedulaFormateada = cedula.replaceAll("[^0-9]", "");
         clave.append(String.format("%012d", Long.parseLong(cedulaFormateada)));

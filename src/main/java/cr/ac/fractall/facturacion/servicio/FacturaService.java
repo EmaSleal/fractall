@@ -4,6 +4,8 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -328,7 +330,8 @@ public class FacturaService {
         // Validate OtrosCargos IdentificacionTercero.tipo early (before any persistence)
         validarIdentificacionesTerceros(request.otrosCargos());
 
-        LocalDateTime ahora = LocalDateTime.now();
+        ZonedDateTime ahoraUtc = ZonedDateTime.now(ZoneOffset.UTC);
+        LocalDateTime ahora = ahoraUtc.toLocalDateTime();
 
         List<LineaFactura> lineas = new ArrayList<>();
         // Parallel lists to store child data per line (before lines have ids)
@@ -464,7 +467,7 @@ public class FacturaService {
         String consecutivoFormateado = ClaveNumericaGenerator.formatearConsecutivo(
                 numeroConsecutivo, TIPO_COMPROBANTE_FACTURA_ELECTRONICA);
         String claveNumerica = ClaveNumericaGenerator.generar(
-                empresa.getNumeroIdentificacion(), numeroConsecutivo, TIPO_COMPROBANTE_FACTURA_ELECTRONICA, ahora);
+                empresa.getNumeroIdentificacion(), numeroConsecutivo, TIPO_COMPROBANTE_FACTURA_ELECTRONICA, ahoraUtc);
 
         ComprobanteElectronico comprobante = new ComprobanteElectronico();
         comprobante.setFacturaId(factura.getId());
