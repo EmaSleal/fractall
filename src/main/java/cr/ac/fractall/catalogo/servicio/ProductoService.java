@@ -105,8 +105,8 @@ public class ProductoService {
     }
 
     @Transactional(readOnly = true)
-    public PaginaResponse<ProductoResponse> listar(Boolean activo, UUID cursor, int limit) {
-        List<Producto> filas = productoRepository.buscar(activo, cursor, limit + 1);
+    public PaginaResponse<ProductoResponse> listar(Boolean activo, String q, UUID cursor, int limit) {
+        List<Producto> filas = productoRepository.buscar(activo, q, cursor, limit + 1);
         boolean hayMas = filas.size() > limit;
         List<Producto> pagina = hayMas ? filas.subList(0, limit) : filas;
         UUID next = hayMas ? pagina.get(pagina.size() - 1).getId() : null;

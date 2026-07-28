@@ -24,12 +24,15 @@ public interface ProductoRepository extends JpaRepository<Producto, UUID> {
     @Query("""
             SELECT p FROM Producto p
             WHERE (:activo IS NULL OR p.activo = :activo)
+              AND (:q IS NULL OR (LOWER(p.codigo) LIKE LOWER(CONCAT('%', CAST(:q AS string), '%'))
+                               OR LOWER(p.descripcion) LIKE LOWER(CONCAT('%', CAST(:q AS string), '%'))))
               AND (:cursor IS NULL OR p.id > :cursor)
             ORDER BY p.id ASC
             LIMIT :limit
             """)
     List<Producto> buscar(
             @Param("activo") Boolean activo,
+            @Param("q") String q,
             @Param("cursor") UUID cursor,
             @Param("limit") int limit);
 }

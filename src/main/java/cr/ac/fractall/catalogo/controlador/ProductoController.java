@@ -90,9 +90,10 @@ public class ProductoController {
     @GetMapping("/productos")
     public ResponseEntity<PaginaResponse<ProductoResponse>> listar(
             @RequestParam(defaultValue = "true") Boolean activo,
+            @RequestParam(required = false) String q,
             @RequestParam(required = false) UUID cursor,
             @RequestParam(defaultValue = "20") @Min(1) @Max(100) int limit) {
-        return ResponseEntity.ok(productoService.listar(activo, cursor, limit));
+        return ResponseEntity.ok(productoService.listar(activo, q, cursor, limit));
     }
 
     @Operation(summary = "Obtener producto por id")
