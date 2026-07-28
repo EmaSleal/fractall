@@ -18,7 +18,7 @@ public record CrearClienteRequest(
         @Size(max = 255)
         String nombre,
 
-        @Schema(description = "ID type code: 01=Cédula, 02=DIMEX, 03=NITE, 04=Pasaporte", example = "01")
+        @Schema(description = "ID type code: 01=Cédula Física, 02=Cédula Jurídica, 03=DIMEX, 04=NITE", example = "01")
         @NotBlank
         @Size(max = 2)
         String tipoIdentificacion,
