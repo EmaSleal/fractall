@@ -77,9 +77,9 @@ class ProductoServiceListarTest {
     void listarCuandoHayMenosItemsQueLimitRetornaNextCursorNull() throws Exception {
         // 5 items, limit=20 — repository returns 5 (no extras), nextCursor must be null.
         List<Producto> cincoItems = generarProductos(5);
-        when(productoRepository.buscar(eq(true), isNull(), eq(21))).thenReturn(cincoItems);
+        when(productoRepository.buscar(eq(true), isNull(), isNull(), eq(21))).thenReturn(cincoItems);
 
-        PaginaResponse<ProductoResponse> respuesta = productoService.listar(true, null, 20);
+        PaginaResponse<ProductoResponse> respuesta = productoService.listar(true, null, null, 20);
 
         assertThat(respuesta.items()).hasSize(5);
         assertThat(respuesta.nextCursor()).isNull();
@@ -91,9 +91,9 @@ class ProductoServiceListarTest {
         // and set nextCursor = id of item 20 (last item after slicing).
         List<Producto> veintiUnItems = generarProductos(21);
         UUID idDelItem20 = veintiUnItems.get(19).getId();
-        when(productoRepository.buscar(eq(true), isNull(), eq(21))).thenReturn(veintiUnItems);
+        when(productoRepository.buscar(eq(true), isNull(), isNull(), eq(21))).thenReturn(veintiUnItems);
 
-        PaginaResponse<ProductoResponse> respuesta = productoService.listar(true, null, 20);
+        PaginaResponse<ProductoResponse> respuesta = productoService.listar(true, null, null, 20);
 
         assertThat(respuesta.items()).hasSize(20);
         assertThat(respuesta.nextCursor()).isEqualTo(idDelItem20);
