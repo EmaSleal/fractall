@@ -46,6 +46,10 @@ public class MfaService {
     /** 160 bits: tamaño convencional de secreto para TOTP con HmacSHA1 (ver {@code TotpService}). */
     private static final int SECRETO_BYTES = 20;
 
+    /** Misma política de bloqueo que {@code LoginService} (sección 3.4) — ver su javadoc. */
+    private static final int MAX_INTENTOS_FALLIDOS = 5;
+    private static final long BLOQUEO_MINUTOS = 15;
+
     private static final String EMISOR = "Fractall";
     private static final int QR_TAMANO_PX = 300;
 
@@ -100,33 +104,71 @@ public class MfaService {
      * completa el login emitiendo un access token + refresh token completos (criterio de
      * salida de la Fase 4: registro -> verificación -> login -> enrolamiento MFA de punta a
      * punta). Si es inválido, NO activa MFA.
+     *
+     * <p>Deliberadamente SIN {@code @Transactional} — mismo razonamiento que {@code LoginService}:
+     * el {@code save()} del intento fallido debe comprometerse aunque el método termine con
+     * excepción. Con {@code @Transactional}, la excepción marcaría la transacción como
+     * rollback-only y el incremento de {@code intentos_fallidos} se perdería.
      */
-    @Transactional
     public TokensAcceso confirmar(UUID usuarioId, UUID empresaId, String codigo) {
+        LocalDateTime ahora = LocalDateTime.now();
         Usuario usuario = obtenerUsuario(usuarioId);
+
+        if (usuario.getBloqueadaHasta() != null && usuario.getBloqueadaHasta().isAfter(ahora)) {
+            throw new CuentaBloqueadaException();
+        }
+
         byte[] secreto = descifrarSecreto(usuario);
 
         if (!totpService.verificar(secreto, codigo)) {
+            registrarIntentoFallidoMfa(usuario, ahora);
             throw new CodigoMfaInvalidoException();
         }
 
+        usuario.setIntentosFallidos(0);
+        usuario.setBloqueadaHasta(null);
         usuario.setMfaHabilitado(true);
-        usuario.setUpdateDate(LocalDateTime.now());
+        usuario.setUpdateDate(ahora);
         usuarioRepository.save(usuario);
 
         return emitirTokens(usuarioId, empresaId);
     }
 
-    /** Login posterior de un usuario ya enrolado: mismo chequeo, sin tocar {@code mfaHabilitado}. */
+    /**
+     * Login posterior de un usuario ya enrolado: mismo chequeo, sin tocar {@code mfaHabilitado}.
+     * Aplica la misma política de bloqueo que {@code confirmar} y {@code LoginService}.
+     */
     public TokensAcceso verificar(UUID usuarioId, UUID empresaId, String codigo) {
+        LocalDateTime ahora = LocalDateTime.now();
         Usuario usuario = obtenerUsuario(usuarioId);
+
+        if (usuario.getBloqueadaHasta() != null && usuario.getBloqueadaHasta().isAfter(ahora)) {
+            throw new CuentaBloqueadaException();
+        }
+
         byte[] secreto = descifrarSecreto(usuario);
 
         if (!totpService.verificar(secreto, codigo)) {
+            registrarIntentoFallidoMfa(usuario, ahora);
             throw new CodigoMfaInvalidoException();
         }
 
+        usuario.setIntentosFallidos(0);
+        usuario.setBloqueadaHasta(null);
+        usuario.setUpdateDate(ahora);
+        usuarioRepository.save(usuario);
+
         return emitirTokens(usuarioId, empresaId);
+    }
+
+    private void registrarIntentoFallidoMfa(Usuario usuario, LocalDateTime ahora) {
+        int intentos = usuario.getIntentosFallidos() + 1;
+        usuario.setIntentosFallidos(intentos);
+        if (intentos >= MAX_INTENTOS_FALLIDOS) {
+            usuario.setBloqueadaHasta(ahora.plusMinutes(BLOQUEO_MINUTOS));
+        }
+        usuario.setUpdateDate(ahora);
+        usuarioRepository.save(usuario);
     }
 
     private TokensAcceso emitirTokens(UUID usuarioId, UUID empresaId) {

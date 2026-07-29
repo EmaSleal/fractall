@@ -422,6 +422,8 @@ public class AuthController {
       @ApiResponse(responseCode = "401", description = "Invalid MFA-pending token or wrong TOTP code",
           content = @Content(schema = @Schema(implementation = MensajeResponse.class))),
       @ApiResponse(responseCode = "409", description = "MFA not enrolled yet",
+          content = @Content(schema = @Schema(implementation = MensajeResponse.class))),
+      @ApiResponse(responseCode = "423", description = "Account locked after too many failed TOTP attempts",
           content = @Content(schema = @Schema(implementation = MensajeResponse.class)))
   })
   @PostMapping("/mfa/confirmar")
@@ -439,6 +441,8 @@ public class AuthController {
       TokensAcceso resultado = TenantContextDescartable.ejecutar(
           () -> mfaService.confirmar(usuarioId, empresaId, request.codigo()));
       return ResponseEntity.ok(aRespuesta(resultado));
+    } catch (CuentaBloqueadaException excepcion) {
+      return ResponseEntity.status(HttpStatus.LOCKED).body(MENSAJE_CUENTA_BLOQUEADA);
     } catch (MfaNoEnroladoException excepcion) {
       return ResponseEntity.status(HttpStatus.CONFLICT).body(MENSAJE_MFA_NO_ENROLADO);
     } catch (CodigoMfaInvalidoException excepcion) {
@@ -456,6 +460,8 @@ public class AuthController {
       @ApiResponse(responseCode = "401", description = "Invalid MFA-pending token or wrong TOTP code",
           content = @Content(schema = @Schema(implementation = MensajeResponse.class))),
       @ApiResponse(responseCode = "409", description = "MFA not enrolled",
+          content = @Content(schema = @Schema(implementation = MensajeResponse.class))),
+      @ApiResponse(responseCode = "423", description = "Account locked after too many failed TOTP attempts",
           content = @Content(schema = @Schema(implementation = MensajeResponse.class)))
   })
   @PostMapping("/mfa/verificar")
@@ -473,6 +479,8 @@ public class AuthController {
       TokensAcceso resultado = TenantContextDescartable.ejecutar(
           () -> mfaService.verificar(usuarioId, empresaId, request.codigo()));
       return ResponseEntity.ok(aRespuesta(resultado));
+    } catch (CuentaBloqueadaException excepcion) {
+      return ResponseEntity.status(HttpStatus.LOCKED).body(MENSAJE_CUENTA_BLOQUEADA);
     } catch (MfaNoEnroladoException excepcion) {
       return ResponseEntity.status(HttpStatus.CONFLICT).body(MENSAJE_MFA_NO_ENROLADO);
     } catch (CodigoMfaInvalidoException excepcion) {
