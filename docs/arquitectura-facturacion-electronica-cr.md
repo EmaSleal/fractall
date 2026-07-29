@@ -245,6 +245,10 @@ CREATE TRIGGER trg_validar_transicion_ambiente
     FOR EACH ROW EXECUTE FUNCTION fn_validar_transicion_ambiente();
 ```
 
+**Regla de ubicación en `empresa` vs. `cliente`:** A diferencia de `cliente` (sección 4.11), `empresa` **no tiene un CHECK de todo-o-nada** para el bloque de ubicación (`codigo_provincia`, `canton`, `distrito`, `otras_senas`). Los cuatro campos son individualmente nullable — el motor acepta un UPDATE que solo rellena uno de ellos. La regla de negocio vive exclusivamente en el trigger `fn_actualizar_status_empresa`: si cualquiera de esos cuatro campos (o `numero_identificacion`, `codigo_actividad`) es NULL, el status queda en `DATOS_FISCALES_INCOMPLETOS`. El frontend debe tratar estos campos como opcionales independientes (sin validación cruzada de todo-o-nada), y no necesita inferir qué falta del estado de los campos — el `status` ya lo comunica explícitamente.
+
+**`tieneCertificado` en `EmpresaResponse`:** `EmpresaResponse` expone `tieneCertificado: boolean`, derivado de `certificado_referencia IS NOT NULL`. Solo el booleano — nunca la ruta del secreto en Vault ni ningún otro metadato del certificado.
+
 ### 4.2 Credenciales de Hacienda por ambiente
 
 ```sql
