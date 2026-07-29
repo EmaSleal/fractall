@@ -1,5 +1,6 @@
 package cr.ac.fractall.empresa.dto;
 
+import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import org.springframework.web.multipart.MultipartFile;
@@ -14,6 +15,7 @@ public record CargarCertificadoRequest(
         @NotNull(message = "El archivo .p12 es obligatorio")
         MultipartFile certificado,
 
+        @Schema(requiredMode = Schema.RequiredMode.REQUIRED)
         @NotBlank(message = "El PIN es obligatorio")
         String pin) {
 }
