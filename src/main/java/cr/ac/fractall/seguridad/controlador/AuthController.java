@@ -4,6 +4,11 @@ import java.util.Optional;
 import java.util.UUID;
 
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.media.ArraySchema;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.http.HttpStatus;
@@ -238,6 +243,20 @@ public class AuthController {
   }
 
   @Operation(summary = "Iniciar sesión")
+  @ApiResponses({
+      @ApiResponse(responseCode = "200", description = "Login resolved or intermediate step required",
+          content = @Content(schema = @Schema(oneOf = {
+              AccessTokenResponse.class, MfaPendienteResponse.class, SeleccionTenantRequeridaResponse.class
+          }))),
+      @ApiResponse(responseCode = "401", description = "Invalid credentials",
+          content = @Content(schema = @Schema(implementation = MensajeResponse.class))),
+      @ApiResponse(responseCode = "403", description = "Account email not verified",
+          content = @Content(schema = @Schema(implementation = MensajeResponse.class))),
+      @ApiResponse(responseCode = "409", description = "No active company membership",
+          content = @Content(schema = @Schema(implementation = MensajeResponse.class))),
+      @ApiResponse(responseCode = "423", description = "Account locked",
+          content = @Content(schema = @Schema(implementation = MensajeResponse.class)))
+  })
   @PostMapping("/login")
   public ResponseEntity<?> login(@Valid @RequestBody LoginRequest request) {
     try {
@@ -267,6 +286,16 @@ public class AuthController {
       + "`Authorization: Bearer {token}`. Este token se obtiene del campo `seleccionTenantToken` "
       + "en la respuesta de /auth/login cuando el usuario pertenece a múltiples empresas. "
       + "No es un access token estándar — el botón Authorize de Swagger UI no aplica aquí.")
+  @ApiResponses({
+      @ApiResponse(responseCode = "200", description = "Tenant selected or MFA required",
+          content = @Content(schema = @Schema(oneOf = {
+              AccessTokenResponse.class, MfaPendienteResponse.class
+          }))),
+      @ApiResponse(responseCode = "401", description = "Invalid or expired selection token",
+          content = @Content(schema = @Schema(implementation = MensajeResponse.class))),
+      @ApiResponse(responseCode = "403", description = "Membership inactive",
+          content = @Content(schema = @Schema(implementation = MensajeResponse.class)))
+  })
   @PostMapping("/seleccionar-tenant")
   public ResponseEntity<?> seleccionarTenant(
       @RequestHeader(value = "Authorization", required = false) String authorizationHeader,
@@ -298,6 +327,14 @@ public class AuthController {
 
   @Operation(summary = "Cambiar empresa activa en la sesión")
   @SecurityRequirement(name = "bearerAuth")
+  @ApiResponses({
+      @ApiResponse(responseCode = "200", description = "Tenant changed, new access token issued",
+          content = @Content(schema = @Schema(implementation = AccessTokenResponse.class))),
+      @ApiResponse(responseCode = "401", description = "Not authenticated",
+          content = @Content(schema = @Schema(implementation = MensajeResponse.class))),
+      @ApiResponse(responseCode = "403", description = "Membership inactive",
+          content = @Content(schema = @Schema(implementation = MensajeResponse.class)))
+  })
   @PostMapping("/cambiar-tenant")
   public ResponseEntity<?> cambiarTenant(@Valid @RequestBody SeleccionEmpresaRequest request) {
     Optional<UUID> usuarioId = usuarioIdAutenticado();
@@ -324,6 +361,14 @@ public class AuthController {
   }
 
   @Operation(summary = "Refrescar access token")
+  @ApiResponses({
+      @ApiResponse(responseCode = "200", description = "Access token refreshed (refreshToken is null in this response)",
+          content = @Content(schema = @Schema(implementation = AccessTokenResponse.class))),
+      @ApiResponse(responseCode = "401", description = "Refresh token invalid or expired",
+          content = @Content(schema = @Schema(implementation = MensajeResponse.class))),
+      @ApiResponse(responseCode = "403", description = "Membership inactive",
+          content = @Content(schema = @Schema(implementation = MensajeResponse.class)))
+  })
   @PostMapping("/refrescar")
   public ResponseEntity<?> refrescar(@Valid @RequestBody RefrescarTokenRequest request) {
     try {
@@ -341,6 +386,14 @@ public class AuthController {
       + "`Authorization: Bearer {token}`. Este token se obtiene del campo `tokenMfaPendiente` "
       + "en la respuesta de /auth/login o /auth/seleccionar-tenant cuando MFA está habilitado. "
       + "No es un access token estándar — el botón Authorize de Swagger UI no aplica aquí.")
+  @ApiResponses({
+      @ApiResponse(responseCode = "200", description = "TOTP enrollment data",
+          content = @Content(schema = @Schema(implementation = MfaEnrolamientoResponse.class))),
+      @ApiResponse(responseCode = "401", description = "Invalid or expired MFA-pending token",
+          content = @Content(schema = @Schema(implementation = MensajeResponse.class))),
+      @ApiResponse(responseCode = "409", description = "MFA already enrolled",
+          content = @Content(schema = @Schema(implementation = MensajeResponse.class)))
+  })
   @PostMapping("/mfa/enrolar")
   public ResponseEntity<?> mfaEnrolar(
       @RequestHeader(value = "Authorization", required = false) String authorizationHeader) {
@@ -363,6 +416,14 @@ public class AuthController {
       + "`Authorization: Bearer {token}`. Este token se obtiene del campo `tokenMfaPendiente` "
       + "en la respuesta de /auth/login o /auth/seleccionar-tenant cuando MFA está habilitado. "
       + "No es un access token estándar — el botón Authorize de Swagger UI no aplica aquí.")
+  @ApiResponses({
+      @ApiResponse(responseCode = "200", description = "MFA enrolled and confirmed, access token issued",
+          content = @Content(schema = @Schema(implementation = AccessTokenResponse.class))),
+      @ApiResponse(responseCode = "401", description = "Invalid MFA-pending token or wrong TOTP code",
+          content = @Content(schema = @Schema(implementation = MensajeResponse.class))),
+      @ApiResponse(responseCode = "409", description = "MFA not enrolled yet",
+          content = @Content(schema = @Schema(implementation = MensajeResponse.class)))
+  })
   @PostMapping("/mfa/confirmar")
   public ResponseEntity<?> mfaConfirmar(
       @RequestHeader(value = "Authorization", required = false) String authorizationHeader,
@@ -389,6 +450,14 @@ public class AuthController {
       + "`Authorization: Bearer {token}`. Este token se obtiene del campo `tokenMfaPendiente` "
       + "en la respuesta de /auth/login o /auth/seleccionar-tenant cuando MFA está habilitado. "
       + "No es un access token estándar — el botón Authorize de Swagger UI no aplica aquí.")
+  @ApiResponses({
+      @ApiResponse(responseCode = "200", description = "MFA verified, access token issued",
+          content = @Content(schema = @Schema(implementation = AccessTokenResponse.class))),
+      @ApiResponse(responseCode = "401", description = "Invalid MFA-pending token or wrong TOTP code",
+          content = @Content(schema = @Schema(implementation = MensajeResponse.class))),
+      @ApiResponse(responseCode = "409", description = "MFA not enrolled",
+          content = @Content(schema = @Schema(implementation = MensajeResponse.class)))
+  })
   @PostMapping("/mfa/verificar")
   public ResponseEntity<?> mfaVerificar(
       @RequestHeader(value = "Authorization", required = false) String authorizationHeader,
@@ -413,6 +482,12 @@ public class AuthController {
 
   @Operation(summary = "Listar empresas del usuario autenticado")
   @SecurityRequirement(name = "bearerAuth")
+  @ApiResponses({
+      @ApiResponse(responseCode = "200", description = "List of companies the user belongs to",
+          content = @Content(array = @ArraySchema(schema = @Schema(implementation = EmpresaResumenResponse.class)))),
+      @ApiResponse(responseCode = "401", description = "Not authenticated",
+          content = @Content(schema = @Schema(implementation = MensajeResponse.class)))
+  })
   @GetMapping("/mis-empresas")
   public ResponseEntity<?> misEmpresas(
       @RequestHeader(value = "Authorization", required = false) String authorizationHeader) {
@@ -428,6 +503,12 @@ public class AuthController {
 
   @Operation(summary = "Obtener perfil del usuario autenticado")
   @SecurityRequirement(name = "bearerAuth")
+  @ApiResponses({
+      @ApiResponse(responseCode = "200", description = "Authenticated user profile",
+          content = @Content(schema = @Schema(implementation = PerfilResponse.class))),
+      @ApiResponse(responseCode = "401", description = "Not authenticated",
+          content = @Content(schema = @Schema(implementation = MensajeResponse.class)))
+  })
   @GetMapping("/perfil")
   public ResponseEntity<?> perfil(
       @RequestHeader(value = "Authorization", required = false) String authorizationHeader) {
@@ -444,6 +525,12 @@ public class AuthController {
 
   @Operation(summary = "Cerrar sesión (revocar refresh token)")
   @SecurityRequirement(name = "bearerAuth")
+  @ApiResponses({
+      @ApiResponse(responseCode = "200", description = "Session revoked",
+          content = @Content(schema = @Schema(implementation = MensajeResponse.class))),
+      @ApiResponse(responseCode = "401", description = "Not authenticated",
+          content = @Content(schema = @Schema(implementation = MensajeResponse.class)))
+  })
   @PostMapping("/logout")
   public ResponseEntity<?> logout(
       @RequestHeader(value = "Authorization", required = false) String authorizationHeader,
@@ -508,7 +595,7 @@ public class AuthController {
    * chequeando el
    * propósito exacto -- un token de selección de tenant NO pasa este chequeo, ni
    * viceversa,
-   * a pesar de que ambos son tokens "de alcance mínimo". 
+   * a pesar de que ambos son tokens "de alcance mínimo".
    */
   private boolean esTokenMfaPendienteValido(String token) {
     return token != null && jwtService.esValido(token) && jwtService.esTokenMfaPendiente(token);

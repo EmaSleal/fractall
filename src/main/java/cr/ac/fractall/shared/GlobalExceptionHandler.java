@@ -3,6 +3,7 @@ package cr.ac.fractall.shared;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
@@ -63,6 +64,20 @@ public class GlobalExceptionHandler {
                 .map(v -> v.getPropertyPath() + ": " + v.getMessage())
                 .reduce((a, b) -> a + "; " + b)
                 .orElse(excepcion.getMessage());
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(new MensajeResponse(mensaje));
+    }
+
+    /**
+     * Convierte {@link MethodArgumentNotValidException} (lanzada por Bean Validation cuando se violan
+     * restricciones en {@code @Valid @RequestBody}) en una respuesta 400 con el mismo formato que
+     * {@link #manejarViolacionDeRestriccion}, normalizando el manejo de errores de validación.
+     */
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ResponseEntity<MensajeResponse> manejarValidacionRequestBody(MethodArgumentNotValidException excepcion) {
+        String mensaje = excepcion.getBindingResult().getFieldErrors().stream()
+                .map(e -> e.getField() + ": " + e.getDefaultMessage())
+                .reduce((a, b) -> a + "; " + b)
+                .orElse("Datos de entrada inválidos");
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(new MensajeResponse(mensaje));
     }
 }
