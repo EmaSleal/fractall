@@ -292,7 +292,7 @@ class ComprobanteEntregaServiceIntegrationTest {
         // Cargar certificado real (necesario para que ComprobanteXmlPersistenceService firme el XML
         // si se encadenara ese flujo; aquí el XML ya está firmado, pero el contexto Vault sí es
         // real para cifrado/descifrado del PDF en ComprobanteEntregaService)
-        empresaService.cargarCertificado(p12ValidoDePrueba, PIN_VALIDO);
+        empresaService.cargarCertificado(p12ValidoDePrueba, PIN_VALIDO, "SANDBOX");
 
         // Credencial de Hacienda necesaria para ComprobanteHaciendaEnvioService
         CredencialHacienda credencial = new CredencialHacienda();

@@ -81,7 +81,7 @@ public class EmpresaController {
         }
         try {
             byte[] certificadoP12 = request.certificado().getBytes();
-            return ResponseEntity.ok(empresaService.cargarCertificado(certificadoP12, request.pin()));
+            return ResponseEntity.ok(empresaService.cargarCertificado(certificadoP12, request.pin(), request.ambiente()));
         } catch (IOException excepcion) {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                     .body(new MensajeResponse("No se pudo leer el archivo .p12 enviado."));

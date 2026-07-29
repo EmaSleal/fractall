@@ -124,7 +124,7 @@ public class ComprobanteXmlPersistenceService {
                 .orElseThrow(() -> new ComprobanteElectronicoNoEncontradoException(comprobanteId));
 
         String xml = xmlFacturaGeneratorService.generarXmlFactura(comprobanteId);
-        String xmlFirmado = xmlFacturaFirmaService.firmar(xml, comprobante.getEmpresaId());
+        String xmlFirmado = xmlFacturaFirmaService.firmar(xml, comprobante.getEmpresaId(), comprobante.getAmbienteHacienda());
 
         String rutaObjeto = construirRutaObjeto(comprobante.getEmpresaId(), comprobante.getClaveNumerica());
         String referencia = comprobanteXmlCifradoUploader.cifrarYSubir(

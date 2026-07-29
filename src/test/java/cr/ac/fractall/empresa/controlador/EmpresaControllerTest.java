@@ -261,6 +261,7 @@ class EmpresaControllerTest {
         mockMvc.perform(multipart("/empresa/certificado")
                         .file(archivo)
                         .param("pin", PIN_VALIDO)
+                        .param("ambiente", "SANDBOX")
                         .header("Authorization", "Bearer " + accessToken))
                 .andExpect(status().isOk());
     }

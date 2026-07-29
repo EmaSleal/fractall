@@ -3,12 +3,13 @@ package cr.ac.fractall.empresa.dto;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Pattern;
 import org.springframework.web.multipart.MultipartFile;
 
 /**
  * Cuerpo multipart de {@code POST /empresa/certificado}: el archivo {@code .p12} crudo más su
- * PIN. El PIN se valida ANTES de escribir nada (sección 6.4) -- ver
- * {@code EmpresaService#cargarCertificado}.
+ * PIN y el ambiente al que corresponde. El PIN se valida ANTES de escribir nada (sección 6.4)
+ * -- ver {@code EmpresaService#cargarCertificado}.
  */
 public record CargarCertificadoRequest(
 
@@ -17,5 +18,10 @@ public record CargarCertificadoRequest(
 
         @Schema(requiredMode = Schema.RequiredMode.REQUIRED)
         @NotBlank(message = "El PIN es obligatorio")
-        String pin) {
+        String pin,
+
+        @Schema(requiredMode = Schema.RequiredMode.REQUIRED)
+        @NotBlank(message = "El ambiente es obligatorio")
+        @Pattern(regexp = "SANDBOX|PRODUCCION", message = "El ambiente debe ser SANDBOX o PRODUCCION")
+        String ambiente) {
 }

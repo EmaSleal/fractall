@@ -312,7 +312,7 @@ class FacturaControllerTest {
             try {
                 // Certificado .p12 real cargado por el camino de producción -- ver el javadoc de
                 // la clase: generarYPersistirXml firma el XML antes de subirlo.
-                empresaService.cargarCertificado(p12ValidoDePrueba, PIN_VALIDO);
+                empresaService.cargarCertificado(p12ValidoDePrueba, PIN_VALIDO, "SANDBOX");
 
                 contadorConsecutivoRepository.save(new ContadorConsecutivo(empresa.getId(), "SANDBOX", "01", 0L));
 

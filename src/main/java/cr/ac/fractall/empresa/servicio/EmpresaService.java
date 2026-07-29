@@ -15,6 +15,8 @@ import jakarta.persistence.PersistenceContext;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import cr.ac.fractall.empresa.modelo.CertificadoHacienda;
+import cr.ac.fractall.empresa.repositorio.CertificadoHaciendaRepository;
 import cr.ac.fractall.empresa.modelo.CredencialHacienda;
 import cr.ac.fractall.empresa.repositorio.CredencialHaciendaRepository;
 import cr.ac.fractall.empresa.modelo.Empresa;
@@ -37,8 +39,8 @@ import cr.ac.fractall.tenant.TenantContext;
  * enteramente en la base de datos desde la Fase 0 ({@code fn_actualizar_status_empresa}/
  * {@code trg_actualizar_status_empresa}, disparado {@code BEFORE UPDATE ON empresa}). El
  * único trabajo de este servicio es escribir las columnas de las que depende ese trigger
- * (datos fiscales, {@code certificado_referencia}, filas de {@code credencial_hacienda}) y
- * releer el resultado.
+ * (datos fiscales, filas de {@code certificado_hacienda}, filas de {@code credencial_hacienda})
+ * y releer el resultado.
  *
  * <p>{@code empresaId} se resuelve SIEMPRE de {@link TenantContext#get()} -- nunca de un
  * parámetro de entrada -- porque los 3 endpoints que llaman a este servicio corren detrás de
@@ -56,10 +58,10 @@ import cr.ac.fractall.tenant.TenantContext;
 @Service
 public class EmpresaService {
 
-    private static final String SUBRUTA_CERTIFICADO_PIN = "certificado/pin";
     private static final String KEYSTORE_PKCS12 = "PKCS12";
 
     private final EmpresaRepository empresaRepository;
+    private final CertificadoHaciendaRepository certificadoHaciendaRepository;
     private final CredencialHaciendaRepository credencialHaciendaRepository;
     private final EmpresaAmbienteHistorialRepository empresaAmbienteHistorialRepository;
     private final SecretosKvService secretosKvService;
@@ -70,11 +72,13 @@ public class EmpresaService {
 
     public EmpresaService(
             EmpresaRepository empresaRepository,
+            CertificadoHaciendaRepository certificadoHaciendaRepository,
             CredencialHaciendaRepository credencialHaciendaRepository,
             EmpresaAmbienteHistorialRepository empresaAmbienteHistorialRepository,
             SecretosKvService secretosKvService,
             TransitService transitService) {
         this.empresaRepository = empresaRepository;
+        this.certificadoHaciendaRepository = certificadoHaciendaRepository;
         this.credencialHaciendaRepository = credencialHaciendaRepository;
         this.empresaAmbienteHistorialRepository = empresaAmbienteHistorialRepository;
         this.secretosKvService = secretosKvService;
@@ -111,13 +115,13 @@ public class EmpresaService {
     /**
      * Valida el PIN contra el propio {@code .p12} ANTES de tocar Vault o la base de datos
      * (sección 6.4): si el PIN es incorrecto, no debe quedar ningún rastro ni en Vault ni en
-     * {@code empresa}. Al tener éxito: envelope encryption vía una DEK nueva de
-     * {@link TransitService#generarDek()}, PIN en Vault KV, y las tres columnas puntero
-     * ({@code certificado_referencia}, {@code certificado_p12_cifrado},
-     * {@code certificado_dek_cifrada}) se escriben atómicamente en la misma transacción.
+     * {@code certificado_hacienda}. Al tener éxito: envelope encryption vía una DEK nueva de
+     * {@link TransitService#generarDek()}, PIN en Vault KV, y upsert de
+     * {@code certificado_hacienda} para el ambiente indicado, todo atómicamente en la misma
+     * transacción.
      */
     @Transactional
-    public EmpresaResponse cargarCertificado(byte[] certificadoP12, String pin) {
+    public EmpresaResponse cargarCertificado(byte[] certificadoP12, String pin, String ambiente) {
         validarPin(certificadoP12, pin);
 
         Empresa empresa = obtenerEmpresaActual();
@@ -133,11 +137,22 @@ public class EmpresaService {
             Arrays.fill(dek.plaintext(), (byte) 0);
         }
 
-        secretosKvService.guardarSecreto(empresaId, SUBRUTA_CERTIFICADO_PIN, pin);
+        String subruta = "certificado/" + ambiente.toLowerCase(Locale.ROOT) + "/pin";
+        secretosKvService.guardarSecreto(empresaId, subruta, pin);
 
-        empresa.setCertificadoReferencia(referenciaCompleta(empresaId, SUBRUTA_CERTIFICADO_PIN));
-        empresa.setCertificadoP12Cifrado(p12Cifrado);
-        empresa.setCertificadoDekCifrada(dek.cifrado());
+        CertificadoHacienda cert = certificadoHaciendaRepository
+                .findByEmpresaIdAndAmbiente(empresaId, ambiente)
+                .orElseGet(() -> {
+                    CertificadoHacienda nuevo = new CertificadoHacienda();
+                    nuevo.setEmpresaId(empresaId);
+                    nuevo.setAmbiente(ambiente);
+                    return nuevo;
+                });
+        cert.setCertificadoReferencia(referenciaCompleta(empresaId, subruta));
+        cert.setCertificadoP12Cifrado(p12Cifrado);
+        cert.setCertificadoDekCifrada(dek.cifrado());
+        certificadoHaciendaRepository.saveAndFlush(cert);
+
         empresa.setUpdateDate(LocalDateTime.now());
 
         return guardarYReleer(empresa);
@@ -185,16 +200,19 @@ public class EmpresaService {
     /**
      * Cambia el ambiente activo de Hacienda para la empresa actual. Si el ambiente solicitado
      * ya es el activo, devuelve el estado actual sin modificar nada. Al cambiar a PRODUCCION
-     * desde SANDBOX se validan las precondiciones: la empresa debe estar HABILITADA y deben
-     * existir credenciales de PRODUCCION previamente configuradas. Registra el cambio en
-     * {@code empresa_ambiente_historial}.
+     * desde SANDBOX se validan las precondiciones: la empresa debe estar HABILITADA, deben
+     * existir credenciales de PRODUCCION y un certificado {@code .p12} de PRODUCCION
+     * previamente configurados. Registra el cambio en {@code empresa_ambiente_historial}.
      */
     @Transactional
     public EmpresaResponse activarAmbiente(String ambiente, UUID activadoPor) {
         Empresa empresa = obtenerEmpresaActual();
 
         if (ambiente.equals(empresa.getAmbienteHacienda())) {
-            return EmpresaResponse.desde(empresa);
+            boolean tieneCertificado = certificadoHaciendaRepository
+                    .findByEmpresaIdAndAmbiente(empresa.getId(), empresa.getAmbienteHacienda())
+                    .isPresent();
+            return EmpresaResponse.desde(empresa, tieneCertificado);
         }
 
         if ("PRODUCCION".equals(ambiente)) {
@@ -205,6 +223,10 @@ public class EmpresaService {
             if (credencialHaciendaRepository.findByEmpresaIdAndAmbiente(empresa.getId(), "PRODUCCION").isEmpty()) {
                 throw new AmbienteNoDisponibleException(
                         "No existen credenciales de PRODUCCION configuradas para esta empresa");
+            }
+            if (certificadoHaciendaRepository.findByEmpresaIdAndAmbiente(empresa.getId(), "PRODUCCION").isEmpty()) {
+                throw new AmbienteNoDisponibleException(
+                        "No existe un certificado .p12 de PRODUCCION configurado para esta empresa");
             }
         }
 
@@ -234,7 +256,11 @@ public class EmpresaService {
 
     @Transactional(readOnly = true)
     public EmpresaResponse consultar() {
-        return EmpresaResponse.desde(obtenerEmpresaActual());
+        Empresa empresa = obtenerEmpresaActual();
+        boolean tieneCertificado = certificadoHaciendaRepository
+                .findByEmpresaIdAndAmbiente(empresa.getId(), empresa.getAmbienteHacienda())
+                .isPresent();
+        return EmpresaResponse.desde(empresa, tieneCertificado);
     }
 
     private Empresa obtenerEmpresaActual() {
@@ -250,7 +276,10 @@ public class EmpresaService {
         // trigger del lado del servidor -- refresh obligatorio para no devolver valores
         // obsoletos en la respuesta.
         entityManager.refresh(empresa);
-        return EmpresaResponse.desde(empresa);
+        boolean tieneCertificado = certificadoHaciendaRepository
+                .findByEmpresaIdAndAmbiente(empresa.getId(), empresa.getAmbienteHacienda())
+                .isPresent();
+        return EmpresaResponse.desde(empresa, tieneCertificado);
     }
 
     private static String subrutaHacienda(String ambiente) {

@@ -14,6 +14,7 @@ import java.util.Base64;
 import java.util.Collections;
 import java.util.Date;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 
@@ -50,8 +51,8 @@ import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.xml.sax.InputSource;
 
-import cr.ac.fractall.empresa.modelo.Empresa;
-import cr.ac.fractall.empresa.repositorio.EmpresaRepository;
+import cr.ac.fractall.empresa.modelo.CertificadoHacienda;
+import cr.ac.fractall.empresa.repositorio.CertificadoHaciendaRepository;
 import cr.ac.fractall.facturacion.servicio.XmlFacturaFirmaException;
 import cr.ac.fractall.facturacion.servicio.XmlFacturaFirmaService;
 import cr.ac.fractall.secretos.EnvelopeCipher;
@@ -62,21 +63,21 @@ import lombok.extern.slf4j.Slf4j;
 /**
  * Implementación de {@link XmlFacturaFirmaService} -- ver su javadoc para el alcance (solo
  * {@code firmarXml}/{@code verificarFirma} portados, sin {@code obtenerInfoCertificado}) y para la
- * diferencia estructural frente al original (certificado/PIN resueltos desde Postgres/Vault en vez
- * de un archivo en disco).
+ * diferencia estructural frente al original (certificado/PIN resueltos desde
+ * {@code certificado_hacienda}/Vault en vez de un archivo en disco).
  *
- * <p><b>Cómo se resuelve el certificado a partir de {@code empresaId}</b> (mismo patrón de envelope
- * encryption ya establecido en {@code EmpresaService#cargarCertificado}, Fase 5, reutilizado tal
- * cual en vez de reinventado):
+ * <p><b>Cómo se resuelve el certificado a partir de {@code empresaId} y {@code ambiente}</b>
+ * (mismo patrón de envelope encryption ya establecido en {@code EmpresaService#cargarCertificado},
+ * Fase 5, reutilizado tal cual en vez de reinventado):
  *
  * <ol>
- *   <li>{@link TransitService#descifrarDek(byte[])} sobre {@code empresa.certificadoDekCifrada}
+ *   <li>{@link TransitService#descifrarDek(byte[])} sobre {@code cert.certificadoDekCifrada}
  *       recupera la DEK en texto plano que cifró el {@code .p12}.
  *   <li>{@link EnvelopeCipher#descifrar(byte[], byte[])} con esa DEK sobre
- *       {@code empresa.certificadoP12Cifrado} recupera los bytes reales del {@code .p12}.
- *   <li>El PIN NO vive en Postgres -- se lee de Vault KV vía
- *       {@link SecretosKvService#leerSecreto(UUID, String)} en la misma subruta
- *       ({@code certificado/pin}) que {@code EmpresaService} usa para escribirlo.
+ *       {@code cert.certificadoP12Cifrado} recupera los bytes reales del {@code .p12}.
+ *   <li>El PIN NO vive en {@code certificado_hacienda} -- se lee de Vault KV vía
+ *       {@link SecretosKvService#leerSecreto(UUID, String)} en la subruta
+ *       {@code certificado/{ambiente}/pin} que {@code EmpresaService} usa para escribirlo.
  *   <li>El {@code KeyStore} se carga desde un {@link ByteArrayInputStream} sobre esos bytes (en vez
  *       de {@code FileInputStream} sobre una ruta, como el original) -- el resto de la lógica de
  *       resolución de alias/clave privada/certificado y validación de vigencia se porta tal cual.
@@ -99,30 +100,32 @@ public class XmlFacturaFirmaServiceImpl implements XmlFacturaFirmaService {
     private static final String SIGNED_PROPS_TYPE = "http://uri.etsi.org/01903#SignedProperties";
     private static final String KEYSTORE_PKCS12 = "PKCS12";
 
-    /** Misma subruta que {@code EmpresaService.SUBRUTA_CERTIFICADO_PIN} -- ver el javadoc de la clase. */
-    private static final String SUBRUTA_CERTIFICADO_PIN = "certificado/pin";
-
-    private final EmpresaRepository empresaRepository;
+    private final CertificadoHaciendaRepository certificadoHaciendaRepository;
     private final TransitService transitService;
     private final SecretosKvService secretosKvService;
 
     public XmlFacturaFirmaServiceImpl(
-            EmpresaRepository empresaRepository,
+            CertificadoHaciendaRepository certificadoHaciendaRepository,
             TransitService transitService,
             SecretosKvService secretosKvService) {
-        this.empresaRepository = empresaRepository;
+        this.certificadoHaciendaRepository = certificadoHaciendaRepository;
         this.transitService = transitService;
         this.secretosKvService = secretosKvService;
     }
 
     @Override
-    public String firmar(String xml, UUID empresaId) {
-        Empresa empresa = empresaRepository.findById(empresaId)
-                .orElseThrow(() -> new IllegalStateException("Empresa no encontrada: " + empresaId));
+    public String firmar(String xml, UUID empresaId, String ambiente) {
+        CertificadoHacienda cert = certificadoHaciendaRepository
+                .findByEmpresaIdAndAmbiente(empresaId, ambiente)
+                .orElseThrow(() -> new XmlFacturaFirmaException(
+                        "La empresa " + empresaId + " no tiene certificado .p12 para el ambiente " + ambiente, null));
 
-        byte[] p12 = descifrarCertificado(empresa);
+        byte[] p12 = descifrarCertificado(cert);
         try {
-            String pin = leerPin(empresaId);
+            String subruta = "certificado/" + ambiente.toLowerCase(Locale.ROOT) + "/pin";
+            String pin = secretosKvService.leerSecreto(empresaId, subruta)
+                    .orElseThrow(() -> new XmlFacturaFirmaException(
+                            "PIN del certificado no encontrado en Vault para empresa " + empresaId + " ambiente " + ambiente, null));
             return firmarXml(xml, p12, pin);
         } finally {
             // Descarte inmediato de los bytes del .p12 en claro -- ver el javadoc de la clase.
@@ -130,26 +133,14 @@ public class XmlFacturaFirmaServiceImpl implements XmlFacturaFirmaService {
         }
     }
 
-    private byte[] descifrarCertificado(Empresa empresa) {
-        byte[] p12Cifrado = empresa.getCertificadoP12Cifrado();
-        byte[] dekCifrada = empresa.getCertificadoDekCifrada();
-        if (p12Cifrado == null || dekCifrada == null) {
-            throw new XmlFacturaFirmaException(
-                    "La empresa " + empresa.getId() + " no tiene un certificado .p12 cargado", null);
-        }
-        byte[] dekPlaintext = transitService.descifrarDek(dekCifrada);
+    private byte[] descifrarCertificado(CertificadoHacienda cert) {
+        byte[] dekPlaintext = transitService.descifrarDek(cert.getCertificadoDekCifrada());
         try {
-            return EnvelopeCipher.descifrar(dekPlaintext, p12Cifrado);
+            return EnvelopeCipher.descifrar(dekPlaintext, cert.getCertificadoP12Cifrado());
         } finally {
             // Descarte inmediato de la DEK en texto plano -- ver el javadoc de la clase.
             Arrays.fill(dekPlaintext, (byte) 0);
         }
-    }
-
-    private String leerPin(UUID empresaId) {
-        return secretosKvService.leerSecreto(empresaId, SUBRUTA_CERTIFICADO_PIN)
-                .orElseThrow(() -> new XmlFacturaFirmaException(
-                        "PIN del certificado no encontrado en Vault para la empresa " + empresaId, null));
     }
 
     /**

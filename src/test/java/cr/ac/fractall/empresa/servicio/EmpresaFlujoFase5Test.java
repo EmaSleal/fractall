@@ -23,6 +23,8 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.vault.VaultContainer;
 
+import cr.ac.fractall.empresa.modelo.CertificadoHacienda;
+import cr.ac.fractall.empresa.repositorio.CertificadoHaciendaRepository;
 import cr.ac.fractall.empresa.modelo.CredencialHacienda;
 import cr.ac.fractall.empresa.repositorio.CredencialHaciendaRepository;
 import cr.ac.fractall.empresa.modelo.Empresa;
@@ -180,6 +182,9 @@ class EmpresaFlujoFase5Test {
     private EmpresaRepository empresaRepository;
 
     @Autowired
+    private CertificadoHaciendaRepository certificadoHaciendaRepository;
+
+    @Autowired
     private CredencialHaciendaRepository credencialHaciendaRepository;
 
     @Autowired
@@ -261,20 +266,20 @@ class EmpresaFlujoFase5Test {
 
         // Paso 3: certificado .p12 + PIN válidos -> CERTIFICADO_PENDIENTE -> CREDENCIALES_HACIENDA_PENDIENTES.
         var respuestaCertificado = comoTenant(empresaId,
-                () -> empresaService.cargarCertificado(p12ValidoDePrueba, PIN_VALIDO));
+                () -> empresaService.cargarCertificado(p12ValidoDePrueba, PIN_VALIDO, "SANDBOX"));
         assertThat(respuestaCertificado.status()).isEqualTo("CREDENCIALES_HACIENDA_PENDIENTES");
         assertThat(statusActual(empresaId)).isEqualTo("CREDENCIALES_HACIENDA_PENDIENTES");
 
         TenantContextDescartable.ejecutar(() -> {
-            Empresa empresa = empresaRepository.findById(empresaId).orElseThrow();
-            assertThat(empresa.getCertificadoReferencia()).isNotBlank();
-            assertThat(empresa.getCertificadoP12Cifrado()).isNotEmpty();
-            assertThat(empresa.getCertificadoDekCifrada()).isNotEmpty();
-            // Nunca el .p12 en claro en la columna cifrada.
-            assertThat(empresa.getCertificadoP12Cifrado()).isNotEqualTo(p12ValidoDePrueba);
+            CertificadoHacienda cert = certificadoHaciendaRepository
+                    .findByEmpresaIdAndAmbiente(empresaId, "SANDBOX").orElseThrow();
+            assertThat(cert.getCertificadoReferencia()).isNotBlank();
+            assertThat(cert.getCertificadoP12Cifrado()).isNotEmpty();
+            assertThat(cert.getCertificadoDekCifrada()).isNotEmpty();
+            assertThat(cert.getCertificadoP12Cifrado()).isNotEqualTo(p12ValidoDePrueba);
             return null;
         });
-        assertThat(secretosKvService.leerSecreto(empresaId, "certificado/pin")).contains(PIN_VALIDO);
+        assertThat(secretosKvService.leerSecreto(empresaId, "certificado/sandbox/pin")).contains(PIN_VALIDO);
 
         // Paso 4: credenciales de Hacienda SANDBOX -> CREDENCIALES_HACIENDA_PENDIENTES -> HABILITADA.
         var respuestaCredencial = comoTenant(empresaId, () -> empresaService.configurarCredencialHacienda(
@@ -329,7 +334,7 @@ class EmpresaFlujoFase5Test {
                 new ActualizarDatosFiscalesRequest(
                         null, null, nid, "02", "620000", "1", "01", "01",
                         "Barrio Centro", "Del parque 200m norte", "22334455", "empresa@fractall.test")));
-        comoTenant(empresaId, () -> empresaService.cargarCertificado(p12ValidoDePrueba, PIN_VALIDO));
+        comoTenant(empresaId, () -> empresaService.cargarCertificado(p12ValidoDePrueba, PIN_VALIDO, "SANDBOX"));
         comoTenant(empresaId, () -> empresaService.configurarCredencialHacienda(
                 "usuario.hacienda@fractall.test", "clave-hacienda-super-secreta", "SANDBOX", usuarioId));
 
@@ -372,13 +377,14 @@ class EmpresaFlujoFase5Test {
                 new ActualizarDatosFiscalesRequest(
                         null, null, nid, "02", "620000", "1", "01", "01",
                         "Barrio Centro", "Del parque 200m norte", "22334455", "empresa@fractall.test")));
-        comoTenant(empresaId, () -> empresaService.cargarCertificado(p12ValidoDePrueba, PIN_VALIDO));
+        comoTenant(empresaId, () -> empresaService.cargarCertificado(p12ValidoDePrueba, PIN_VALIDO, "SANDBOX"));
         comoTenant(empresaId, () -> empresaService.configurarCredencialHacienda(
                 "sandbox@test.com", "clave-sandbox", "SANDBOX", usuarioId));
         assertThat(statusActual(empresaId)).isEqualTo("HABILITADA");
 
         comoTenant(empresaId, () -> empresaService.configurarCredencialHacienda(
                 "prod@test.com", "clave-prod", "PRODUCCION", usuarioId));
+        comoTenant(empresaId, () -> empresaService.cargarCertificado(p12ValidoDePrueba, PIN_VALIDO, "PRODUCCION"));
 
         var resp = comoTenant(empresaId, () -> empresaService.activarAmbiente("PRODUCCION", usuarioId));
         assertThat(resp.ambienteHacienda()).isEqualTo("PRODUCCION");
@@ -430,11 +436,12 @@ class EmpresaFlujoFase5Test {
                 new ActualizarDatosFiscalesRequest(
                         null, null, nid, "02", "620000", "1", "01", "01",
                         "Barrio Centro", "Del parque 200m norte", "22334455", "empresa@fractall.test")));
-        comoTenant(empresaId, () -> empresaService.cargarCertificado(p12ValidoDePrueba, PIN_VALIDO));
+        comoTenant(empresaId, () -> empresaService.cargarCertificado(p12ValidoDePrueba, PIN_VALIDO, "SANDBOX"));
         comoTenant(empresaId, () -> empresaService.configurarCredencialHacienda(
                 "sandbox@test.com", "clave-sandbox", "SANDBOX", usuarioId));
         comoTenant(empresaId, () -> empresaService.configurarCredencialHacienda(
                 "prod@test.com", "clave-prod", "PRODUCCION", usuarioId));
+        comoTenant(empresaId, () -> empresaService.cargarCertificado(p12ValidoDePrueba, PIN_VALIDO, "PRODUCCION"));
 
         comoTenant(empresaId, () -> empresaService.activarAmbiente("PRODUCCION", usuarioId));
         assertThat(statusActual(empresaId)).isEqualTo("HABILITADA");
@@ -457,18 +464,19 @@ class EmpresaFlujoFase5Test {
         UUID empresaId = datos[1];
 
         assertThatThrownBy(() -> comoTenant(empresaId,
-                () -> empresaService.cargarCertificado(p12ValidoDePrueba, "pin-completamente-incorrecto")))
+                () -> empresaService.cargarCertificado(p12ValidoDePrueba, "pin-completamente-incorrecto", "SANDBOX")))
                 .isInstanceOf(CertificadoInvalidoException.class);
 
         TenantContextDescartable.ejecutar(() -> {
+            assertThat(certificadoHaciendaRepository.findByEmpresaIdAndAmbiente(empresaId, "SANDBOX")).isEmpty();
+            return null;
+        });
+        // El status nunca debió avanzar más allá de REGISTRADA -- ningún campo fiscal se tocó.
+        TenantContextDescartable.ejecutar(() -> {
             Empresa empresa = empresaRepository.findById(empresaId).orElseThrow();
-            assertThat(empresa.getCertificadoReferencia()).isNull();
-            assertThat(empresa.getCertificadoP12Cifrado()).isNull();
-            assertThat(empresa.getCertificadoDekCifrada()).isNull();
-            // El status nunca debió avanzar más allá de REGISTRADA -- ningún campo fiscal se tocó.
             assertThat(empresa.getStatus()).isEqualTo("REGISTRADA");
             return null;
         });
-        assertThat(secretosKvService.leerSecreto(empresaId, "certificado/pin")).isEmpty();
+        assertThat(secretosKvService.leerSecreto(empresaId, "certificado/sandbox/pin")).isEmpty();
     }
 }

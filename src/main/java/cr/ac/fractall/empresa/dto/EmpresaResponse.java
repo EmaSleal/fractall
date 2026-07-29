@@ -9,8 +9,9 @@ import cr.ac.fractall.empresa.modelo.Empresa;
  * {@code status} siempre, para que el llamador observe la máquina de estados de la sección
  * 4.1 progresar tras cada paso, sin tener que consultar un endpoint aparte.
  *
- * <p>{@code tieneCertificado} deriva de {@code empresa.certificado_referencia IS NOT NULL}
- * (ver sección 4.1). Solo expone el booleano -- nunca la ruta del secreto en Vault.
+ * <p>{@code tieneCertificado} indica si existe un {@code certificado_hacienda} para el
+ * ambiente activo de la empresa (ver sección 4.1). Solo expone el booleano -- nunca la ruta
+ * del secreto en Vault.
  */
 public record EmpresaResponse(
         UUID id,
@@ -30,7 +31,7 @@ public record EmpresaResponse(
         String status,
         boolean tieneCertificado) {
 
-    public static EmpresaResponse desde(Empresa empresa) {
+    public static EmpresaResponse desde(Empresa empresa, boolean tieneCertificado) {
         return new EmpresaResponse(
                 empresa.getId(),
                 empresa.getRazonSocial(),
@@ -47,6 +48,6 @@ public record EmpresaResponse(
                 empresa.getEmail(),
                 empresa.getAmbienteHacienda(),
                 empresa.getStatus(),
-                empresa.getCertificadoReferencia() != null);
+                tieneCertificado);
     }
 }

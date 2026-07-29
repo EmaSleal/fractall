@@ -279,7 +279,7 @@ class ComprobanteXmlPersistenceServiceTest {
         // Certificado .p12 real cargado por el camino de producción -- ver el javadoc de la
         // clase: generarYPersistirXml firma el XML antes de subirlo, así que ningún comprobante
         // puede procesarse sin esto.
-        empresaService.cargarCertificado(p12ValidoDePrueba, PIN_VALIDO);
+        empresaService.cargarCertificado(p12ValidoDePrueba, PIN_VALIDO, "SANDBOX");
     }
 
     @AfterEach

@@ -230,7 +230,7 @@ class XmlFacturaFirmaServiceImplTest {
     }
 
     private void cargarCertificadoValido() {
-        empresaService.cargarCertificado(p12ValidoDePrueba, PIN_VALIDO);
+        empresaService.cargarCertificado(p12ValidoDePrueba, PIN_VALIDO, "SANDBOX");
     }
 
     private static String xmlDeNegocio(String valorClave) {
@@ -246,7 +246,7 @@ class XmlFacturaFirmaServiceImplTest {
         cargarCertificadoValido();
         String xmlSinFirmar = xmlDeNegocio("50601011900310270100100001010000000001199999999");
 
-        String xmlFirmado = xmlFacturaFirmaService.firmar(xmlSinFirmar, empresa.getId());
+        String xmlFirmado = xmlFacturaFirmaService.firmar(xmlSinFirmar, empresa.getId(), "SANDBOX");
 
         assertThat(xmlFirmado).contains("<ds:Signature");
         assertThat(xmlFirmado).contains("xades:QualifyingProperties");
@@ -260,7 +260,7 @@ class XmlFacturaFirmaServiceImplTest {
         cargarCertificadoValido();
         String xmlSinFirmar = xmlDeNegocio("50601011900310270100100001010000000001199999999");
 
-        String xmlFirmado = xmlFacturaFirmaService.firmar(xmlSinFirmar, empresa.getId());
+        String xmlFirmado = xmlFacturaFirmaService.firmar(xmlSinFirmar, empresa.getId(), "SANDBOX");
         assertThat(xmlFacturaFirmaService.verificarFirma(xmlFirmado)).isTrue();
 
         // Se altera UN solo carácter del contenido de negocio (el último dígito de la Clave) ya
@@ -285,16 +285,16 @@ class XmlFacturaFirmaServiceImplTest {
         // empresa creada en setUp() nunca pasó por cargarCertificado() -- sin .p12/DEK en Postgres.
         String xmlSinFirmar = xmlDeNegocio("50601011900310270100100001010000000001199999999");
 
-        assertThatThrownBy(() -> xmlFacturaFirmaService.firmar(xmlSinFirmar, empresa.getId()))
+        assertThatThrownBy(() -> xmlFacturaFirmaService.firmar(xmlSinFirmar, empresa.getId(), "SANDBOX"))
                 .isInstanceOf(XmlFacturaFirmaException.class);
     }
 
     @Test
-    void firmarConEmpresaInexistenteLanzaIllegalStateException() {
+    void firmarConEmpresaSinCertificadoEnAmbienteLanzaXmlFacturaFirmaException() {
         String xmlSinFirmar = xmlDeNegocio("50601011900310270100100001010000000001199999999");
-        UUID empresaInexistente = UUID.randomUUID();
+        UUID empresaSinCert = UUID.randomUUID();
 
-        assertThatThrownBy(() -> xmlFacturaFirmaService.firmar(xmlSinFirmar, empresaInexistente))
-                .isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> xmlFacturaFirmaService.firmar(xmlSinFirmar, empresaSinCert, "SANDBOX"))
+                .isInstanceOf(XmlFacturaFirmaException.class);
     }
 }
