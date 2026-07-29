@@ -269,12 +269,55 @@ class EmpresaControllerTest {
     void postCredencialesHaciendaRetorna200() throws Exception {
         String accessToken = crearUsuarioEmpresaYToken();
         ConfigurarCredencialHaciendaRequest request = new ConfigurarCredencialHaciendaRequest(
-                "usuario.hacienda.http@fractall.test", "clave-hacienda-http");
+                "usuario.hacienda.http@fractall.test", "clave-hacienda-http", "SANDBOX");
 
         mockMvc.perform(post("/empresa/credenciales-hacienda")
                         .header("Authorization", "Bearer " + accessToken)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void patchAmbienteRetorna400SiProduccionSinCredenciales() throws Exception {
+        // La empresa arranca como REGISTRADA -- no es HABILITADA, ni tiene credenciales PRODUCCION.
+        String accessToken = crearUsuarioEmpresaYToken();
+
+        mockMvc.perform(patch("/empresa/ambiente")
+                        .header("Authorization", "Bearer " + accessToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"ambiente\": \"PRODUCCION\"}"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void patchAmbienteConValorInvalidoRetorna400() throws Exception {
+        String accessToken = crearUsuarioEmpresaYToken();
+        mockMvc.perform(patch("/empresa/ambiente")
+                        .header("Authorization", "Bearer " + accessToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"ambiente\": \"INVALIDO\"}"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void postCredencialesHaciendaConAmbienteInvalidoRetorna400() throws Exception {
+        String accessToken = crearUsuarioEmpresaYToken();
+        mockMvc.perform(post("/empresa/credenciales-hacienda")
+                        .header("Authorization", "Bearer " + accessToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"usuarioHacienda\": \"u@test.com\", \"password\": \"pass\", \"ambiente\": \"INVALIDO\"}"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void patchAmbienteConMismoAmbienteRetorna200() throws Exception {
+        String accessToken = crearUsuarioEmpresaYToken();
+        // empresa starts as SANDBOX by default — sending SANDBOX again is a no-op, must return 200
+        mockMvc.perform(patch("/empresa/ambiente")
+                        .header("Authorization", "Bearer " + accessToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"ambiente\": \"SANDBOX\"}"))
                 .andExpect(status().isOk());
     }
 }

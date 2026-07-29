@@ -21,9 +21,11 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import cr.ac.fractall.empresa.dto.ActualizarDatosFiscalesRequest;
+import cr.ac.fractall.empresa.dto.CambiarAmbienteRequest;
 import cr.ac.fractall.empresa.dto.CargarCertificadoRequest;
 import cr.ac.fractall.empresa.dto.ConfigurarCredencialHaciendaRequest;
 import cr.ac.fractall.empresa.dto.EmpresaResponse;
+import cr.ac.fractall.empresa.servicio.AmbienteNoDisponibleException;
 import cr.ac.fractall.empresa.servicio.CertificadoInvalidoException;
 import cr.ac.fractall.empresa.servicio.EmpresaService;
 import cr.ac.fractall.seguridad.dto.MensajeResponse;
@@ -99,8 +101,24 @@ public class EmpresaController {
         }
 
         EmpresaResponse respuesta = empresaService.configurarCredencialHacienda(
-                request.usuarioHacienda(), request.password(), usuarioId.get());
+                request.usuarioHacienda(), request.password(), request.ambiente(), usuarioId.get());
         return ResponseEntity.ok(respuesta);
+    }
+
+    @Operation(summary = "Cambiar el ambiente activo de Hacienda (SANDBOX o PRODUCCION)")
+    @SecurityRequirement(name = "bearerAuth")
+    @PatchMapping("/ambiente")
+    public ResponseEntity<?> cambiarAmbiente(@Valid @RequestBody CambiarAmbienteRequest request) {
+        Optional<UUID> usuarioId = usuarioIdAutenticado();
+        if (usuarioId.isEmpty()) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(MENSAJE_SIN_AUTENTICAR);
+        }
+        try {
+            EmpresaResponse respuesta = empresaService.activarAmbiente(request.ambiente(), usuarioId.get());
+            return ResponseEntity.ok(respuesta);
+        } catch (AmbienteNoDisponibleException e) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(new MensajeResponse(e.getMessage()));
+        }
     }
 
     /** Mismo patrón que {@code AuthController#usuarioIdAutenticado} -- ver su javadoc. */

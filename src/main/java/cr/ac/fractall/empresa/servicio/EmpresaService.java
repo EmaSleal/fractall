@@ -5,6 +5,7 @@ import java.security.GeneralSecurityException;
 import java.security.KeyStore;
 import java.time.LocalDateTime;
 import java.util.Arrays;
+import java.util.Locale;
 import java.util.UUID;
 import java.util.function.Consumer;
 
@@ -18,6 +19,8 @@ import cr.ac.fractall.empresa.modelo.CredencialHacienda;
 import cr.ac.fractall.empresa.repositorio.CredencialHaciendaRepository;
 import cr.ac.fractall.empresa.modelo.Empresa;
 import cr.ac.fractall.empresa.repositorio.EmpresaRepository;
+import cr.ac.fractall.empresa.modelo.EmpresaAmbienteHistorial;
+import cr.ac.fractall.empresa.repositorio.EmpresaAmbienteHistorialRepository;
 import cr.ac.fractall.empresa.dto.ActualizarDatosFiscalesRequest;
 import cr.ac.fractall.empresa.dto.EmpresaResponse;
 import cr.ac.fractall.secretos.EnvelopeCipher;
@@ -54,12 +57,11 @@ import cr.ac.fractall.tenant.TenantContext;
 public class EmpresaService {
 
     private static final String SUBRUTA_CERTIFICADO_PIN = "certificado/pin";
-    private static final String SUBRUTA_HACIENDA_SANDBOX_PASSWORD = "hacienda/sandbox/password";
-    private static final String AMBIENTE_SANDBOX = "SANDBOX";
     private static final String KEYSTORE_PKCS12 = "PKCS12";
 
     private final EmpresaRepository empresaRepository;
     private final CredencialHaciendaRepository credencialHaciendaRepository;
+    private final EmpresaAmbienteHistorialRepository empresaAmbienteHistorialRepository;
     private final SecretosKvService secretosKvService;
     private final TransitService transitService;
 
@@ -69,10 +71,12 @@ public class EmpresaService {
     public EmpresaService(
             EmpresaRepository empresaRepository,
             CredencialHaciendaRepository credencialHaciendaRepository,
+            EmpresaAmbienteHistorialRepository empresaAmbienteHistorialRepository,
             SecretosKvService secretosKvService,
             TransitService transitService) {
         this.empresaRepository = empresaRepository;
         this.credencialHaciendaRepository = credencialHaciendaRepository;
+        this.empresaAmbienteHistorialRepository = empresaAmbienteHistorialRepository;
         this.secretosKvService = secretosKvService;
         this.transitService = transitService;
     }
@@ -140,40 +144,79 @@ public class EmpresaService {
     }
 
     /**
-     * Ambiente {@code SANDBOX} únicamente (fuera de alcance de la Fase 5: {@code PRODUCCION},
-     * ver {@code plan-fases-release-1.md}). Hace upsert de {@code credencial_hacienda} (la
-     * tabla tiene {@code UNIQUE(empresa_id, ambiente)}): si ya existe una fila SANDBOX para
-     * esta empresa -- por ejemplo, un admin corrigiendo un usuario/password tipeado mal -- se
-     * actualiza en el lugar en vez de intentar un segundo INSERT, que violaría esa restricción
-     * y dejaría el endpoint inutilizable tras la primera llamada exitosa. Inserta/actualiza
-     * {@code credencial_hacienda} y solo DESPUÉS actualiza {@code empresa} -- el trigger de
-     * status consulta {@code credencial_hacienda} en el momento del {@code UPDATE}, así que la
-     * fila debe existir (aunque sea sin commit todavía, misma transacción) antes de ese paso.
+     * Hace upsert de {@code credencial_hacienda} para el ambiente indicado (la tabla tiene
+     * {@code UNIQUE(empresa_id, ambiente)}): si ya existe una fila para este ambiente -- por
+     * ejemplo, un admin corrigiendo un usuario/password tipeado mal -- se actualiza en el
+     * lugar en vez de intentar un segundo INSERT. Inserta/actualiza {@code credencial_hacienda}
+     * y solo DESPUÉS actualiza {@code empresa} -- el trigger de status consulta
+     * {@code credencial_hacienda} en el momento del {@code UPDATE}, así que la fila debe
+     * existir antes de ese paso.
      */
     @Transactional
-    public EmpresaResponse configurarCredencialHacienda(String usuarioHacienda, String password, UUID configuradoPor) {
+    public EmpresaResponse configurarCredencialHacienda(String usuarioHacienda, String password, String ambiente, UUID configuradoPor) {
         Empresa empresa = obtenerEmpresaActual();
         UUID empresaId = empresa.getId();
 
-        secretosKvService.guardarSecreto(empresaId, SUBRUTA_HACIENDA_SANDBOX_PASSWORD, password);
+        String subruta = subrutaHacienda(ambiente);
+        secretosKvService.guardarSecreto(empresaId, subruta, password);
 
         CredencialHacienda credencial = credencialHaciendaRepository
-                .findByEmpresaIdAndAmbiente(empresaId, AMBIENTE_SANDBOX)
+                .findByEmpresaIdAndAmbiente(empresaId, ambiente)
                 .orElseGet(() -> {
                     CredencialHacienda nueva = new CredencialHacienda();
                     nueva.setEmpresaId(empresaId);
-                    nueva.setAmbiente(AMBIENTE_SANDBOX);
+                    nueva.setAmbiente(ambiente);
                     return nueva;
                 });
         credencial.setUsuarioHacienda(usuarioHacienda);
-        credencial.setCredencialReferencia(referenciaCompleta(empresaId, SUBRUTA_HACIENDA_SANDBOX_PASSWORD));
+        credencial.setCredencialReferencia(referenciaCompleta(empresaId, subruta));
         credencial.setConfiguradaEn(LocalDateTime.now());
         credencial.setConfiguradaPor(configuradoPor);
         credencialHaciendaRepository.saveAndFlush(credencial);
 
         // Ningún campo propio de empresa cambia aquí -- se toca update_date únicamente para
         // forzar el UPDATE (y por lo tanto el trigger) que recalcula el status ahora que la
-        // credencial SANDBOX ya existe.
+        // credencial ya existe.
+        empresa.setUpdateDate(LocalDateTime.now());
+
+        return guardarYReleer(empresa);
+    }
+
+    /**
+     * Cambia el ambiente activo de Hacienda para la empresa actual. Si el ambiente solicitado
+     * ya es el activo, devuelve el estado actual sin modificar nada. Al cambiar a PRODUCCION
+     * desde SANDBOX se validan las precondiciones: la empresa debe estar HABILITADA y deben
+     * existir credenciales de PRODUCCION previamente configuradas. Registra el cambio en
+     * {@code empresa_ambiente_historial}.
+     */
+    @Transactional
+    public EmpresaResponse activarAmbiente(String ambiente, UUID activadoPor) {
+        Empresa empresa = obtenerEmpresaActual();
+
+        if (ambiente.equals(empresa.getAmbienteHacienda())) {
+            return EmpresaResponse.desde(empresa);
+        }
+
+        if ("PRODUCCION".equals(ambiente)) {
+            if (!"HABILITADA".equals(empresa.getStatus())) {
+                throw new AmbienteNoDisponibleException(
+                        "La empresa debe estar en estado HABILITADA para activar el ambiente PRODUCCION");
+            }
+            if (credencialHaciendaRepository.findByEmpresaIdAndAmbiente(empresa.getId(), "PRODUCCION").isEmpty()) {
+                throw new AmbienteNoDisponibleException(
+                        "No existen credenciales de PRODUCCION configuradas para esta empresa");
+            }
+        }
+
+        EmpresaAmbienteHistorial historial = new EmpresaAmbienteHistorial();
+        historial.setEmpresaId(empresa.getId());
+        historial.setAmbienteAnterior(empresa.getAmbienteHacienda());
+        historial.setAmbienteNuevo(ambiente);
+        historial.setActivadoPor(activadoPor);
+        historial.setFecha(LocalDateTime.now());
+        empresaAmbienteHistorialRepository.save(historial);
+
+        empresa.setAmbienteHacienda(ambiente);
         empresa.setUpdateDate(LocalDateTime.now());
 
         return guardarYReleer(empresa);
@@ -208,6 +251,10 @@ public class EmpresaService {
         // obsoletos en la respuesta.
         entityManager.refresh(empresa);
         return EmpresaResponse.desde(empresa);
+    }
+
+    private static String subrutaHacienda(String ambiente) {
+        return "hacienda/" + ambiente.toLowerCase(Locale.ROOT) + "/password";
     }
 
     private static String referenciaCompleta(UUID empresaId, String subruta) {

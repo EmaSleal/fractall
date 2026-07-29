@@ -26,7 +26,9 @@ import org.testcontainers.vault.VaultContainer;
 import cr.ac.fractall.empresa.modelo.CredencialHacienda;
 import cr.ac.fractall.empresa.repositorio.CredencialHaciendaRepository;
 import cr.ac.fractall.empresa.modelo.Empresa;
+import cr.ac.fractall.empresa.repositorio.EmpresaAmbienteHistorialRepository;
 import cr.ac.fractall.empresa.repositorio.EmpresaRepository;
+import cr.ac.fractall.empresa.servicio.AmbienteNoDisponibleException;
 import cr.ac.fractall.empresa.dto.ActualizarDatosFiscalesRequest;
 import cr.ac.fractall.secretos.SecretosKvService;
 import cr.ac.fractall.seguridad.modelo.Usuario;
@@ -184,6 +186,9 @@ class EmpresaFlujoFase5Test {
     private UsuarioRepository usuarioRepository;
 
     @Autowired
+    private EmpresaAmbienteHistorialRepository empresaAmbienteHistorialRepository;
+
+    @Autowired
     private SecretosKvService secretosKvService;
 
     /** Crea usuario + empresa en {@code REGISTRADA}, replicando el mínimo de {@code RegistroService}. */
@@ -273,7 +278,7 @@ class EmpresaFlujoFase5Test {
 
         // Paso 4: credenciales de Hacienda SANDBOX -> CREDENCIALES_HACIENDA_PENDIENTES -> HABILITADA.
         var respuestaCredencial = comoTenant(empresaId, () -> empresaService.configurarCredencialHacienda(
-                "usuario.hacienda@fractall.test", "clave-hacienda-super-secreta", usuarioId));
+                "usuario.hacienda@fractall.test", "clave-hacienda-super-secreta", "SANDBOX", usuarioId));
         assertThat(respuestaCredencial.status()).isEqualTo("HABILITADA");
         assertThat(statusActual(empresaId)).isEqualTo("HABILITADA");
 
@@ -294,7 +299,7 @@ class EmpresaFlujoFase5Test {
         // tipeado mal) -- debe actualizar la fila SANDBOX existente en vez de intentar un
         // segundo INSERT, que violaría UNIQUE(empresa_id, ambiente).
         var respuestaCredencialActualizada = comoTenant(empresaId, () -> empresaService.configurarCredencialHacienda(
-                "usuario.hacienda.nuevo@fractall.test", "clave-hacienda-corregida", usuarioId));
+                "usuario.hacienda.nuevo@fractall.test", "clave-hacienda-corregida", "SANDBOX", usuarioId));
         assertThat(respuestaCredencialActualizada.status()).isEqualTo("HABILITADA");
 
         TenantContextDescartable.ejecutar(() -> {
@@ -308,6 +313,142 @@ class EmpresaFlujoFase5Test {
         });
         assertThat(secretosKvService.leerSecreto(empresaId, "hacienda/sandbox/password"))
                 .contains("clave-hacienda-corregida");
+    }
+
+    @Test
+    void activarAmbienteProduccionSinCredencialesLanzaExcepcion() {
+        UUID[] datos = crearUsuarioYEmpresaRegistrada();
+        UUID usuarioId = datos[0];
+        UUID empresaId = datos[1];
+
+        // Llevar la empresa hasta HABILITADA. Se usa empresaId como sufijo del NID para evitar
+        // colisión con el único constraint de numero_identificacion cuando ambos tests comparten
+        // el mismo contenedor Postgres.
+        String nid = "31" + empresaId.toString().replace("-", "").substring(0, 8);
+        comoTenant(empresaId, () -> empresaService.actualizarDatosFiscales(
+                new ActualizarDatosFiscalesRequest(
+                        null, null, nid, "02", "620000", "1", "01", "01",
+                        "Barrio Centro", "Del parque 200m norte", "22334455", "empresa@fractall.test")));
+        comoTenant(empresaId, () -> empresaService.cargarCertificado(p12ValidoDePrueba, PIN_VALIDO));
+        comoTenant(empresaId, () -> empresaService.configurarCredencialHacienda(
+                "usuario.hacienda@fractall.test", "clave-hacienda-super-secreta", "SANDBOX", usuarioId));
+
+        assertThat(statusActual(empresaId)).isEqualTo("HABILITADA");
+
+        // Intentar activar PRODUCCION sin credenciales de PRODUCCION debe lanzar la excepción.
+        assertThatThrownBy(() -> comoTenant(empresaId,
+                () -> empresaService.activarAmbiente("PRODUCCION", usuarioId)))
+                .isInstanceOf(AmbienteNoDisponibleException.class);
+    }
+
+    @Test
+    void configurarCredencialHaciendaProduccionEscribeSubrutaCorrecta() {
+        UUID[] datos = crearUsuarioYEmpresaRegistrada();
+        UUID usuarioId = datos[0];
+        UUID empresaId = datos[1];
+
+        comoTenant(empresaId, () -> empresaService.configurarCredencialHacienda(
+                "prod@test.com", "clave-prod", "PRODUCCION", usuarioId));
+
+        assertThat(secretosKvService.leerSecreto(empresaId, "hacienda/produccion/password"))
+                .contains("clave-prod");
+
+        TenantContextDescartable.ejecutar(() -> {
+            var credencial = credencialHaciendaRepository.findByEmpresaIdAndAmbiente(empresaId, "PRODUCCION");
+            assertThat(credencial).isPresent();
+            assertThat(credencial.get().getUsuarioHacienda()).isEqualTo("prod@test.com");
+            return null;
+        });
+    }
+
+    @Test
+    void activarAmbienteProduccionHappyPath() {
+        UUID[] datos = crearUsuarioYEmpresaRegistrada();
+        UUID usuarioId = datos[0];
+        UUID empresaId = datos[1];
+
+        String nid = "41" + empresaId.toString().replace("-", "").substring(0, 8);
+        comoTenant(empresaId, () -> empresaService.actualizarDatosFiscales(
+                new ActualizarDatosFiscalesRequest(
+                        null, null, nid, "02", "620000", "1", "01", "01",
+                        "Barrio Centro", "Del parque 200m norte", "22334455", "empresa@fractall.test")));
+        comoTenant(empresaId, () -> empresaService.cargarCertificado(p12ValidoDePrueba, PIN_VALIDO));
+        comoTenant(empresaId, () -> empresaService.configurarCredencialHacienda(
+                "sandbox@test.com", "clave-sandbox", "SANDBOX", usuarioId));
+        assertThat(statusActual(empresaId)).isEqualTo("HABILITADA");
+
+        comoTenant(empresaId, () -> empresaService.configurarCredencialHacienda(
+                "prod@test.com", "clave-prod", "PRODUCCION", usuarioId));
+
+        var resp = comoTenant(empresaId, () -> empresaService.activarAmbiente("PRODUCCION", usuarioId));
+        assertThat(resp.ambienteHacienda()).isEqualTo("PRODUCCION");
+
+        TenantContextDescartable.ejecutar(() -> {
+            Empresa empresa = empresaRepository.findById(empresaId).orElseThrow();
+            assertThat(empresa.getAmbienteHacienda()).isEqualTo("PRODUCCION");
+            return null;
+        });
+
+        TenantContextDescartable.ejecutar(() -> {
+            var h = empresaAmbienteHistorialRepository.findAll().stream()
+                    .filter(e -> e.getEmpresaId().equals(empresaId))
+                    .toList();
+            assertThat(h).hasSize(1);
+            assertThat(h.get(0).getAmbienteAnterior()).isEqualTo("SANDBOX");
+            assertThat(h.get(0).getAmbienteNuevo()).isEqualTo("PRODUCCION");
+            return null;
+        });
+    }
+
+    @Test
+    void activarAmbienteMismoAmbienteEsNoOp() {
+        UUID[] datos = crearUsuarioYEmpresaRegistrada();
+        UUID usuarioId = datos[0];
+        UUID empresaId = datos[1];
+
+        // empresa starts as SANDBOX by default
+        var resp = comoTenant(empresaId, () -> empresaService.activarAmbiente("SANDBOX", usuarioId));
+        assertThat(resp.ambienteHacienda()).isEqualTo("SANDBOX");
+
+        TenantContextDescartable.ejecutar(() -> {
+            long count = empresaAmbienteHistorialRepository.findAll().stream()
+                    .filter(e -> e.getEmpresaId().equals(empresaId))
+                    .count();
+            assertThat(count).isZero();
+            return null;
+        });
+    }
+
+    @Test
+    void activarAmbienteVueltaASandboxDesdeProcuccionEsPermitida() {
+        UUID[] datos = crearUsuarioYEmpresaRegistrada();
+        UUID usuarioId = datos[0];
+        UUID empresaId = datos[1];
+
+        String nid = "51" + empresaId.toString().replace("-", "").substring(0, 8);
+        comoTenant(empresaId, () -> empresaService.actualizarDatosFiscales(
+                new ActualizarDatosFiscalesRequest(
+                        null, null, nid, "02", "620000", "1", "01", "01",
+                        "Barrio Centro", "Del parque 200m norte", "22334455", "empresa@fractall.test")));
+        comoTenant(empresaId, () -> empresaService.cargarCertificado(p12ValidoDePrueba, PIN_VALIDO));
+        comoTenant(empresaId, () -> empresaService.configurarCredencialHacienda(
+                "sandbox@test.com", "clave-sandbox", "SANDBOX", usuarioId));
+        comoTenant(empresaId, () -> empresaService.configurarCredencialHacienda(
+                "prod@test.com", "clave-prod", "PRODUCCION", usuarioId));
+
+        comoTenant(empresaId, () -> empresaService.activarAmbiente("PRODUCCION", usuarioId));
+        assertThat(statusActual(empresaId)).isEqualTo("HABILITADA");
+
+        var resp = comoTenant(empresaId, () -> empresaService.activarAmbiente("SANDBOX", usuarioId));
+        assertThat(resp.ambienteHacienda()).isEqualTo("SANDBOX");
+
+        TenantContextDescartable.ejecutar(() -> {
+            var h = empresaAmbienteHistorialRepository.findAll().stream()
+                    .filter(e -> e.getEmpresaId().equals(empresaId))
+                    .toList();
+            assertThat(h).hasSize(2);
+            return null;
+        });
     }
 
     @Test
