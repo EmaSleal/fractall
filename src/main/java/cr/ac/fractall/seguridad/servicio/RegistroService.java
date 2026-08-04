@@ -98,6 +98,7 @@ public class RegistroService {
         usuario.setEmailVerificado(false);
         usuario.setEstado("PENDIENTE_VERIFICACION");
         usuario.setMfaHabilitado(false);
+        usuario.setMfaRequerido(request.activarMfa() == null || request.activarMfa());
         usuario.setIntentosFallidos(0);
         usuario.setCreateDate(ahora);
         usuario.setUpdateDate(ahora);

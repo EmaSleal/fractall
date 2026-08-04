@@ -1,0 +1,1 @@
+ALTER TABLE usuario ADD COLUMN mfa_requerido BOOLEAN NOT NULL DEFAULT true;

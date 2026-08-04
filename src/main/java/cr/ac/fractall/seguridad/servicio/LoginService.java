@@ -7,10 +7,8 @@ import java.util.UUID;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
-import cr.ac.fractall.seguridad.modelo.Rol;
 import cr.ac.fractall.seguridad.modelo.Usuario;
 import cr.ac.fractall.seguridad.modelo.UsuarioEmpresa;
-import cr.ac.fractall.seguridad.repositorio.RolRepository;
 import cr.ac.fractall.seguridad.repositorio.UsuarioEmpresaRepository;
 import cr.ac.fractall.seguridad.repositorio.UsuarioRepository;
 
@@ -39,12 +37,8 @@ public class LoginService {
     private static final String ESTADO_PENDIENTE_VERIFICACION = "PENDIENTE_VERIFICACION";
     private static final String ESTADO_ACTIVO = "ACTIVO";
 
-    /** Único rol para el que MFA es obligatorio (sección 3.3) -- ver el comentario en {@link #login}. */
-    private static final String ROL_ADMIN_EMPRESA = "ADMIN_EMPRESA";
-
     private final UsuarioRepository usuarioRepository;
     private final UsuarioEmpresaRepository usuarioEmpresaRepository;
-    private final RolRepository rolRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
     private final RefreshTokenService refreshTokenService;
@@ -52,13 +46,11 @@ public class LoginService {
     public LoginService(
             UsuarioRepository usuarioRepository,
             UsuarioEmpresaRepository usuarioEmpresaRepository,
-            RolRepository rolRepository,
             PasswordEncoder passwordEncoder,
             JwtService jwtService,
             RefreshTokenService refreshTokenService) {
         this.usuarioRepository = usuarioRepository;
         this.usuarioEmpresaRepository = usuarioEmpresaRepository;
-        this.rolRepository = rolRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtService = jwtService;
         this.refreshTokenService = refreshTokenService;
@@ -102,11 +94,12 @@ public class LoginService {
             UsuarioEmpresa membresia = membresiasActivas.get(0);
             UUID empresaId = membresia.getEmpresaId();
 
-            // MFA obligatorio para ADMIN_EMPRESA (sección 3.3) -- en vez del access token
-            // completo, se emite el token de alcance mínimo "MFA pendiente": la contraseña ya
-            // se validó y la empresa ya está resuelta, pero falta completar (mfaHabilitado
-            // false) o confirmar (true) el segundo factor antes de que exista una sesión real.
-            if (esRolAdminEmpresa(membresia.getRolId())) {
+            // MFA según preferencia del usuario, fijada en la inscripción (sección 3.1 /
+            // RegistroRequest.activarMfa) -- en vez del access token completo, se emite el
+            // token de alcance mínimo "MFA pendiente": la contraseña ya se validó y la
+            // empresa ya está resuelta, pero falta completar (mfaHabilitado false) o
+            // confirmar (true) el segundo factor antes de que exista una sesión real.
+            if (usuario.isMfaRequerido()) {
                 String tokenMfaPendiente = jwtService.generarTokenMfaPendiente(usuario.getId(), empresaId);
                 return LoginResultado.requiereMfa(tokenMfaPendiente, !usuario.isMfaHabilitado());
             }
@@ -121,13 +114,6 @@ public class LoginService {
         // concreta (sección 3.2, punto 2).
         String tokenSeleccionTenant = jwtService.generarTokenSeleccionTenant(usuario.getId());
         return LoginResultado.requiereSeleccionTenant(tokenSeleccionTenant);
-    }
-
-    private boolean esRolAdminEmpresa(UUID rolId) {
-        Rol rol = rolRepository.findById(rolId)
-                .orElseThrow(() -> new IllegalStateException(
-                        "usuario_empresa referencia un rol_id inexistente: " + rolId));
-        return ROL_ADMIN_EMPRESA.equals(rol.getCodigo());
     }
 
     private void registrarIntentoFallido(Usuario usuario, LocalDateTime ahora) {

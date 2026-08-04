@@ -37,6 +37,9 @@ public class Usuario extends EntidadBase {
     @Column(name = "mfa_habilitado", nullable = false)
     private boolean mfaHabilitado;
 
+    @Column(name = "mfa_requerido", nullable = false)
+    private boolean mfaRequerido;
+
     @Column(name = "mfa_secret_cifrado")
     private byte[] mfaSecretCifrado;
 

@@ -34,5 +34,12 @@ public record RegistroRequest(
         @Schema(description = "Legal company name (razón social)", example = "Mi Empresa S.A.", requiredMode = Schema.RequiredMode.REQUIRED)
         @NotBlank(message = "La razón social es obligatoria")
         @Size(max = 255)
-        String razonSocial) {
+        String razonSocial,
+
+        @Schema(description = "Whether this user requires MFA to log in. Defaults to true when omitted.", example = "true")
+        Boolean activarMfa) {
+
+    public RegistroRequest(String nombre, String email, String password, String razonSocial) {
+        this(nombre, email, password, razonSocial, null);
+    }
 }
