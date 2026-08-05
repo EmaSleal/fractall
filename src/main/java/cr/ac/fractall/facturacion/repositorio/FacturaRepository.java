@@ -28,6 +28,12 @@ public interface FacturaRepository extends JpaRepository<Factura, UUID> {
      * <p>Proyección: todos los campos deben coincidir con el orden del constructor secundario de
      * {@link cr.ac.fractall.facturacion.dto.FacturaResumenResponse} que acepta
      * {@code LocalDateTime} para {@code fechaEmision}.
+     *
+     * <p>Orden: {@code f.id DESC}, no {@code f.create_date DESC} directamente. Como {@code id} es
+     * UUIDv7 (ver javadoc de {@code EntidadBase}), su orden coincide con el de creación pero
+     * conserva la localidad de índice del B-tree; el cursor keyset compara sobre esa misma
+     * columna ({@code f.id < :cursor}) para que la dirección de paginación siga siendo consistente
+     * con el ORDER BY.
      */
     @Query(value = """
             SELECT f.id, ce.consecutivo, f.cliente_id, cl.nombre,
@@ -41,8 +47,8 @@ public interface FacturaRepository extends JpaRepository<Factura, UUID> {
               AND (CAST(:desde AS date) IS NULL OR CAST(f.create_date AS date) >= CAST(:desde AS date))
               AND (CAST(:hasta AS date) IS NULL OR CAST(f.create_date AS date) <= CAST(:hasta AS date))
               AND (:estado IS NULL OR ce.estado = :estado)
-              AND (:cursor IS NULL OR f.id > CAST(:cursor AS uuid))
-            ORDER BY f.id ASC
+              AND (:cursor IS NULL OR f.id < CAST(:cursor AS uuid))
+            ORDER BY f.id DESC
             LIMIT :limit
             """, nativeQuery = true)
     List<Object[]> buscarNativo(
