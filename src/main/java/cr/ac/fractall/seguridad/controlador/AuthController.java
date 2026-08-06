@@ -147,7 +147,7 @@ public class AuthController {
   private static final MensajeResponse TOKEN_INVALIDO = new MensajeResponse(
       "El enlace de restablecimiento no es válido o ya expiró.");
 
-  private final String appBaseUrl;
+  private final String frontendBaseUrl;
 
   private final RegistroService registroService;
   private final VerificacionEmailService verificacionEmailService;
@@ -163,7 +163,7 @@ public class AuthController {
   private final RecuperacionPasswordService recuperacionPasswordService;
 
   public AuthController(
-      @Value("${application.app-base-url}") String appBaseUrl,
+      @Value("${application.frontend-base-url}") String frontendBaseUrl,
       RegistroService registroService,
       VerificacionEmailService verificacionEmailService,
       EmailNotificacionService emailNotificacionService,
@@ -176,7 +176,7 @@ public class AuthController {
       PerfilService perfilService,
       LogoutService logoutService,
       RecuperacionPasswordService recuperacionPasswordService) {
-    this.appBaseUrl = appBaseUrl;
+    this.frontendBaseUrl = frontendBaseUrl;
     this.registroService = registroService;
     this.verificacionEmailService = verificacionEmailService;
     this.emailNotificacionService = emailNotificacionService;
@@ -639,14 +639,14 @@ public class AuthController {
   }
 
   private String construirHtmlVerificacion(String tokenCrudo) {
-    String enlace = appBaseUrl + "/auth/verificar-email?token=" + tokenCrudo;
+    String enlace = frontendBaseUrl + "/verificar-email?token=" + tokenCrudo;
     return "<p>Gracias por registrarte en Fractall. Confirma tu correo con el siguiente enlace:</p>"
         + "<p><a href=\"" + enlace + "\">" + enlace + "</a></p>"
         + "<p>Este enlace expira en 24 horas.</p>";
   }
 
   private String construirHtmlRecuperacion(String tokenCrudo) {
-    String enlace = appBaseUrl + "/auth/restablecer-password?token=" + tokenCrudo;
+    String enlace = frontendBaseUrl + "/restablecer-password?token=" + tokenCrudo;
     return "<p>Recibimos una solicitud para restablecer tu contraseña en Fractall.</p>"
         + "<p>Haz clic en el siguiente enlace para continuar:</p>"
         + "<p><a href=\"" + enlace + "\">" + enlace + "</a></p>"

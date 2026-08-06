@@ -38,7 +38,10 @@ spring:
     enabled: true
 
 application:
-  app-base-url: ${APP_BASE_URL:https://app.fractall.cr}
+  # URL pública del frontend (fractall-frontend), no del backend — se usa para
+  # armar los links de los correos de verificación y recuperación de contraseña,
+  # que deben abrir una página del frontend, no un endpoint de la API.
+  frontend-base-url: ${FRONTEND_BASE_URL:https://app.fractall.cr}
   security:
     jwt:
       # Access token de vida corta (15 min, ver sección 2 del documento de arquitectura).
