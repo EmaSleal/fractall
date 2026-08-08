@@ -40,6 +40,7 @@ import cr.ac.fractall.facturacion.repositorio.ImpuestoLineaExoneracionRepository
 import cr.ac.fractall.facturacion.repositorio.LineaCodigoComercialRepository;
 import cr.ac.fractall.facturacion.repositorio.LineaDescuentoRepository;
 import cr.ac.fractall.facturacion.repositorio.LineaFacturaRepository;
+import cr.ac.fractall.hacienda.servicio.HaciendaApiService;
 import cr.ac.fractall.shared.PaginaResponse;
 import cr.ac.fractall.tenant.TenantContext;
 
@@ -94,7 +95,8 @@ class FacturaServiceListarTest {
                 facturaInformacionReferenciaRepository,
                 facturaMedioPagoRepository,
                 mock(ComprobanteXmlCifradoDescargador.class),
-                mock(ComprobanteHaciendaEnvioService.class));
+                mock(ComprobanteHaciendaEnvioService.class),
+                mock(HaciendaApiService.class));
     }
 
     @AfterEach

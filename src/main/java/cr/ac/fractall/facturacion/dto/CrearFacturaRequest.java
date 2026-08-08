@@ -21,7 +21,12 @@ import jakarta.validation.constraints.Size;
  * <p>{@code condicionVenta}/{@code medioPago}/{@code moneda}/{@code tipoCambio} son opcionales:
  * si se omiten, {@code FacturaService} aplica los mismos valores por defecto que
  * {@code V4__catalogo_y_facturacion.sql} define a nivel de columna ({@code '01'}, {@code '01'},
- * {@code 'CRC'}, {@code 1.00000} respectivamente).
+ * {@code 'CRC'}, {@code 1.00000} respectivamente). {@code tipoCambio} tiene una excepción a ese
+ * default: si {@code moneda='USD'} y se omite, {@code FacturaService} lo autocompleta con el
+ * tipo de cambio de venta del día publicado por Hacienda (no con {@code 1.00000}) -- ver
+ * {@code FacturaService#resolverTipoCambio}. Para cualquier otra moneda distinta de CRC/USD,
+ * {@code tipoCambio} es obligatorio ({@link #isTipoCambioValido}): no existe integración con
+ * ningún otro tipo de cambio.
  *
  * <p>{@code medioPago} (String) is deprecated — use {@code mediosPago} instead.
  * Legacy field is kept for backward compatibility; service falls back to it when mediosPago empty.
@@ -59,7 +64,7 @@ public record CrearFacturaRequest(
         @Size(max = 3)
         String moneda,
 
-        @Schema(description = "Exchange rate to CRC; required when moneda != 'CRC'. Defaults to 1.00 if omitted.", example = "530.50")
+        @Schema(description = "Exchange rate to CRC. Defaults to 1.00000 when moneda is 'CRC' or omitted; auto-filled from Hacienda's daily rate when moneda='USD' and omitted; required explicitly for any other currency.", example = "530.50")
         BigDecimal tipoCambio,
 
         @Schema(description = "Invoice line items (at least one required)")
@@ -85,5 +90,10 @@ public record CrearFacturaRequest(
     @AssertTrue(message = "plazoCredito es obligatorio cuando condicionVenta es '02'")
     boolean isPlazoCreditoValido() {
         return !"02".equals(condicionVenta) || plazoCredito != null;
+    }
+
+    @AssertTrue(message = "tipoCambio es obligatorio cuando moneda no es 'CRC' ni 'USD' (el tipo de cambio del dólar se autocompleta; otras monedas no)")
+    boolean isTipoCambioValido() {
+        return tipoCambio != null || moneda == null || "CRC".equals(moneda) || "USD".equals(moneda);
     }
 }

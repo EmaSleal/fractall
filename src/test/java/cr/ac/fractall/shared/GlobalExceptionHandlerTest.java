@@ -24,6 +24,7 @@ import cr.ac.fractall.catalogo.controlador.ClienteController;
 import cr.ac.fractall.catalogo.dto.CrearClienteRequest;
 import cr.ac.fractall.catalogo.servicio.ClienteService;
 import cr.ac.fractall.facturacion.servicio.ComprobanteNoReenviableException;
+import cr.ac.fractall.hacienda.servicio.TipoCambioNoDisponibleException;
 
 /**
  * Prueba unitaria (sin contexto de Spring completo, {@code standaloneSetup}) de
@@ -70,6 +71,28 @@ class GlobalExceptionHandlerTest {
         mockMvc.perform(post("/test/reenviar/" + facturaId))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.mensaje").isString());
+    }
+
+    @Test
+    void handler_tipoCambioNoDisponible_devuelve503ConMensajeResponse() throws Exception {
+        MockMvc mockMvc = MockMvcBuilders.standaloneSetup(new ControladorDeTipoCambioStub())
+                .setControllerAdvice(new GlobalExceptionHandler())
+                .build();
+
+        mockMvc.perform(post("/test/tipo-cambio"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.mensaje").value(
+                        "No fue posible obtener el tipo de cambio del dólar porque la API de Hacienda no está disponible: Timeout"));
+    }
+
+    /** Controlador mínimo para disparar TipoCambioNoDisponibleException desde el advice. */
+    @RestController
+    static class ControladorDeTipoCambioStub {
+
+        @PostMapping("/test/tipo-cambio")
+        public void consultar() {
+            throw new TipoCambioNoDisponibleException("Timeout");
+        }
     }
 
     /** Controlador mínimo para disparar ComprobanteNoReenviableException desde el advice. */

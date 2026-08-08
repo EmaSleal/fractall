@@ -68,6 +68,11 @@ application:
       # Cron del job de reconciliación diario del cache local de CABYS (CabysReconciliacionJob) --
       # ver el javadoc de HaciendaConsultaServiceImpl para el diseño completo del cache.
       reconciliacion-cron: ${HACIENDA_CABYS_RECONCILIACION_CRON:0 0 2 * * *}
+    tipo-cambio:
+      url: ${HACIENDA_TIPO_CAMBIO_URL:https://api.hacienda.go.cr/indicadores/tc/dolar}
+      # Cron del job de respaldo diario del tipo de cambio del dólar (TipoCambioScheduledJob) --
+      # ver el javadoc de HaciendaConsultaServiceImpl para el diseño completo del cache.
+      fallback-cron: ${HACIENDA_TIPO_CAMBIO_FALLBACK_CRON:0 0 19 * * *}
     timeout: ${HACIENDA_API_TIMEOUT:10}
     polling-delay-minutes: ${HACIENDA_POLLING_DELAY_MINUTES:5}
     # Cliente OAuth2 + recepción de comprobantes de Hacienda (Fase 8, Categoría A portada de

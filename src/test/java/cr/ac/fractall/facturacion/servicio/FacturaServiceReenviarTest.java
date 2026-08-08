@@ -34,6 +34,7 @@ import cr.ac.fractall.facturacion.repositorio.ImpuestoLineaExoneracionRepository
 import cr.ac.fractall.facturacion.repositorio.LineaCodigoComercialRepository;
 import cr.ac.fractall.facturacion.repositorio.LineaDescuentoRepository;
 import cr.ac.fractall.facturacion.repositorio.LineaFacturaRepository;
+import cr.ac.fractall.hacienda.servicio.HaciendaApiService;
 
 /**
  * Prueba unitaria (sin contexto de Spring) de {@link FacturaService#reenviar} -- cubre todos los
@@ -58,6 +59,7 @@ class FacturaServiceReenviarTest {
     private FacturaMedioPagoRepository facturaMedioPagoRepository;
     private ComprobanteXmlCifradoDescargador comprobanteXmlCifradoDescargador;
     private ComprobanteHaciendaEnvioService comprobanteHaciendaEnvioService;
+    private HaciendaApiService haciendaApiService;
 
     private FacturaService facturaService;
 
@@ -79,6 +81,7 @@ class FacturaServiceReenviarTest {
         facturaMedioPagoRepository = mock(FacturaMedioPagoRepository.class);
         comprobanteXmlCifradoDescargador = mock(ComprobanteXmlCifradoDescargador.class);
         comprobanteHaciendaEnvioService = mock(ComprobanteHaciendaEnvioService.class);
+        haciendaApiService = mock(HaciendaApiService.class);
 
         facturaService = new FacturaService(
                 clienteRepository,
@@ -96,7 +99,8 @@ class FacturaServiceReenviarTest {
                 facturaInformacionReferenciaRepository,
                 facturaMedioPagoRepository,
                 comprobanteXmlCifradoDescargador,
-                comprobanteHaciendaEnvioService);
+                comprobanteHaciendaEnvioService,
+                haciendaApiService);
     }
 
     private static ComprobanteElectronico nuevoComprobante(UUID facturaId, String estado, String xmlRef) {

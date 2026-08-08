@@ -24,12 +24,19 @@ import org.springframework.core.ParameterizedTypeReference;
 import cr.ac.fractall.hacienda.dto.CabysDTO;
 import cr.ac.fractall.hacienda.dto.CabysBusquedaDTO;
 import cr.ac.fractall.hacienda.dto.HaciendaConsultaDTO;
+import cr.ac.fractall.hacienda.dto.IndicadorTipoCambioDTO;
+import cr.ac.fractall.hacienda.dto.TipoCambioDolarDTO;
 import cr.ac.fractall.hacienda.modelo.Cabys;
 import cr.ac.fractall.hacienda.modelo.CabysConsultaLog;
+import cr.ac.fractall.hacienda.modelo.TipoCambioDolar;
 import cr.ac.fractall.hacienda.repositorio.CabysConsultaLogRepository;
 import cr.ac.fractall.hacienda.repositorio.CabysRepository;
+import cr.ac.fractall.hacienda.repositorio.TipoCambioDolarRepository;
 import cr.ac.fractall.hacienda.servicio.HaciendaApiService;
+import cr.ac.fractall.hacienda.servicio.TipoCambioNoDisponibleException;
 import lombok.extern.slf4j.Slf4j;
+
+import java.time.LocalDate;
 
 /**
  * Implementación del servicio para consultar la API pública de Hacienda Costa Rica.
@@ -67,6 +74,16 @@ import lombok.extern.slf4j.Slf4j;
  * (búsqueda por texto), en cambio, SIEMPRE llama a Hacienda en vivo: el motor de relevancia de la
  * búsqueda por texto es de Hacienda, no algo que este cache pueda reproducir localmente; solo
  * comparte con {@link #buscarCabysPorCodigo} el mismo logueo de cada resultado exitoso.
+ *
+ * <p><b>Cache local (read-through) del tipo de cambio del dólar:</b> mismo problema que el cache
+ * de CABYS (límite de uso de la API pública de Hacienda), pero {@link #consultarTipoCambioDolar}
+ * NO usa el patrón log+job de reconciliación diferida: Hacienda publica como mucho un valor por
+ * día, así que esta tabla acumula una sola fila diaria (no miles de códigos como CABYS), y
+ * persistir sincrónicamente dentro del mismo método -- sin alargar perceptiblemente la
+ * respuesta -- es más simple y perfectamente aceptable a ese volumen. Un fallo de la llamada a
+ * Hacienda sin valor cacheado para hoy lanza {@link TipoCambioNoDisponibleException} en vez de
+ * devolver un DTO con datos parciales: a diferencia de una búsqueda CABYS, acá no existe la
+ * noción de "no encontrado" como resultado de negocio válido.
  */
 @Service
 @Slf4j
@@ -85,8 +102,10 @@ public class HaciendaConsultaServiceImpl implements HaciendaApiService {
     private final RestClient restClient;
     private final String haciendaApiUrl;
     private final String haciendaCabysUrl;
+    private final String haciendaTipoCambioUrl;
     private final CabysRepository cabysRepository;
     private final CabysConsultaLogRepository cabysConsultaLogRepository;
+    private final TipoCambioDolarRepository tipoCambioDolarRepository;
 
     @Autowired
     public HaciendaConsultaServiceImpl(
@@ -95,7 +114,9 @@ public class HaciendaConsultaServiceImpl implements HaciendaApiService {
             @Value("${application.hacienda.cabys.url:https://api.hacienda.go.cr/fe/cabys}") String haciendaCabysUrl,
             @Value("${application.hacienda.timeout:10}") Integer timeout,
             CabysRepository cabysRepository,
-            CabysConsultaLogRepository cabysConsultaLogRepository) {
+            CabysConsultaLogRepository cabysConsultaLogRepository,
+            @Value("${application.hacienda.tipo-cambio.url:https://api.hacienda.go.cr/indicadores/tc/dolar}") String haciendaTipoCambioUrl,
+            TipoCambioDolarRepository tipoCambioDolarRepository) {
         this.restClient = restClientBuilder
                 .requestFactory(construirRequestFactory(timeout))
                 .defaultHeader("User-Agent", "curl/7.81.0")
@@ -103,8 +124,10 @@ public class HaciendaConsultaServiceImpl implements HaciendaApiService {
                 .build();
         this.haciendaApiUrl = haciendaApiUrl;
         this.haciendaCabysUrl = haciendaCabysUrl;
+        this.haciendaTipoCambioUrl = haciendaTipoCambioUrl;
         this.cabysRepository = cabysRepository;
         this.cabysConsultaLogRepository = cabysConsultaLogRepository;
+        this.tipoCambioDolarRepository = tipoCambioDolarRepository;
     }
 
     /**
@@ -118,12 +141,16 @@ public class HaciendaConsultaServiceImpl implements HaciendaApiService {
      * prueba necesite guardar.
      */
     HaciendaConsultaServiceImpl(RestClient restClient, String haciendaApiUrl, String haciendaCabysUrl,
-            CabysRepository cabysRepository, CabysConsultaLogRepository cabysConsultaLogRepository) {
+            String haciendaTipoCambioUrl, CabysRepository cabysRepository,
+            CabysConsultaLogRepository cabysConsultaLogRepository,
+            TipoCambioDolarRepository tipoCambioDolarRepository) {
         this.restClient = restClient;
         this.haciendaApiUrl = haciendaApiUrl;
         this.haciendaCabysUrl = haciendaCabysUrl;
+        this.haciendaTipoCambioUrl = haciendaTipoCambioUrl;
         this.cabysRepository = cabysRepository;
         this.cabysConsultaLogRepository = cabysConsultaLogRepository;
+        this.tipoCambioDolarRepository = tipoCambioDolarRepository;
     }
 
     /**
@@ -366,6 +393,62 @@ public class HaciendaConsultaServiceImpl implements HaciendaApiService {
                 .mensajeError("Error al conectar con API CABYS: " + e.getMessage())
                 .build();
         }
+    }
+
+    @Override
+    public TipoCambioDolarDTO consultarTipoCambioDolar() {
+        LocalDate hoy = LocalDate.now();
+
+        // Cache hit: se sirve desde tipo_cambio_dolar sin llamar a Hacienda (ver javadoc de la
+        // clase) -- la clave es LocalDate.now() (fecha del SERVIDOR), no la fecha del payload.
+        Optional<TipoCambioDolar> cacheado = tipoCambioDolarRepository.findById(hoy);
+        if (cacheado.isPresent()) {
+            log.info("Tipo de cambio del dólar para {} servido desde cache local", hoy);
+            return aDto(cacheado.get());
+        }
+
+        log.info("Consultando tipo de cambio del dólar del día en Hacienda");
+
+        try {
+            TipoCambioDolarDTO resultado = restClient.get()
+                    .uri(haciendaTipoCambioUrl)
+                    .retrieve()
+                    .body(TipoCambioDolarDTO.class);
+
+            if (resultado == null
+                    || resultado.getVenta() == null || resultado.getVenta().getValor() == null
+                    || resultado.getCompra() == null || resultado.getCompra().getValor() == null) {
+                throw new TipoCambioNoDisponibleException("Respuesta vacía o incompleta de Hacienda");
+            }
+
+            // Sin patrón log+job: una sola fila por día (no miles de códigos como CABYS), así
+            // que persistir sincrónicamente acá es más simple y no alarga perceptiblemente la
+            // respuesta -- ver el javadoc de la clase. Upsert idempotente (no un save() liso) --
+            // ver el javadoc de TipoCambioDolarRepository#guardarSiNoExiste sobre por qué: dos
+            // peticiones que caen en cache-miss el mismo día no deben poder tumbarse la una a la
+            // otra con una excepción de integridad que no tiene nada que ver con lo que el
+            // usuario está haciendo.
+            tipoCambioDolarRepository.guardarSiNoExiste(
+                    hoy, resultado.getVenta().getValor(), resultado.getCompra().getValor(), LocalDateTime.now());
+
+            return resultado;
+        } catch (RestClientException e) {
+            log.error("Error al consultar el tipo de cambio del dólar en Hacienda: {}", e.getMessage());
+            throw new TipoCambioNoDisponibleException(e.getMessage());
+        }
+    }
+
+    private static TipoCambioDolarDTO aDto(TipoCambioDolar entidad) {
+        return TipoCambioDolarDTO.builder()
+                .venta(IndicadorTipoCambioDTO.builder()
+                        .fecha(entidad.getFecha())
+                        .valor(entidad.getVenta())
+                        .build())
+                .compra(IndicadorTipoCambioDTO.builder()
+                        .fecha(entidad.getFecha())
+                        .valor(entidad.getCompra())
+                        .build())
+                .build();
     }
 
     /**

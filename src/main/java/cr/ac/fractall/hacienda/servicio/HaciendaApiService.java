@@ -2,6 +2,7 @@ package cr.ac.fractall.hacienda.servicio;
 
 import cr.ac.fractall.hacienda.dto.CabysBusquedaDTO;
 import cr.ac.fractall.hacienda.dto.HaciendaConsultaDTO;
+import cr.ac.fractall.hacienda.dto.TipoCambioDolarDTO;
 
 /**
  * Servicio para consultar la API pública de Hacienda Costa Rica.
@@ -51,4 +52,18 @@ public interface HaciendaApiService {
      * @return DTO con el resultado de la búsqueda
      */
     CabysBusquedaDTO buscarCabysPorCodigo(String codigo);
+
+    /**
+     * Consulta el tipo de cambio del dólar del día publicado por Hacienda.
+     * Endpoint: https://api.hacienda.go.cr/indicadores/tc/dolar
+     *
+     * <p>Cache-aware (ver el javadoc de {@code HaciendaConsultaServiceImpl}): el valor se sirve
+     * desde el cache local {@code tipo_cambio_dolar} si ya se consultó hoy, sin llamar a Hacienda
+     * de nuevo -- Hacienda solo publica un valor nuevo una vez al día.
+     *
+     * @return DTO con los indicadores de venta y compra del día
+     * @throws TipoCambioNoDisponibleException si la llamada a Hacienda falla y no hay valor
+     *     cacheado para hoy
+     */
+    TipoCambioDolarDTO consultarTipoCambioDolar();
 }

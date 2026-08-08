@@ -63,6 +63,7 @@ import cr.ac.fractall.facturacion.repositorio.ImpuestoLineaExoneracionRepository
 import cr.ac.fractall.facturacion.repositorio.LineaCodigoComercialRepository;
 import cr.ac.fractall.facturacion.repositorio.LineaDescuentoRepository;
 import cr.ac.fractall.facturacion.repositorio.LineaFacturaRepository;
+import cr.ac.fractall.hacienda.servicio.HaciendaApiService;
 import cr.ac.fractall.tenant.TenantContext;
 
 /**
@@ -97,6 +98,7 @@ public class FacturaService {
     private static final String CONDICION_VENTA_CREDITO = "02";
     private static final String MEDIO_PAGO_DEFECTO = "01";
     private static final String MONEDA_DEFECTO = "CRC";
+    private static final String MONEDA_DOLAR = "USD";
     private static final BigDecimal TIPO_CAMBIO_DEFECTO = new BigDecimal("1.00000");
     private static final String TIPO_TRANSACCION_DEFECTO = "01";
 
@@ -124,6 +126,7 @@ public class FacturaService {
     private final FacturaMedioPagoRepository facturaMedioPagoRepository;
     private final ComprobanteXmlCifradoDescargador comprobanteXmlCifradoDescargador;
     private final ComprobanteHaciendaEnvioService comprobanteHaciendaEnvioService;
+    private final HaciendaApiService haciendaApiService;
 
     public FacturaService(
             ClienteRepository clienteRepository,
@@ -141,7 +144,8 @@ public class FacturaService {
             FacturaInformacionReferenciaRepository facturaInformacionReferenciaRepository,
             FacturaMedioPagoRepository facturaMedioPagoRepository,
             ComprobanteXmlCifradoDescargador comprobanteXmlCifradoDescargador,
-            ComprobanteHaciendaEnvioService comprobanteHaciendaEnvioService) {
+            ComprobanteHaciendaEnvioService comprobanteHaciendaEnvioService,
+            HaciendaApiService haciendaApiService) {
         this.clienteRepository = clienteRepository;
         this.productoRepository = productoRepository;
         this.clienteExoneracionRepository = clienteExoneracionRepository;
@@ -158,6 +162,7 @@ public class FacturaService {
         this.facturaMedioPagoRepository = facturaMedioPagoRepository;
         this.comprobanteXmlCifradoDescargador = comprobanteXmlCifradoDescargador;
         this.comprobanteHaciendaEnvioService = comprobanteHaciendaEnvioService;
+        this.haciendaApiService = haciendaApiService;
     }
 
     // =========================================================================
@@ -430,7 +435,7 @@ public class FacturaService {
         factura.setPlazoCredito(request.plazoCredito());
         factura.setMedioPago(legacyMedioPago);
         factura.setMoneda(request.moneda() != null ? request.moneda() : MONEDA_DEFECTO);
-        factura.setTipoCambio(request.tipoCambio() != null ? request.tipoCambio() : TIPO_CAMBIO_DEFECTO);
+        factura.setTipoCambio(resolverTipoCambio(request));
         factura.setSubtotal(subtotalFactura);
         factura.setTotalImpuesto(totalImpuestoFactura);
         factura.setTotal(totalFactura);
@@ -640,6 +645,25 @@ public class FacturaService {
                 }
             }
         }
+    }
+
+    /**
+     * Resuelve {@code factura.tipoCambio}: valor explícito del cliente si viene; si no viene y
+     * {@code moneda='USD'}, se autocompleta con el tipo de cambio de VENTA del día publicado por
+     * Hacienda (no compra -- {@code venta} es el que se usa para convertir a colones, ver el
+     * javadoc de {@code HaciendaApiService#consultarTipoCambioDolar}); en cualquier otro caso
+     * (CRC u omitida), el default {@code 1.00000}. El caso "moneda distinta de CRC/USD sin
+     * tipoCambio" ya lo bloquea {@code CrearFacturaRequest#isTipoCambioValido} antes de llegar
+     * acá (Bean Validation corre antes que el controlador invoque este servicio).
+     */
+    private BigDecimal resolverTipoCambio(CrearFacturaRequest request) {
+        if (request.tipoCambio() != null) {
+            return request.tipoCambio();
+        }
+        if (MONEDA_DOLAR.equals(request.moneda())) {
+            return haciendaApiService.consultarTipoCambioDolar().getVenta().getValor();
+        }
+        return TIPO_CAMBIO_DEFECTO;
     }
 
     private String resolverLegacyMedioPago(CrearFacturaRequest request) {

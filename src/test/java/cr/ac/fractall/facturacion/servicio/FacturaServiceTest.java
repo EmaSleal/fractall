@@ -2,6 +2,8 @@ package cr.ac.fractall.facturacion.servicio;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -21,6 +23,7 @@ import org.springframework.security.authentication.UsernamePasswordAuthenticatio
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -38,11 +41,15 @@ import cr.ac.fractall.facturacion.dto.FacturaResponse;
 import cr.ac.fractall.facturacion.dto.LineaFacturaItemRequest;
 import cr.ac.fractall.facturacion.modelo.ComprobanteElectronico;
 import cr.ac.fractall.facturacion.modelo.ContadorConsecutivo;
+import cr.ac.fractall.facturacion.modelo.Factura;
 import cr.ac.fractall.facturacion.modelo.ContadorConsecutivoId;
 import cr.ac.fractall.facturacion.repositorio.ComprobanteElectronicoRepository;
 import cr.ac.fractall.facturacion.repositorio.ContadorConsecutivoRepository;
 import cr.ac.fractall.facturacion.repositorio.FacturaRepository;
 import cr.ac.fractall.facturacion.repositorio.LineaFacturaRepository;
+import cr.ac.fractall.hacienda.dto.IndicadorTipoCambioDTO;
+import cr.ac.fractall.hacienda.dto.TipoCambioDolarDTO;
+import cr.ac.fractall.hacienda.servicio.HaciendaApiService;
 import cr.ac.fractall.catalogo.servicio.ClienteExoneracionNoEncontradaException;
 import cr.ac.fractall.catalogo.servicio.ClienteNoEncontradoException;
 import cr.ac.fractall.catalogo.servicio.ProductoNoEncontradoException;
@@ -109,6 +116,17 @@ class FacturaServiceTest {
 
     @Autowired
     private ConsecutivoService consecutivoService;
+
+    /**
+     * {@code FacturaService} depende de {@code HaciendaApiService} para autocompletar
+     * {@code tipoCambio} cuando {@code moneda='USD'} (ver {@code resolverTipoCambio}) -- sin
+     * este {@code @MockitoBean}, un test que use moneda USD dispararía una llamada HTTP real a
+     * {@code api.hacienda.go.cr}, inaceptable en un test. Los tests que NO usan moneda USD ni
+     * stubean este mock nunca lo invocan (verificado explícitamente en esos tests con
+     * {@code verifyNoInteractions}), así que no rompe ningún test preexistente.
+     */
+    @MockitoBean
+    private HaciendaApiService haciendaApiService;
 
     private UUID usuarioId;
     private Empresa empresa;
@@ -597,5 +615,82 @@ class FacturaServiceTest {
         // Prueba de que no quedó ningún hueco: el siguiente reclamo real es 1, no 2.
         long siguienteReclamoReal = consecutivoService.siguienteConsecutivo(empresaCedulaInvalidaId, "SANDBOX", "01");
         assertThat(siguienteReclamoReal).isEqualTo(1L);
+    }
+
+    /**
+     * {@code moneda='USD'} sin {@code tipoCambio} explícito -- {@code FacturaService} lo
+     * autocompleta con el {@code venta} del día que devuelve {@code HaciendaApiService} (mockeado
+     * acá, no golpea Hacienda de verdad).
+     */
+    @Test
+    void creaFacturaEnDolaresSinTipoCambioLoAutocompletaConElVentaDeHacienda() {
+        when(haciendaApiService.consultarTipoCambioDolar()).thenReturn(TipoCambioDolarDTO.builder()
+                .venta(IndicadorTipoCambioDTO.builder().valor(new BigDecimal("530.50")).build())
+                .compra(IndicadorTipoCambioDTO.builder().valor(new BigDecimal("525.30")).build())
+                .build());
+
+        Cliente cliente = crearCliente("310299" + System.nanoTime() % 1_000_000);
+        Producto producto = crearProducto("PROD-USD-1-" + UUID.randomUUID(), new BigDecimal("13.00"));
+
+        CrearFacturaRequest request = new CrearFacturaRequest(
+                cliente.getId(), null, null, null, null, null,
+                null, "USD", null,
+                List.of(new LineaFacturaItemRequest(producto.getId(), BigDecimal.ONE, BigDecimal.TEN, null,
+                        null, null, null, null, null, null, null)),
+                null, null, null);
+
+        FacturaResponse response = facturaService.crear(request);
+
+        Factura guardada = facturaRepository.findById(response.id()).orElseThrow();
+        assertThat(guardada.getMoneda()).isEqualTo("USD");
+        assertThat(guardada.getTipoCambio()).isEqualByComparingTo("530.50");
+    }
+
+    /**
+     * {@code moneda='USD'} CON {@code tipoCambio} explícito -- se respeta el valor del cliente y
+     * NUNCA se consulta a {@code HaciendaApiService} (el cliente ya lo mandó, no hace falta).
+     */
+    @Test
+    void creaFacturaEnDolaresConTipoCambioExplicitoUsaEseValorYNoConsultaHacienda() {
+        Cliente cliente = crearCliente("310399" + System.nanoTime() % 1_000_000);
+        Producto producto = crearProducto("PROD-USD-2-" + UUID.randomUUID(), new BigDecimal("13.00"));
+
+        CrearFacturaRequest request = new CrearFacturaRequest(
+                cliente.getId(), null, null, null, null, null,
+                null, "USD", new BigDecimal("600.00"),
+                List.of(new LineaFacturaItemRequest(producto.getId(), BigDecimal.ONE, BigDecimal.TEN, null,
+                        null, null, null, null, null, null, null)),
+                null, null, null);
+
+        FacturaResponse response = facturaService.crear(request);
+
+        Factura guardada = facturaRepository.findById(response.id()).orElseThrow();
+        assertThat(guardada.getTipoCambio()).isEqualByComparingTo("600.00");
+        verifyNoInteractions(haciendaApiService);
+    }
+
+    /**
+     * Moneda omitida (default CRC) -- comportamiento preexistente sin tocar: sigue aplicando
+     * {@code 1.00000} y jamás consulta a {@code HaciendaApiService} (solo se autocompleta para
+     * USD).
+     */
+    @Test
+    void creaFacturaSinMonedaUsaDefaultCrcSinConsultarHacienda() {
+        Cliente cliente = crearCliente("310499" + System.nanoTime() % 1_000_000);
+        Producto producto = crearProducto("PROD-CRC-1-" + UUID.randomUUID(), new BigDecimal("13.00"));
+
+        CrearFacturaRequest request = new CrearFacturaRequest(
+                cliente.getId(), null, null, null, null, null,
+                null, null, null,
+                List.of(new LineaFacturaItemRequest(producto.getId(), BigDecimal.ONE, BigDecimal.TEN, null,
+                        null, null, null, null, null, null, null)),
+                null, null, null);
+
+        FacturaResponse response = facturaService.crear(request);
+
+        Factura guardada = facturaRepository.findById(response.id()).orElseThrow();
+        assertThat(guardada.getMoneda()).isEqualTo("CRC");
+        assertThat(guardada.getTipoCambio()).isEqualByComparingTo("1.00000");
+        verifyNoInteractions(haciendaApiService);
     }
 }

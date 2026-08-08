@@ -10,6 +10,7 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import cr.ac.fractall.facturacion.servicio.ComprobanteNoReenviableException;
 import cr.ac.fractall.facturacion.servicio.DocumentoNoDisponibleException;
 import cr.ac.fractall.facturacion.servicio.FacturaNoEncontradaException;
+import cr.ac.fractall.hacienda.servicio.TipoCambioNoDisponibleException;
 import cr.ac.fractall.seguridad.dto.MensajeResponse;
 import jakarta.validation.ConstraintViolationException;
 
@@ -44,6 +45,12 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(ComprobanteNoReenviableException.class)
     public ResponseEntity<MensajeResponse> manejarComprobanteNoReenviable(ComprobanteNoReenviableException excepcion) {
         return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(new MensajeResponse(excepcion.getMessage()));
+    }
+
+    @ExceptionHandler(TipoCambioNoDisponibleException.class)
+    public ResponseEntity<MensajeResponse> manejarTipoCambioNoDisponible(TipoCambioNoDisponibleException excepcion) {
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                 .body(new MensajeResponse(excepcion.getMessage()));
     }
 

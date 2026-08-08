@@ -1,6 +1,7 @@
 package cr.ac.fractall.hacienda.servicio.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.hamcrest.Matchers.startsWith;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -8,10 +9,12 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
+import static org.springframework.test.web.client.response.MockRestResponseCreators.withServerError;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
 import java.net.http.HttpClient;
 import java.time.Duration;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.Optional;
 
@@ -29,11 +32,15 @@ import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestClient;
 
+import cr.ac.fractall.hacienda.servicio.TipoCambioNoDisponibleException;
 import cr.ac.fractall.hacienda.dto.CabysBusquedaDTO;
+import cr.ac.fractall.hacienda.dto.TipoCambioDolarDTO;
 import cr.ac.fractall.hacienda.modelo.Cabys;
 import cr.ac.fractall.hacienda.modelo.CabysConsultaLog;
+import cr.ac.fractall.hacienda.modelo.TipoCambioDolar;
 import cr.ac.fractall.hacienda.repositorio.CabysConsultaLogRepository;
 import cr.ac.fractall.hacienda.repositorio.CabysRepository;
+import cr.ac.fractall.hacienda.repositorio.TipoCambioDolarRepository;
 
 /**
  * Prueba unitaria (sin contexto de Spring) de {@link HaciendaConsultaServiceImpl} -- ver el
@@ -57,12 +64,16 @@ import cr.ac.fractall.hacienda.repositorio.CabysRepository;
 class HaciendaConsultaServiceImplTest {
 
     private static final String CABYS_URL = "https://api.hacienda.go.cr/fe/cabys";
+    private static final String TIPO_CAMBIO_URL = "https://api.hacienda.go.cr/indicadores/tc/dolar";
 
     @Mock
     private CabysRepository cabysRepository;
 
     @Mock
     private CabysConsultaLogRepository cabysConsultaLogRepository;
+
+    @Mock
+    private TipoCambioDolarRepository tipoCambioDolarRepository;
 
     private MockRestServiceServer servidorMock;
     private HaciendaConsultaServiceImpl servicio;
@@ -73,7 +84,7 @@ class HaciendaConsultaServiceImplTest {
         servidorMock = MockRestServiceServer.bindTo(builder).build();
         RestClient restClient = builder.build();
         servicio = new HaciendaConsultaServiceImpl(restClient, "https://api.hacienda.go.cr/fe/ae", CABYS_URL,
-                cabysRepository, cabysConsultaLogRepository);
+                TIPO_CAMBIO_URL, cabysRepository, cabysConsultaLogRepository, tipoCambioDolarRepository);
     }
 
     @Test
@@ -245,5 +256,115 @@ class HaciendaConsultaServiceImplTest {
 
         HttpClient httpClient = (HttpClient) ReflectionTestUtils.getField(requestFactory, "httpClient");
         assertThat(httpClient.connectTimeout()).contains(Duration.ofSeconds(7));
+    }
+
+    /**
+     * Cache hit de {@code consultarTipoCambioDolar}: ya existe una fila para
+     * {@code LocalDate.now()} en {@code tipo_cambio_dolar}, así que la respuesta se reconstruye
+     * desde ahí sin tocar la API de Hacienda -- {@code servidorMock} no tiene ninguna expectativa
+     * registrada, así que una llamada HTTP real haría fallar el test.
+     */
+    @Test
+    void consultarTipoCambioDolarSirveDesdeCacheSinLlamarAHaciendaCuandoYaHayValorParaHoy() {
+        TipoCambioDolar cacheado = new TipoCambioDolar();
+        cacheado.setFecha(LocalDate.now());
+        cacheado.setVenta(new java.math.BigDecimal("453.68"));
+        cacheado.setCompra(new java.math.BigDecimal("447.88"));
+        cacheado.setConsultadoEn(LocalDateTime.now());
+
+        when(tipoCambioDolarRepository.findById(LocalDate.now())).thenReturn(Optional.of(cacheado));
+
+        TipoCambioDolarDTO resultado = servicio.consultarTipoCambioDolar();
+
+        assertThat(resultado.getVenta().getValor()).isEqualByComparingTo("453.68");
+        assertThat(resultado.getCompra().getValor()).isEqualByComparingTo("447.88");
+        servidorMock.verify();
+        verify(tipoCambioDolarRepository, times(0)).save(org.mockito.ArgumentMatchers.any());
+    }
+
+    /**
+     * Cache miss exitoso: sin fila para hoy, se llama a Hacienda en vivo (JSON real verificado
+     * contra la API en producción) y el resultado se persiste sincrónicamente vía
+     * {@code guardarSiNoExiste} (upsert idempotente, NO {@code save()} liso) -- a diferencia de
+     * CABYS, acá no hace falta el patrón log+job (una sola fila por día, no miles de items). Ver
+     * {@code TipoCambioDolarRepositoryTest} para la prueba de concurrencia real contra Postgres
+     * de por qué {@code guardarSiNoExiste} (y no {@code save()}) es necesario acá.
+     */
+    @Test
+    void consultarTipoCambioDolarConCacheMissLlamaAHaciendaYPersisteSincronicamente() {
+        when(tipoCambioDolarRepository.findById(LocalDate.now())).thenReturn(Optional.empty());
+
+        String cuerpo = """
+                {
+                  "venta": { "fecha": "2026-08-08", "valor": 453.68 },
+                  "compra": { "fecha": "2026-08-08", "valor": 447.88 }
+                }
+                """;
+        servidorMock.expect(requestTo(TIPO_CAMBIO_URL))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess(cuerpo, MediaType.APPLICATION_JSON));
+
+        TipoCambioDolarDTO resultado = servicio.consultarTipoCambioDolar();
+
+        assertThat(resultado.getVenta().getValor()).isEqualByComparingTo("453.68");
+        assertThat(resultado.getCompra().getValor()).isEqualByComparingTo("447.88");
+
+        verify(tipoCambioDolarRepository, times(1)).guardarSiNoExiste(
+                org.mockito.ArgumentMatchers.eq(LocalDate.now()),
+                org.mockito.ArgumentMatchers.argThat(v -> v.compareTo(new java.math.BigDecimal("453.68")) == 0),
+                org.mockito.ArgumentMatchers.argThat(v -> v.compareTo(new java.math.BigDecimal("447.88")) == 0),
+                org.mockito.ArgumentMatchers.any(LocalDateTime.class));
+    }
+
+    /**
+     * Fallo duro de Hacienda sin cache: lanza {@link TipoCambioNoDisponibleException} (no un DTO
+     * con datos parciales) y NO persiste nada -- acá no hay noción de "no encontrado" como
+     * resultado válido, solo "no se pudo obtener".
+     */
+    @Test
+    void consultarTipoCambioDolarSinCacheYConFalloDeHaciendaLanzaExcepcionYNoPersisteNada() {
+        when(tipoCambioDolarRepository.findById(LocalDate.now())).thenReturn(Optional.empty());
+
+        servidorMock.expect(requestTo(TIPO_CAMBIO_URL))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(withServerError());
+
+        assertThatThrownBy(() -> servicio.consultarTipoCambioDolar())
+                .isInstanceOf(TipoCambioNoDisponibleException.class);
+
+        verifyNoMoreInteractionsConGuardado();
+    }
+
+    /**
+     * Respuesta con el objeto {@code venta}/{@code compra} presente pero {@code valor} nulo
+     * (JSON malformado/parcial de Hacienda) -- antes de este fix, este caso pasaba el chequeo de
+     * nulos (que solo miraba los objetos contenedores) y reventaba más abajo contra la columna
+     * {@code NOT NULL} con una excepción sin atrapar. Ahora se detecta ACÁ y se modela como
+     * {@link TipoCambioNoDisponibleException}, igual que cualquier otro fallo duro de Hacienda.
+     */
+    @Test
+    void consultarTipoCambioDolarConValorNuloEnLaRespuestaLanzaExcepcionYNoPersisteNada() {
+        when(tipoCambioDolarRepository.findById(LocalDate.now())).thenReturn(Optional.empty());
+
+        String cuerpo = """
+                {
+                  "venta": { "fecha": "2026-08-08", "valor": null },
+                  "compra": { "fecha": "2026-08-08", "valor": 447.88 }
+                }
+                """;
+        servidorMock.expect(requestTo(TIPO_CAMBIO_URL))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess(cuerpo, MediaType.APPLICATION_JSON));
+
+        assertThatThrownBy(() -> servicio.consultarTipoCambioDolar())
+                .isInstanceOf(TipoCambioNoDisponibleException.class);
+
+        verifyNoMoreInteractionsConGuardado();
+    }
+
+    private void verifyNoMoreInteractionsConGuardado() {
+        verify(tipoCambioDolarRepository, times(0)).guardarSiNoExiste(
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
     }
 }
