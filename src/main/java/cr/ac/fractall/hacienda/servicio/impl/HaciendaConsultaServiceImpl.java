@@ -14,13 +14,20 @@ import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.util.UriComponentsBuilder;
 
+import java.time.LocalDateTime;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Optional;
 
 import org.springframework.core.ParameterizedTypeReference;
 
 import cr.ac.fractall.hacienda.dto.CabysDTO;
 import cr.ac.fractall.hacienda.dto.CabysBusquedaDTO;
 import cr.ac.fractall.hacienda.dto.HaciendaConsultaDTO;
+import cr.ac.fractall.hacienda.modelo.Cabys;
+import cr.ac.fractall.hacienda.modelo.CabysConsultaLog;
+import cr.ac.fractall.hacienda.repositorio.CabysConsultaLogRepository;
+import cr.ac.fractall.hacienda.repositorio.CabysRepository;
 import cr.ac.fractall.hacienda.servicio.HaciendaApiService;
 import lombok.extern.slf4j.Slf4j;
 
@@ -48,21 +55,47 @@ import lombok.extern.slf4j.Slf4j;
  * {@code build()}). Para pruebas que necesiten interceptar la llamada HTTP, usar el constructor
  * de paquete que recibe un {@link RestClient} ya construido (ver
  * {@code HaciendaConsultaServiceImplTest}).
+ *
+ * <p><b>Cache local (read-through) de códigos CABYS:</b> la API de Hacienda tiene límite de uso
+ * por cliente, y antes cada creación/edición de producto volvía a golpearla para validar el
+ * mismo código una y otra vez ({@code ProductoService#validarYObtenerCabys}).
+ * {@link #buscarCabysPorCodigo} ahora consulta primero {@link CabysRepository}: si el código ya
+ * está cacheado, la respuesta se reconstruye desde ahí SIN llamar a Hacienda; si no, se llama en
+ * vivo como antes y cada resultado se registra en {@link CabysConsultaLogRepository} para que
+ * {@code CabysReconciliacionJob} (diario) lo resuelva contra el cache de forma asíncrona --
+ * resolverlo en el momento alargaría la respuesta al usuario sin necesidad. {@link #buscarCabys}
+ * (búsqueda por texto), en cambio, SIEMPRE llama a Hacienda en vivo: el motor de relevancia de la
+ * búsqueda por texto es de Hacienda, no algo que este cache pueda reproducir localmente; solo
+ * comparte con {@link #buscarCabysPorCodigo} el mismo logueo de cada resultado exitoso.
  */
 @Service
 @Slf4j
 public class HaciendaConsultaServiceImpl implements HaciendaApiService {
 
+    /**
+     * Separador usado para unir/dividir {@code categorias} en una sola columna {@code TEXT} (ver
+     * javadoc de la clase). Un carácter de control no imprimible ("Unit Separator", U+001F) en
+     * vez de {@code "|"}: una categoría real de Hacienda podría contener un "|" literal (p. ej.
+     * "Bebidas | Refrescos"), lo que con "|" como separador partiría esa categoría en dos al
+     * reconstruirla -- U+001F nunca aparece en texto legible por humanos, así que el round-trip
+     * es seguro sin necesidad de escapar nada.
+     */
+    private static final String SEPARADOR_CATEGORIAS = "\u001F";
+
     private final RestClient restClient;
     private final String haciendaApiUrl;
     private final String haciendaCabysUrl;
+    private final CabysRepository cabysRepository;
+    private final CabysConsultaLogRepository cabysConsultaLogRepository;
 
     @Autowired
     public HaciendaConsultaServiceImpl(
             RestClient.Builder restClientBuilder,
             @Value("${application.hacienda.api.url:https://api.hacienda.go.cr/fe/ae}") String haciendaApiUrl,
             @Value("${application.hacienda.cabys.url:https://api.hacienda.go.cr/fe/cabys}") String haciendaCabysUrl,
-            @Value("${application.hacienda.timeout:10}") Integer timeout) {
+            @Value("${application.hacienda.timeout:10}") Integer timeout,
+            CabysRepository cabysRepository,
+            CabysConsultaLogRepository cabysConsultaLogRepository) {
         this.restClient = restClientBuilder
                 .requestFactory(construirRequestFactory(timeout))
                 .defaultHeader("User-Agent", "curl/7.81.0")
@@ -70,6 +103,8 @@ public class HaciendaConsultaServiceImpl implements HaciendaApiService {
                 .build();
         this.haciendaApiUrl = haciendaApiUrl;
         this.haciendaCabysUrl = haciendaCabysUrl;
+        this.cabysRepository = cabysRepository;
+        this.cabysConsultaLogRepository = cabysConsultaLogRepository;
     }
 
     /**
@@ -82,10 +117,13 @@ public class HaciendaConsultaServiceImpl implements HaciendaApiService {
      * local de {@link #construirRequestFactory}), así que no hay nada que un constructor de
      * prueba necesite guardar.
      */
-    HaciendaConsultaServiceImpl(RestClient restClient, String haciendaApiUrl, String haciendaCabysUrl) {
+    HaciendaConsultaServiceImpl(RestClient restClient, String haciendaApiUrl, String haciendaCabysUrl,
+            CabysRepository cabysRepository, CabysConsultaLogRepository cabysConsultaLogRepository) {
         this.restClient = restClient;
         this.haciendaApiUrl = haciendaApiUrl;
         this.haciendaCabysUrl = haciendaCabysUrl;
+        this.cabysRepository = cabysRepository;
+        this.cabysConsultaLogRepository = cabysConsultaLogRepository;
     }
 
     /**
@@ -236,6 +274,13 @@ public class HaciendaConsultaServiceImpl implements HaciendaApiService {
                     resultado.getCantidad(),
                     resultado.getTotal());
 
+                // Búsqueda por texto: NUNCA se sirve desde cache (ver javadoc de la clase), pero
+                // cada resultado sí se loguea para que CabysReconciliacionJob lo resuelva contra
+                // el cache después.
+                if (resultado.tieneResultados()) {
+                    registrarEnLog(resultado.getCabys());
+                }
+
                 return resultado;
             } else {
                 log.warn("Respuesta no exitosa de API CABYS: {}", response.getStatusCode());
@@ -270,11 +315,26 @@ public class HaciendaConsultaServiceImpl implements HaciendaApiService {
                 .build();
         }
 
-        log.info("Buscando código CABYS exacto: '{}'", codigo);
+        String codigoLimpio = codigo.trim();
+
+        // Cache hit: se sirve desde cabys sin llamar a Hacienda (ver javadoc de la clase).
+        Optional<Cabys> cacheado = cabysRepository.findById(codigoLimpio);
+        if (cacheado.isPresent()) {
+            log.info("Código CABYS '{}' servido desde cache local", codigoLimpio);
+            CabysDTO dto = aDto(cacheado.get());
+            return CabysBusquedaDTO.builder()
+                .exitosa(true)
+                .cabys(List.of(dto))
+                .cantidad(1)
+                .total(1)
+                .build();
+        }
+
+        log.info("Buscando código CABYS exacto: '{}'", codigoLimpio);
 
         try {
             String url = UriComponentsBuilder.fromUriString(haciendaCabysUrl)
-                .queryParam("codigo", codigo.trim())
+                .queryParam("codigo", codigoLimpio)
                 .encode()
                 .toUriString();
 
@@ -290,6 +350,8 @@ public class HaciendaConsultaServiceImpl implements HaciendaApiService {
                     .build();
             }
 
+            registrarEnLog(items);
+
             return CabysBusquedaDTO.builder()
                 .exitosa(true)
                 .cabys(items)
@@ -298,11 +360,58 @@ public class HaciendaConsultaServiceImpl implements HaciendaApiService {
                 .build();
 
         } catch (RestClientException e) {
-            log.error("Error al buscar código CABYS '{}': {}", codigo, e.getMessage());
+            log.error("Error al buscar código CABYS '{}': {}", codigoLimpio, e.getMessage());
             return CabysBusquedaDTO.builder()
                 .exitosa(false)
                 .mensajeError("Error al conectar con API CABYS: " + e.getMessage())
                 .build();
         }
+    }
+
+    /**
+     * Registra cada item devuelto por Hacienda en {@code cabys_consulta_log}, sin resolverlo
+     * contra el cache todavía -- eso lo hace {@code CabysReconciliacionJob} de forma asíncrona
+     * (diaria), para no alargar esta respuesta HTTP con esa escritura. Compartido entre
+     * {@link #buscarCabys} y {@link #buscarCabysPorCodigo} para no duplicar el mapeo DTO→entidad.
+     */
+    private void registrarEnLog(List<CabysDTO> items) {
+        LocalDateTime ahora = LocalDateTime.now();
+        for (CabysDTO item : items) {
+            CabysConsultaLog entrada = new CabysConsultaLog();
+            entrada.setCodigo(item.getCodigo());
+            entrada.setDescripcion(item.getDescripcion());
+            entrada.setCategorias(unirCategorias(item.getCategorias()));
+            entrada.setImpuesto(item.getImpuesto() == null ? null : item.getImpuesto().shortValue());
+            entrada.setUri(item.getUri());
+            entrada.setEstado(item.getEstado());
+            entrada.setConsultadoEn(ahora);
+            entrada.setProcesado(false);
+            cabysConsultaLogRepository.save(entrada);
+        }
+    }
+
+    private static CabysDTO aDto(Cabys cabys) {
+        return CabysDTO.builder()
+            .codigo(cabys.getCodigo())
+            .descripcion(cabys.getDescripcion())
+            .categorias(dividirCategorias(cabys.getCategorias()))
+            .impuesto(cabys.getImpuesto() == null ? null : cabys.getImpuesto().intValue())
+            .uri(cabys.getUri())
+            .estado(cabys.getEstado())
+            .build();
+    }
+
+    private static String unirCategorias(List<String> categorias) {
+        if (categorias == null || categorias.isEmpty()) {
+            return null;
+        }
+        return String.join(SEPARADOR_CATEGORIAS, categorias);
+    }
+
+    private static List<String> dividirCategorias(String categorias) {
+        if (categorias == null || categorias.isEmpty()) {
+            return null;
+        }
+        return Arrays.asList(categorias.split(SEPARADOR_CATEGORIAS));
     }
 }
