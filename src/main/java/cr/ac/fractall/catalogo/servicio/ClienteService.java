@@ -27,18 +27,18 @@ import cr.ac.fractall.shared.PaginaResponse;
 @Service
 public class ClienteService {
 
-    private static final int LONGITUD_MINIMA_OTRAS_SENAS = 5;
-
     private final ClienteRepository clienteRepository;
+    private final UbicacionValidator ubicacionValidator;
 
-    public ClienteService(ClienteRepository clienteRepository) {
+    public ClienteService(ClienteRepository clienteRepository, UbicacionValidator ubicacionValidator) {
         this.clienteRepository = clienteRepository;
+        this.ubicacionValidator = ubicacionValidator;
     }
 
     @Transactional
     public ClienteResponse crear(CrearClienteRequest request) {
         validarIdentificacion(request.tipoIdentificacion(), request.numeroIdentificacion());
-        validarUbicacion(request.codigoProvincia(), request.canton(), request.distrito(), request.otrasSenas());
+        ubicacionValidator.validar(request.codigoProvincia(), request.canton(), request.distrito(), request.otrasSenas());
 
         if (clienteRepository.findByNumeroIdentificacion(request.numeroIdentificacion()).isPresent()) {
             throw new ClienteDuplicadoException(request.numeroIdentificacion());
@@ -87,7 +87,7 @@ public class ClienteService {
         String otrasSenasResultante = valorONulo(request.otrasSenas(), cliente.getOtrasSenas());
         if (request.codigoProvincia() != null || request.canton() != null
                 || request.distrito() != null || request.otrasSenas() != null) {
-            validarUbicacion(provinciaResultante, cantonResultante, distritoResultante, otrasSenasResultante);
+            ubicacionValidator.validar(provinciaResultante, cantonResultante, distritoResultante, otrasSenasResultante);
         }
 
         aplicarSiNoEsNulo(request.nombre(), cliente::setNombre);
@@ -134,26 +134,6 @@ public class ClienteService {
         if (!tipo.validarNumero(numeroIdentificacion)) {
             throw new IdentificacionInvalidaException(
                     "El número '" + numeroIdentificacion + "' no es válido para el tipo " + tipo.getDescripcion());
-        }
-    }
-
-    /**
-     * Todo-o-nada: espeja el {@code CHECK} de motor de la sección 4.11 en esta capa para que un
-     * estado parcial se rechace con un 400 limpio ANTES de {@code saveAndFlush}, nunca como una
-     * {@code DataIntegrityViolationException} sin capturar (mismo bug que ya corrigió la
-     * revisión de la Fase 5).
-     */
-    private void validarUbicacion(String codigoProvincia, String canton, String distrito, String otrasSenas) {
-        boolean todosPresentes = codigoProvincia != null && canton != null && distrito != null && otrasSenas != null;
-        boolean todosAusentes = codigoProvincia == null && canton == null && distrito == null && otrasSenas == null;
-
-        if (!todosPresentes && !todosAusentes) {
-            throw new UbicacionInvalidaException(
-                    "El bloque de ubicación (provincia/cantón/distrito/otras señas) debe estar completo o ausente por completo");
-        }
-        if (todosPresentes && otrasSenas.trim().length() < LONGITUD_MINIMA_OTRAS_SENAS) {
-            throw new UbicacionInvalidaException(
-                    "otrasSenas debe tener al menos " + LONGITUD_MINIMA_OTRAS_SENAS + " caracteres");
         }
     }
 

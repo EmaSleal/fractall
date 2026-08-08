@@ -18,24 +18,36 @@ import org.junit.jupiter.params.provider.CsvSource;
 
 import cr.ac.fractall.catalogo.modelo.Cliente;
 import cr.ac.fractall.catalogo.repositorio.ClienteRepository;
+import cr.ac.fractall.catalogo.repositorio.DistritoRepository;
 import cr.ac.fractall.catalogo.dto.ActualizarClienteRequest;
 import cr.ac.fractall.catalogo.dto.ClienteResponse;
 import cr.ac.fractall.catalogo.dto.CrearClienteRequest;
 
 /**
- * Prueba unitaria de {@link ClienteService} con {@code ClienteRepository} mockeado (sin
- * contexto de Spring, sin base de datos real) -- sección 4.11 de
- * {@code arquitectura-facturacion-electronica-cr.md}.
+ * Prueba unitaria de {@link ClienteService} con {@code ClienteRepository}/{@code
+ * DistritoRepository} mockeados (sin contexto de Spring, sin base de datos real) -- sección 4.11
+ * de {@code arquitectura-facturacion-electronica-cr.md}.
+ *
+ * <p>{@code ubicacionValidator} es una instancia REAL de {@link UbicacionValidator} construida
+ * sobre el {@code DistritoRepository} mockeado (no un mock de {@code UbicacionValidator}): así
+ * los tests de todo-o-nada y de longitud mínima de {@code otrasSenas} siguen ejercitando la
+ * lógica real, y {@code distritoRepository.existsBy...} por defecto responde {@code true} para
+ * no romper los tests que ya usaban una ubicación bien formada antes de que existiera el
+ * catálogo real (V15__catalogo_ubicacion_cr.sql).
  */
 class ClienteServiceTest {
 
     private ClienteRepository clienteRepository;
+    private DistritoRepository distritoRepository;
     private ClienteService clienteService;
 
     @BeforeEach
     void configurar() {
         clienteRepository = mock(ClienteRepository.class);
-        clienteService = new ClienteService(clienteRepository);
+        distritoRepository = mock(DistritoRepository.class);
+        when(distritoRepository.existsByIdProvinciaCodigoAndIdCantonCodigoAndIdCodigo(any(), any(), any()))
+                .thenReturn(true);
+        clienteService = new ClienteService(clienteRepository, new UbicacionValidator(distritoRepository));
         when(clienteRepository.findByNumeroIdentificacion(any())).thenReturn(Optional.empty());
         when(clienteRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
     }
@@ -111,6 +123,19 @@ class ClienteServiceTest {
 
         assertThat(respuesta.codigoProvincia()).isEqualTo("1");
         assertThat(respuesta.otrasSenas()).isEqualTo("Del parque 200m norte");
+    }
+
+    @Test
+    void crearConUbicacionBienFormadaPeroInexistenteEnElCatalogoSeRechaza() {
+        when(distritoRepository.existsByIdProvinciaCodigoAndIdCantonCodigoAndIdCodigo("9", "99", "99"))
+                .thenReturn(false);
+        CrearClienteRequest request = new CrearClienteRequest(
+                "Cliente de prueba", "01", "107890123", null,
+                "9", "99", "99", "Del parque 200m norte", null, null, null);
+
+        assertThatThrownBy(() -> clienteService.crear(request))
+                .isInstanceOf(UbicacionInvalidaException.class);
+        verify(clienteRepository, never()).saveAndFlush(any());
     }
 
     @Test

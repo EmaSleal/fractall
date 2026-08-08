@@ -25,6 +25,7 @@ import cr.ac.fractall.empresa.dto.CambiarAmbienteRequest;
 import cr.ac.fractall.empresa.dto.CargarCertificadoRequest;
 import cr.ac.fractall.empresa.dto.ConfigurarCredencialHaciendaRequest;
 import cr.ac.fractall.empresa.dto.EmpresaResponse;
+import cr.ac.fractall.catalogo.servicio.UbicacionInvalidaException;
 import cr.ac.fractall.empresa.servicio.AmbienteNoDisponibleException;
 import cr.ac.fractall.empresa.servicio.CertificadoInvalidoException;
 import cr.ac.fractall.empresa.servicio.EmpresaService;
@@ -66,9 +67,13 @@ public class EmpresaController {
     @Operation(summary = "Actualizar datos fiscales de la empresa activa")
     @SecurityRequirement(name = "bearerAuth")
     @PatchMapping
-    public ResponseEntity<EmpresaResponse> actualizarDatosFiscales(
+    public ResponseEntity<?> actualizarDatosFiscales(
             @Valid @RequestBody ActualizarDatosFiscalesRequest request) {
-        return ResponseEntity.ok(empresaService.actualizarDatosFiscales(request));
+        try {
+            return ResponseEntity.ok(empresaService.actualizarDatosFiscales(request));
+        } catch (UbicacionInvalidaException excepcion) {
+            return ResponseEntity.badRequest().body(new MensajeResponse(excepcion.getMessage()));
+        }
     }
 
     @Operation(summary = "Cargar certificado digital .p12")

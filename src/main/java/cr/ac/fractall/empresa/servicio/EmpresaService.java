@@ -25,6 +25,7 @@ import cr.ac.fractall.empresa.modelo.EmpresaAmbienteHistorial;
 import cr.ac.fractall.empresa.repositorio.EmpresaAmbienteHistorialRepository;
 import cr.ac.fractall.empresa.dto.ActualizarDatosFiscalesRequest;
 import cr.ac.fractall.empresa.dto.EmpresaResponse;
+import cr.ac.fractall.catalogo.servicio.UbicacionValidator;
 import cr.ac.fractall.secretos.EnvelopeCipher;
 import cr.ac.fractall.secretos.SecretosKvService;
 import cr.ac.fractall.secretos.TransitService;
@@ -66,6 +67,7 @@ public class EmpresaService {
     private final EmpresaAmbienteHistorialRepository empresaAmbienteHistorialRepository;
     private final SecretosKvService secretosKvService;
     private final TransitService transitService;
+    private final UbicacionValidator ubicacionValidator;
 
     @PersistenceContext
     private EntityManager entityManager;
@@ -76,13 +78,15 @@ public class EmpresaService {
             CredencialHaciendaRepository credencialHaciendaRepository,
             EmpresaAmbienteHistorialRepository empresaAmbienteHistorialRepository,
             SecretosKvService secretosKvService,
-            TransitService transitService) {
+            TransitService transitService,
+            UbicacionValidator ubicacionValidator) {
         this.empresaRepository = empresaRepository;
         this.certificadoHaciendaRepository = certificadoHaciendaRepository;
         this.credencialHaciendaRepository = credencialHaciendaRepository;
         this.empresaAmbienteHistorialRepository = empresaAmbienteHistorialRepository;
         this.secretosKvService = secretosKvService;
         this.transitService = transitService;
+        this.ubicacionValidator = ubicacionValidator;
     }
 
     /**
@@ -90,6 +94,13 @@ public class EmpresaService {
      * actual de {@code empresa} intacto -- nunca lo sobrescribe. La transición de status (ej.
      * {@code REGISTRADA -> DATOS_FISCALES_INCOMPLETOS}) es responsabilidad exclusiva del
      * trigger, disparado por el propio {@code UPDATE}.
+     *
+     * <p><strong>Comportamiento nuevo (V15__catalogo_ubicacion_cr.sql):</strong> el bloque de
+     * ubicación (codigoProvincia/canton/distrito/otrasSenas) resultante se valida con
+     * {@link UbicacionValidator} ANTES de {@link #guardarYReleer} -- todo-o-nada más existencia
+     * real contra el catálogo. Antes de este cambio {@code Empresa} no validaba nada de esto,
+     * a diferencia de {@code ClienteService}, que ya aplicaba la misma regla todo-o-nada (sin la
+     * verificación de existencia, que también es nueva para ambos servicios).
      */
     @Transactional
     public EmpresaResponse actualizarDatosFiscales(ActualizarDatosFiscalesRequest request) {
@@ -108,6 +119,9 @@ public class EmpresaService {
         aplicarSiNoEsNulo(request.telefono(), empresa::setTelefono);
         aplicarSiNoEsNulo(request.email(), empresa::setEmail);
         empresa.setUpdateDate(LocalDateTime.now());
+
+        ubicacionValidator.validar(
+                empresa.getCodigoProvincia(), empresa.getCanton(), empresa.getDistrito(), empresa.getOtrasSenas());
 
         return guardarYReleer(empresa);
     }

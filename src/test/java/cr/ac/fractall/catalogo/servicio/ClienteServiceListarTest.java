@@ -35,7 +35,10 @@ class ClienteServiceListarTest {
     @BeforeEach
     void configurar() {
         clienteRepository = mock(ClienteRepository.class);
-        clienteService = new ClienteService(clienteRepository);
+        // listar/obtener nunca invocan UbicacionValidator -- un mock basta, no hace falta
+        // stubear DistritoRepository (ver ClienteServiceTest para los tests que sí ejercitan la
+        // validación de ubicación).
+        clienteService = new ClienteService(clienteRepository, mock(UbicacionValidator.class));
     }
 
     /** Sets the id field on an EntidadBase (no-setter by design) via reflection. */
