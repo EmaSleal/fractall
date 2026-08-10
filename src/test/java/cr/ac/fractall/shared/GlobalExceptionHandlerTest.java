@@ -24,6 +24,7 @@ import cr.ac.fractall.catalogo.controlador.ClienteController;
 import cr.ac.fractall.catalogo.dto.CrearClienteRequest;
 import cr.ac.fractall.catalogo.servicio.ClienteService;
 import cr.ac.fractall.facturacion.servicio.ComprobanteNoReenviableException;
+import cr.ac.fractall.hacienda.servicio.HaciendaApiService;
 import cr.ac.fractall.hacienda.servicio.TipoCambioNoDisponibleException;
 
 /**
@@ -46,7 +47,8 @@ class GlobalExceptionHandlerTest {
         when(clienteServiceMock.crear(any()))
                 .thenThrow(new DataIntegrityViolationException("duplicate key value violates unique constraint"));
 
-        MockMvc mockMvc = MockMvcBuilders.standaloneSetup(new ClienteController(clienteServiceMock))
+        MockMvc mockMvc = MockMvcBuilders.standaloneSetup(
+                        new ClienteController(clienteServiceMock, mock(HaciendaApiService.class)))
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
 

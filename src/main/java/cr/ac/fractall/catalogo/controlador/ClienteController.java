@@ -25,6 +25,8 @@ import cr.ac.fractall.catalogo.servicio.ClienteNoEncontradoException;
 import cr.ac.fractall.catalogo.servicio.ClienteService;
 import cr.ac.fractall.catalogo.servicio.IdentificacionInvalidaException;
 import cr.ac.fractall.catalogo.servicio.UbicacionInvalidaException;
+import cr.ac.fractall.hacienda.dto.HaciendaConsultaDTO;
+import cr.ac.fractall.hacienda.servicio.HaciendaApiService;
 import cr.ac.fractall.seguridad.dto.MensajeResponse;
 import cr.ac.fractall.shared.PaginaResponse;
 import jakarta.validation.Valid;
@@ -39,6 +41,13 @@ import jakarta.validation.constraints.Min;
  *
  * <p>{@code @Validated} a nivel de clase es necesario para que las restricciones
  * {@code @Min}/{@code @Max} de los {@code @RequestParam} sean evaluadas por Bean Validation.
+ *
+ * <p>{@code GET /catalogo/clientes/consultar-hacienda} expone directamente
+ * {@link HaciendaApiService#consultarContribuyente} -- hasta ahora sin consumidor propio, ver su
+ * javadoc -- para que el frontend autocomplete nombre/tipo de identificación al crear un cliente.
+ * Siempre responde 200: igual que {@code buscarCabys} en {@code ProductoController}, el
+ * resultado "no encontrado"/error de Hacienda viaja en el campo {@code exitosa} del DTO, no como
+ * un status HTTP distinto.
  */
 @Tag(name = "Catálogo — Clientes", description = "Gestión de clientes")
 @Validated
@@ -47,9 +56,18 @@ import jakarta.validation.constraints.Min;
 public class ClienteController {
 
     private final ClienteService clienteService;
+    private final HaciendaApiService haciendaApiService;
 
-    public ClienteController(ClienteService clienteService) {
+    public ClienteController(ClienteService clienteService, HaciendaApiService haciendaApiService) {
         this.clienteService = clienteService;
+        this.haciendaApiService = haciendaApiService;
+    }
+
+    @Operation(summary = "Consultar contribuyente en Hacienda por identificación")
+    @SecurityRequirement(name = "bearerAuth")
+    @GetMapping("/consultar-hacienda")
+    public ResponseEntity<HaciendaConsultaDTO> consultarHacienda(@RequestParam String identificacion) {
+        return ResponseEntity.ok(haciendaApiService.consultarContribuyente(identificacion));
     }
 
     @Operation(summary = "Listar clientes")

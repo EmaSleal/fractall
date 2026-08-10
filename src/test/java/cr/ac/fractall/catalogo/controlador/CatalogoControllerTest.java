@@ -40,6 +40,7 @@ import cr.ac.fractall.empresa.repositorio.EmpresaRepository;
 import cr.ac.fractall.hacienda.servicio.HaciendaApiService;
 import cr.ac.fractall.hacienda.dto.CabysBusquedaDTO;
 import cr.ac.fractall.hacienda.dto.CabysDTO;
+import cr.ac.fractall.hacienda.dto.HaciendaConsultaDTO;
 import cr.ac.fractall.seguridad.modelo.Usuario;
 import cr.ac.fractall.seguridad.repositorio.UsuarioRepository;
 import cr.ac.fractall.seguridad.servicio.JwtService;
@@ -604,5 +605,40 @@ class CatalogoControllerTest {
         mockMvc.perform(get("/catalogo/clientes/" + UUID.randomUUID())
                         .header("Authorization", "Bearer " + accessToken))
                 .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void getConsultarHaciendaRetorna200ConDatosDelContribuyente() throws Exception {
+        String accessToken = crearUsuarioEmpresaYToken();
+        when(haciendaApiService.consultarContribuyente("310987654")).thenReturn(
+                HaciendaConsultaDTO.builder()
+                        .exitosa(true)
+                        .nombre("Persona Consultada S.A.")
+                        .tipoIdentificacion("02")
+                        .build());
+
+        mockMvc.perform(get("/catalogo/clientes/consultar-hacienda")
+                        .queryParam("identificacion", "310987654")
+                        .header("Authorization", "Bearer " + accessToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.exitosa").value(true))
+                .andExpect(jsonPath("$.nombre").value("Persona Consultada S.A."))
+                .andExpect(jsonPath("$.tipoIdentificacion").value("02"));
+    }
+
+    @Test
+    void getConsultarHaciendaCuandoNoEncuentraRetorna200ConExitosaFalse() throws Exception {
+        String accessToken = crearUsuarioEmpresaYToken();
+        when(haciendaApiService.consultarContribuyente("999999999")).thenReturn(
+                HaciendaConsultaDTO.builder()
+                        .exitosa(false)
+                        .mensajeError("Identificación no encontrada en el registro de Hacienda")
+                        .build());
+
+        mockMvc.perform(get("/catalogo/clientes/consultar-hacienda")
+                        .queryParam("identificacion", "999999999")
+                        .header("Authorization", "Bearer " + accessToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.exitosa").value(false));
     }
 }
