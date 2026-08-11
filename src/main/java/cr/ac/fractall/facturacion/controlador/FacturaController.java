@@ -40,6 +40,7 @@ import cr.ac.fractall.facturacion.pdf.FacturaPdfService;
 import cr.ac.fractall.facturacion.servicio.ComprobanteXmlPersistenceService;
 import cr.ac.fractall.facturacion.servicio.ContadorConsecutivoNoEncontradoException;
 import cr.ac.fractall.facturacion.servicio.CredencialHaciendaNoEncontradaException;
+import cr.ac.fractall.facturacion.servicio.EmpresaSinCorreoElectronicoException;
 import cr.ac.fractall.facturacion.servicio.ExoneracionNoAplicableAFacturaElectronicaException;
 import cr.ac.fractall.facturacion.servicio.ExoneracionNoPerteneceAlClienteException;
 import cr.ac.fractall.facturacion.servicio.ExoneracionNoVigenteException;
@@ -197,16 +198,23 @@ public class FacturaController {
                 | ExoneracionNoVigenteException
                 | CondicionVentaInvalidaException excepcion) {
             return ResponseEntity.badRequest().body(new MensajeResponse(excepcion.getMessage()));
-        } catch (ContadorConsecutivoNoEncontradoException | CredencialHaciendaNoEncontradaException excepcion) {
+        } catch (ContadorConsecutivoNoEncontradoException | CredencialHaciendaNoEncontradaException
+                | EmpresaSinCorreoElectronicoException excepcion) {
             // No debería ocurrir en operación normal -- ConsecutivoService crea la fila de
             // contador_consecutivo de forma perezosa si no existe (ver su javadoc), y toda empresa
-            // debería tener su CredencialHacienda configurada antes de facturar. Si cualquiera de
-            // las dos llega aquí de todos modos, es un fallo real de infraestructura/configuración,
-            // no un error de datos del cliente -- 503, nunca un 500 crudo ni 400/404/409. Para
+            // debería tener su CredencialHacienda y su correo electrónico configurados antes de
+            // facturar (Emisor.CorreoElectronico es obligatorio en el XSD -- ver el javadoc de
+            // EmpresaSinCorreoElectronicoException). Si cualquiera de las tres llega aquí de todos
+            // modos, es un fallo real de infraestructura/configuración, no un error de datos del
+            // cliente -- 503, nunca un 500 crudo ni 400/404/409. Para
             // CredencialHaciendaNoEncontradaException específicamente: la factura y el comprobante
             // ya quedaron persistidos (en FIRMADO) para este punto -- ver el javadoc de
             // ComprobanteXmlPersistenceService sobre por qué ese estado parcial es un riesgo
-            // aceptado y no algo que este catch intente revertir.
+            // aceptado y no algo que este catch intente revertir. EmpresaSinCorreoElectronicoException
+            // se lanza más temprano en el mismo flujo (dentro de la generación del XML, antes de
+            // firmar/subir), pero facturaService.crear() de todos modos ya hizo commit de la
+            // factura y el comprobante (en GENERADO) ANTES de esta llamada -- mismo estado parcial
+            // aceptado, solo que en GENERADO en vez de FIRMADO.
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(new MensajeResponse(excepcion.getMessage()));
         }
     }

@@ -6,7 +6,9 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -39,6 +41,7 @@ import cr.ac.fractall.facturacion.repositorio.LineaCodigoComercialRepository;
 import cr.ac.fractall.facturacion.repositorio.LineaDescuentoRepository;
 import cr.ac.fractall.facturacion.repositorio.LineaFacturaRepository;
 import cr.ac.fractall.facturacion.servicio.ComprobanteElectronicoNoEncontradoException;
+import cr.ac.fractall.facturacion.servicio.EmpresaSinCorreoElectronicoException;
 import cr.ac.fractall.facturacion.servicio.XmlFacturaGeneratorService;
 import cr.ac.fractall.facturacion.servicio.XmlFacturaXsdValidator;
 import lombok.extern.slf4j.Slf4j;
@@ -271,7 +274,13 @@ public class XmlFacturaGeneratorServiceImpl implements XmlFacturaGeneratorServic
             xml.append("</Telefono>");
         }
 
-        xml.append("<CorreoElectronico>").append(empresa.getEmail() != null ? empresa.getEmail() : "").append("</CorreoElectronico>");
+        // Emisor.CorreoElectronico es obligatorio en el XSD (sin minOccurs="0") -- ver el javadoc
+        // de EmpresaSinCorreoElectronicoException sobre por qué esto falla en vez de emitir un
+        // <CorreoElectronico> vacío que pasaría la validación de esquema pero no la de Hacienda.
+        if (empresa.getEmail() == null || empresa.getEmail().isBlank()) {
+            throw new EmpresaSinCorreoElectronicoException(empresa.getId());
+        }
+        xml.append("<CorreoElectronico>").append(empresa.getEmail()).append("</CorreoElectronico>");
         xml.append("</Emisor>");
     }
 
@@ -589,7 +598,13 @@ public class XmlFacturaGeneratorServiceImpl implements XmlFacturaGeneratorServic
         BigDecimal totalImpuestoBruto = BigDecimal.ZERO;
         BigDecimal totalExonerado = BigDecimal.ZERO;
         BigDecimal totalDescuentos = BigDecimal.ZERO;
-        String codigoTarifaPrincipal = "10"; // exento por defecto
+        // Impuesto neto agrupado por CodigoTarifaIVA -- el XSD permite hasta 1000
+        // <TotalDesgloseImpuesto>, uno por cada tarifa de IVA distinta presente en la factura
+        // (LinkedHashMap para que, con una sola tarifa, el orden de salida sea determinístico).
+        // Antes de este fix se emitía un único bloque con la tarifa de la ÚLTIMA línea gravada del
+        // loop, lo que etiquetaba mal el desglose en facturas que mezclan tarifas (13% + 4%, etc.)
+        // aunque el monto total (TotalImpuesto) ya fuera correcto.
+        Map<String, BigDecimal> impuestoNetoPorTarifa = new LinkedHashMap<>();
 
         for (LineaContexto contexto : contextos) {
             LineaCalculo calculo = contexto.calculo();
@@ -600,7 +615,6 @@ public class XmlFacturaGeneratorServiceImpl implements XmlFacturaGeneratorServic
                 } else {
                     totalMercanciasGravadas = totalMercanciasGravadas.add(calculo.subtotal());
                 }
-                codigoTarifaPrincipal = calculo.codigoTarifaIVA();
             } else {
                 if (servicio) {
                     totalServiciosExentos = totalServiciosExentos.add(calculo.subtotal());
@@ -608,6 +622,7 @@ public class XmlFacturaGeneratorServiceImpl implements XmlFacturaGeneratorServic
                     totalMercanciasExentas = totalMercanciasExentas.add(calculo.subtotal());
                 }
             }
+            impuestoNetoPorTarifa.merge(calculo.codigoTarifaIVA(), calculo.impuestoNeto(), BigDecimal::add);
             totalImpuestoBruto = totalImpuestoBruto.add(calculo.montoImpuesto());
             totalExonerado = totalExonerado.add(calculo.montoExonerado());
             for (LineaDescuento d : contexto.descuentos()) {
@@ -665,11 +680,13 @@ public class XmlFacturaGeneratorServiceImpl implements XmlFacturaGeneratorServic
         }
         xml.append("<TotalVentaNeta>").append(fmt(totalVentaNeta, 5)).append("</TotalVentaNeta>");
 
-        xml.append("<TotalDesgloseImpuesto>");
-        xml.append("<Codigo>01</Codigo>");
-        xml.append("<CodigoTarifaIVA>").append(codigoTarifaPrincipal).append("</CodigoTarifaIVA>");
-        xml.append("<TotalMontoImpuesto>").append(fmt(totalImpuestoNeto, 5)).append("</TotalMontoImpuesto>");
-        xml.append("</TotalDesgloseImpuesto>");
+        for (Map.Entry<String, BigDecimal> entry : impuestoNetoPorTarifa.entrySet()) {
+            xml.append("<TotalDesgloseImpuesto>");
+            xml.append("<Codigo>01</Codigo>");
+            xml.append("<CodigoTarifaIVA>").append(entry.getKey()).append("</CodigoTarifaIVA>");
+            xml.append("<TotalMontoImpuesto>").append(fmt(entry.getValue(), 5)).append("</TotalMontoImpuesto>");
+            xml.append("</TotalDesgloseImpuesto>");
+        }
 
         xml.append("<TotalImpuesto>").append(fmt(totalImpuestoNeto, 5)).append("</TotalImpuesto>");
 

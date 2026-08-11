@@ -38,6 +38,7 @@ import cr.ac.fractall.facturacion.modelo.LineaFactura;
 import cr.ac.fractall.facturacion.repositorio.ComprobanteElectronicoRepository;
 import cr.ac.fractall.facturacion.repositorio.FacturaRepository;
 import cr.ac.fractall.facturacion.repositorio.LineaFacturaRepository;
+import cr.ac.fractall.facturacion.servicio.EmpresaSinCorreoElectronicoException;
 import cr.ac.fractall.facturacion.servicio.XmlFacturaGeneratorService;
 import cr.ac.fractall.facturacion.servicio.XmlFacturaInvalidoException;
 import cr.ac.fractall.facturacion.servicio.XmlFacturaXsdValidator;
@@ -363,6 +364,56 @@ class XmlFacturaGeneratorServiceImplTest {
         // TotalImpuesto neto de la factura: (130 + 260) - 260 = 130.
         assertThat(texto(resumen, "TotalImpuesto")).isEqualTo("130.00000");
         assertThat(texto(resumen, "TotalComprobante")).isEqualTo("3130.00000");
+    }
+
+    @Test
+    void facturaConLineasEnDosTarifasDeIvaEmiteUnTotalDesgloseImpuestoPorTarifa() throws Exception {
+        Cliente cliente = crearCliente("310699" + System.nanoTime() % 1_000_000, "100 metros este del parque");
+        Producto productoTrece = crearProducto("PROD-XML-G-" + UUID.randomUUID(), new BigDecimal("13.00"));
+        Producto productoCuatro = crearProducto("PROD-XML-H-" + UUID.randomUUID(), new BigDecimal("4.00"));
+
+        // Línea 1: 1000 al 13% -> impuesto 130. Línea 2: 1000 al 4% -> impuesto 40.
+        Factura factura = crearFactura(cliente.getId(), new BigDecimal("2000.00000"), new BigDecimal("170.00000"));
+        LineaFactura linea1 = crearLinea(factura.getId(), productoTrece, 1, BigDecimal.ONE, new BigDecimal("1000.00000"));
+        LineaFactura linea2 = crearLinea(factura.getId(), productoCuatro, 2, BigDecimal.ONE, new BigDecimal("1000.00000"));
+        lineaFacturaRepository.saveAll(java.util.List.of(linea1, linea2));
+        lineaFacturaRepository.flush();
+        ComprobanteElectronico comprobante = crearComprobante(factura.getId());
+
+        String xml = xmlFacturaGeneratorService.generarXmlFactura(comprobante.getId());
+
+        Document documento = parsear(xml);
+        Element resumen = (Element) documento.getElementsByTagName("ResumenFactura").item(0);
+        NodeList desgloses = resumen.getElementsByTagName("TotalDesgloseImpuesto");
+        assertThat(desgloses.getLength()).isEqualTo(2);
+
+        Element desgloseTrece = (Element) desgloses.item(0);
+        assertThat(texto(desgloseTrece, "CodigoTarifaIVA")).isEqualTo("08");
+        assertThat(texto(desgloseTrece, "TotalMontoImpuesto")).isEqualTo("130.00000");
+
+        Element desgloseCuatro = (Element) desgloses.item(1);
+        assertThat(texto(desgloseCuatro, "CodigoTarifaIVA")).isEqualTo("04");
+        assertThat(texto(desgloseCuatro, "TotalMontoImpuesto")).isEqualTo("40.00000");
+
+        assertThat(texto(resumen, "TotalImpuesto")).isEqualTo("170.00000");
+    }
+
+    @Test
+    void empresaSinCorreoElectronicoConfiguradoLanzaExcepcionAlGenerarElXml() {
+        empresa.setEmail(null);
+        empresaRepository.saveAndFlush(empresa);
+
+        Cliente cliente = crearCliente("310799" + System.nanoTime() % 1_000_000, "100 metros este del parque");
+        Producto producto = crearProducto("PROD-XML-I-" + UUID.randomUUID(), new BigDecimal("13.00"));
+
+        Factura factura = crearFactura(cliente.getId(), new BigDecimal("1000.00000"), new BigDecimal("130.00000"));
+        LineaFactura linea = crearLinea(factura.getId(), producto, 1, BigDecimal.ONE, new BigDecimal("1000.00000"));
+        lineaFacturaRepository.saveAndFlush(linea);
+        ComprobanteElectronico comprobante = crearComprobante(factura.getId());
+
+        assertThatThrownBy(() -> xmlFacturaGeneratorService.generarXmlFactura(comprobante.getId()))
+                .isInstanceOf(EmpresaSinCorreoElectronicoException.class)
+                .hasMessageContaining(empresa.getId().toString());
     }
 
     @Test

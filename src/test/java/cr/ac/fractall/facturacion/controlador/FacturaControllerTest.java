@@ -275,6 +275,7 @@ class FacturaControllerTest {
             empresa.setRazonSocial("Empresa de Prueba FacturaController S.A.");
             empresa.setNumeroIdentificacion(String.valueOf(
                     200_000_000_000L + Math.abs(UUID.randomUUID().getMostSignificantBits() % 700_000_000_000L)));
+            empresa.setEmail("empresa-factura-controller@fractall.test");
             empresa.setAmbienteHacienda("SANDBOX");
             empresa.setStatus("REGISTRADA");
             empresa.setCreadoPor(usuario.getId());
