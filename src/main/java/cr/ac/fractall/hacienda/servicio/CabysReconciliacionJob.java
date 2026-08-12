@@ -14,6 +14,7 @@ import cr.ac.fractall.hacienda.modelo.Cabys;
 import cr.ac.fractall.hacienda.modelo.CabysConsultaLog;
 import cr.ac.fractall.hacienda.repositorio.CabysConsultaLogRepository;
 import cr.ac.fractall.hacienda.repositorio.CabysRepository;
+import cr.ac.fractall.tenant.TenantContextDescartable;
 
 /**
  * Job diario que resuelve {@code cabys_consulta_log} contra el cache {@code cabys}: cada fila sin
@@ -26,6 +27,15 @@ import cr.ac.fractall.hacienda.repositorio.CabysRepository;
  * {@code ComprobanteHaciendaPollingScheduledJob} (ver su javadoc): cada {@code repository.save()}
  * ya es transaccional por sí mismo vía {@code SimpleJpaRepository}, y no hay ninguna transacción
  * larga que sostener acá.
+ *
+ * <p>Corre bajo {@link TenantContextDescartable#ejecutar}: ni {@code Cabys} ni
+ * {@code CabysConsultaLog} extienden {@code TenantAwareEntity} (sin columna {@code empresa_id}),
+ * pero {@code EmpresaTenantIdentifierResolver} falla de forma cerrada para CUALQUIER entidad al
+ * abrir un {@code EntityManager} de este {@code SessionFactory} -- sin este wrapper, si este job
+ * es el primero en tocar {@code cabysRepository}/{@code cabysConsultaLogRepository} (p. ej. justo
+ * después de un deploy, antes de cualquier request HTTP real), la creación perezosa de esos beans
+ * de repositorio falla con {@code TenantNoResueltoException} envuelta en un
+ * {@code BeanCreationException} -- mismo bug ya visto y corregido en {@code TipoCambioScheduledJob}.
  *
  * <p>Cada registro del log se procesa dentro de su propio try/catch (mismo patrón que
  * {@code ComprobanteHaciendaPollingScheduledJob#procesarEmpresa}): si guardar un {@link Cabys}
@@ -51,6 +61,10 @@ public class CabysReconciliacionJob {
 
     @Scheduled(cron = "${application.hacienda.cabys.reconciliacion-cron:0 0 2 * * *}")
     public void reconciliar() {
+        TenantContextDescartable.ejecutar((Runnable) this::reconciliarTransaccional);
+    }
+
+    private void reconciliarTransaccional() {
         List<CabysConsultaLog> pendientes = cabysConsultaLogRepository.findByProcesadoFalse();
 
         int insertados = 0;

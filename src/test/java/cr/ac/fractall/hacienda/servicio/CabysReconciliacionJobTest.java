@@ -12,7 +12,10 @@ import static org.mockito.Mockito.when;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -25,6 +28,7 @@ import cr.ac.fractall.hacienda.modelo.Cabys;
 import cr.ac.fractall.hacienda.modelo.CabysConsultaLog;
 import cr.ac.fractall.hacienda.repositorio.CabysConsultaLogRepository;
 import cr.ac.fractall.hacienda.repositorio.CabysRepository;
+import cr.ac.fractall.tenant.TenantContext;
 
 /**
  * Prueba unitaria (Mockito puro, sin contexto de Spring ni Testcontainers) de
@@ -45,6 +49,35 @@ class CabysReconciliacionJobTest {
 
     @InjectMocks
     private CabysReconciliacionJob job;
+
+    @AfterEach
+    void limpiarTenantContext() {
+        TenantContext.clear();
+    }
+
+    /**
+     * Regresión del bug encontrado en producción: sin {@code TenantContextDescartable}, si este
+     * job era lo primero en tocar {@code cabysRepository}/{@code cabysConsultaLogRepository}
+     * (p. ej. recién desplegado, antes de cualquier request HTTP real), la creación perezosa de
+     * esos beans fallaba con {@code TenantNoResueltoException} -- ver el javadoc de la clase bajo
+     * prueba. Un mock puro no puede reproducir la falla de creación de bean en sí (no hay
+     * Hibernate real detrás), así que esta prueba verifica el efecto observable del fix: el job
+     * fija un tenant descartable durante la llamada y lo limpia al terminar.
+     */
+    @Test
+    void reconciliarFijaUnTenantContextDescartableDuranteLaLlamadaYLoLimpiaAlTerminar() {
+        AtomicReference<UUID> tenantDuranteLaLlamada = new AtomicReference<>();
+        when(cabysConsultaLogRepository.findByProcesadoFalse()).thenAnswer(invocacion -> {
+            tenantDuranteLaLlamada.set(TenantContext.get());
+            return List.of();
+        });
+
+        TenantContext.clear();
+        job.reconciliar();
+
+        assertThat(tenantDuranteLaLlamada.get()).isNotNull();
+        assertThat(TenantContext.get()).isNull();
+    }
 
     private static CabysConsultaLog nuevoLog(String codigo, String descripcion, Short impuesto,
             String categorias, String estado, String uri) {

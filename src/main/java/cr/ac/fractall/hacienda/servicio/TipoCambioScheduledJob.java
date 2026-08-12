@@ -5,6 +5,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+import cr.ac.fractall.tenant.TenantContextDescartable;
+
 /**
  * Job diario (7pm por defecto) que garantiza que {@code tipo_cambio_dolar} tenga un valor para
  * hoy, como respaldo de las consultas que el propio {@code HaciendaApiService#consultarTipoCambioDolar}
@@ -15,6 +17,14 @@ import org.springframework.stereotype.Component;
  * consultó hoy, este job no vuelve a golpear Hacienda; si nadie lo consultó todavía, lo trae y lo
  * guarda. El job delega esa decisión por completo al método, así que no necesita chequear primero
  * si el valor de hoy ya existe.
+ *
+ * <p>Corre bajo {@link TenantContextDescartable#ejecutar}: {@code TipoCambioDolar} no extiende
+ * {@code TenantAwareEntity} (sin columna {@code empresa_id}, ver su javadoc), pero
+ * {@code EmpresaTenantIdentifierResolver} falla de forma cerrada para CUALQUIER entidad al abrir
+ * un {@code EntityManager} de este {@code SessionFactory} -- sin este wrapper, la primera vez que
+ * este job toca {@code tipoCambioDolarRepository} antes de que cualquier request HTTP real lo haya
+ * hecho, la creación (perezosa) del bean del repositorio falla con
+ * {@code TenantNoResueltoException} envuelta en un {@code BeanCreationException}.
  *
  * <p>Un fallo de la llamada ({@link TipoCambioNoDisponibleException} u otra
  * {@link RuntimeException}) se loguea y se traga -- mismo principio que
@@ -35,7 +45,7 @@ public class TipoCambioScheduledJob {
     @Scheduled(cron = "${application.hacienda.tipo-cambio.fallback-cron:0 0 19 * * *}")
     public void ejecutar() {
         try {
-            haciendaApiService.consultarTipoCambioDolar();
+            TenantContextDescartable.ejecutar((Runnable) haciendaApiService::consultarTipoCambioDolar);
         } catch (RuntimeException excepcion) {
             log.error("Error en el job de respaldo del tipo de cambio del dólar: {}", excepcion.getMessage(), excepcion);
         }
