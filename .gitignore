@@ -33,6 +33,7 @@ build/
 .vscode/
 
 docs/proyecto-referencia/
+docs/referencia/
 
 .env
 .env.*
