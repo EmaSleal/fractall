@@ -276,7 +276,8 @@ public class FacturaService {
         var referencias = facturaInformacionReferenciaRepository.findByFacturaIdOrderByOrden(factura.getId());
         var mediosPago = facturaMedioPagoRepository.findByFacturaIdOrderByOrden(factura.getId());
 
-        String clienteNombre = facturaRepository.findClienteNombreByFacturaId(id).orElse(null);
+        String clienteNombre = facturaRepository.findClienteNombreByFacturaId(id, factura.getEmpresaId())
+                .orElse(null);
 
         return FacturaResponse.desde(factura, comprobante, lineasResponse, otrosCargos, referencias, mediosPago, clienteNombre);
     }

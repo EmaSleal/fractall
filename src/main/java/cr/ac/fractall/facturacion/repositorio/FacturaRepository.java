@@ -60,6 +60,13 @@ public interface FacturaRepository extends JpaRepository<Factura, UUID> {
             @Param("estado") String estado,
             @Param("limit") int limit);
 
-    @Query(value = "SELECT cl.nombre FROM factura f JOIN cliente cl ON cl.id = f.cliente_id WHERE f.id = :facturaId", nativeQuery = true)
-    Optional<String> findClienteNombreByFacturaId(@Param("facturaId") UUID facturaId);
+    /**
+     * Nativa por el mismo motivo que {@link #buscarNativo} -- el {@code @TenantId} de Hibernate
+     * NO aplica a queries nativas, así que {@code empresaId} se filtra explícitamente aquí en
+     * vez de confiar en que el llamador ya validó el tenant de {@code facturaId} por otra vía.
+     */
+    @Query(value = "SELECT cl.nombre FROM factura f JOIN cliente cl ON cl.id = f.cliente_id "
+            + "WHERE f.id = :facturaId AND f.empresa_id = :empresaId", nativeQuery = true)
+    Optional<String> findClienteNombreByFacturaId(
+            @Param("facturaId") UUID facturaId, @Param("empresaId") UUID empresaId);
 }
