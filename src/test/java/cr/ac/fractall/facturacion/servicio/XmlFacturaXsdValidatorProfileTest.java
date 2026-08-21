@@ -55,6 +55,25 @@ class XmlFacturaXsdValidatorProfileTest {
                 .isInstanceOf(XmlFacturaInvalidoException.class);
     }
 
+    /**
+     * Triangulación del escenario de drift: el par NC-vs-Factura de
+     * {@link #validacionRechazaXmlDeUnTipoDeComprobanteValidadoContraElPerfilDeOtro()} podría
+     * pasar por casualidad (p. ej. un {@code if} hardcodeado a esos dos tipos en particular). Un
+     * segundo par completamente distinto (Tiquete-vs-NotaDébito, ninguno de los dos involucrado en
+     * el primer par) confirma que el rechazo es genérico, no una coincidencia de ese par puntual.
+     */
+    @Test
+    void validacionRechazaOtroParDeTiposDistintoAlPrimero() {
+        XmlFacturaXsdValidator validator = new XmlFacturaXsdValidator();
+
+        String xmlTiquete = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<TiqueteElectronico xmlns=\"" + TipoComprobantePerfil.TIQUETE.namespace() + "\">"
+                + "</TiqueteElectronico>";
+
+        assertThatThrownBy(() -> validator.validar(xmlTiquete, TipoComprobantePerfil.NOTA_DEBITO))
+                .isInstanceOf(XmlFacturaInvalidoException.class);
+    }
+
     private String leerClasspath(String classpath) throws IOException {
         byte[] bytes = new ClassPathResource(classpath).getInputStream().readAllBytes();
         return new String(bytes, StandardCharsets.UTF_8);

@@ -580,4 +580,87 @@ class XmlFacturaGeneratorServiceImplTest {
         assertThatThrownBy(() -> xmlFacturaGeneratorService.generarXmlFactura(comprobante.getId()))
                 .isInstanceOf(ComprobanteSinReferenciaObligatoriaException.class);
     }
+
+    /**
+     * Triangulación de tipo: mismo escenario que
+     * {@link #generaXmlNotaCreditoConReferenciaUsaElementoRaizYNamespaceDeNotaCredito()} pero para
+     * Nota de Débito -- confirma que el perfil parametrizado no está solo funcionando para el tipo
+     * "03" por coincidencia (p. ej. un condicional hardcodeado a "03" en vez de leer el perfil real
+     * del comprobante).
+     */
+    @Test
+    void generaXmlNotaDebitoConReferenciaUsaElementoRaizYNamespaceDeNotaDebito() throws Exception {
+        Cliente cliente = crearCliente("310898" + System.nanoTime() % 1_000_000, "100 metros este del parque");
+        Producto producto = crearProducto("PROD-XML-N2-" + UUID.randomUUID(), new BigDecimal("13.00"));
+
+        Factura factura = crearFactura(cliente.getId(), new BigDecimal("1000.00000"), new BigDecimal("130.00000"));
+        LineaFactura linea = crearLinea(factura.getId(), producto, 1, BigDecimal.ONE, new BigDecimal("1000.00000"));
+        lineaFacturaRepository.saveAndFlush(linea);
+        crearInformacionReferencia(factura.getId(), "50601001000000000000000000000000000000000000002");
+        ComprobanteElectronico comprobante = crearComprobante(factura.getId(), "02");
+
+        String xml = xmlFacturaGeneratorService.generarXmlFactura(comprobante.getId());
+
+        Document documento = parsear(xml);
+        Element raiz = documento.getDocumentElement();
+        assertThat(raiz.getTagName()).isEqualTo("NotaDebitoElectronica");
+        assertThat(xml).contains(
+                "xmlns=\"https://cdn.comprobanteselectronicos.go.cr/xml-schemas/v4.4/notaDebitoElectronica\"");
+        assertThat(documento.getElementsByTagName("InformacionReferencia").getLength()).isEqualTo(1);
+
+        assertThatCode(() -> xmlFacturaXsdValidator.validar(xml, TipoComprobantePerfil.NOTA_DEBITO))
+                .doesNotThrowAnyException();
+    }
+
+    /**
+     * Triangulación de la regla "InformacionReferencia obligatoria" (spec de Fase B): el catálogo
+     * dice NC/ND, no solo NC -- si el único test cubriera tipo "03", un bug que dejara pasar una ND
+     * sin referencia pasaría desapercibido. Mismo escenario que
+     * {@link #notaCreditoSinInformacionReferenciaLanzaExcepcionAntesDeValidarContraElXsd()} pero
+     * para tipo "02".
+     */
+    @Test
+    void notaDebitoSinInformacionReferenciaLanzaExcepcionAntesDeValidarContraElXsd() {
+        Cliente cliente = crearCliente("310997" + System.nanoTime() % 1_000_000, "100 metros este del parque");
+        Producto producto = crearProducto("PROD-XML-N3-" + UUID.randomUUID(), new BigDecimal("13.00"));
+
+        Factura factura = crearFactura(cliente.getId(), new BigDecimal("1000.00000"), new BigDecimal("130.00000"));
+        LineaFactura linea = crearLinea(factura.getId(), producto, 1, BigDecimal.ONE, new BigDecimal("1000.00000"));
+        lineaFacturaRepository.saveAndFlush(linea);
+        ComprobanteElectronico comprobante = crearComprobante(factura.getId(), "02");
+
+        assertThatThrownBy(() -> xmlFacturaGeneratorService.generarXmlFactura(comprobante.getId()))
+                .isInstanceOf(ComprobanteSinReferenciaObligatoriaException.class);
+    }
+
+    /**
+     * Triangulación de tipo, tercer caso: Tiquete tiene un perfil genuinamente distinto de
+     * Factura/NC/ND ({@code receptorObligatorio=false}, sin {@code CodigoActividadReceptor}, sin
+     * {@code TipoTransaccion}, {@code referenciasMinimas=0}) -- confirma que el generador
+     * parametrizado también produce un XML válido para el cuarto perfil, no solo para los dos
+     * (01/03) que ya tenían cobertura de extremo a extremo. No requiere
+     * {@code InformacionReferencia} (a diferencia de NC/ND).
+     */
+    @Test
+    void generaXmlTiqueteUsaElementoRaizYNamespaceDeTiqueteYValidaSinInformacionReferencia() throws Exception {
+        Cliente cliente = crearCliente("310896" + System.nanoTime() % 1_000_000, "100 metros este del parque");
+        Producto producto = crearProducto("PROD-XML-TQ-" + UUID.randomUUID(), new BigDecimal("13.00"));
+
+        Factura factura = crearFactura(cliente.getId(), new BigDecimal("1000.00000"), new BigDecimal("130.00000"));
+        LineaFactura linea = crearLinea(factura.getId(), producto, 1, BigDecimal.ONE, new BigDecimal("1000.00000"));
+        lineaFacturaRepository.saveAndFlush(linea);
+        ComprobanteElectronico comprobante = crearComprobante(factura.getId(), "04");
+
+        String xml = xmlFacturaGeneratorService.generarXmlFactura(comprobante.getId());
+
+        Document documento = parsear(xml);
+        Element raiz = documento.getDocumentElement();
+        assertThat(raiz.getTagName()).isEqualTo("TiqueteElectronico");
+        assertThat(xml).contains(
+                "xmlns=\"https://cdn.comprobanteselectronicos.go.cr/xml-schemas/v4.4/tiqueteElectronico\"");
+        assertThat(documento.getElementsByTagName("InformacionReferencia").getLength()).isZero();
+
+        assertThatCode(() -> xmlFacturaXsdValidator.validar(xml, TipoComprobantePerfil.TIQUETE))
+                .doesNotThrowAnyException();
+    }
 }
