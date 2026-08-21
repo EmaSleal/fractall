@@ -1,11 +1,12 @@
 package cr.ac.fractall.facturacion.servicio;
 
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.Reader;
 import java.io.StringReader;
+import java.util.EnumMap;
+import java.util.Map;
 
 import javax.xml.XMLConstants;
+import javax.xml.transform.Source;
 import javax.xml.transform.stream.StreamSource;
 import javax.xml.validation.Schema;
 import javax.xml.validation.SchemaFactory;
@@ -13,9 +14,9 @@ import javax.xml.validation.Validator;
 
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.stereotype.Component;
-import org.w3c.dom.ls.LSInput;
-import org.w3c.dom.ls.LSResourceResolver;
 import org.xml.sax.SAXException;
+
+import cr.ac.fractall.facturacion.fe.TipoComprobantePerfil;
 
 /**
  * Valida un XML de Factura Electrónica contra el XSD v4.4 oficial de Hacienda Costa Rica
@@ -54,9 +55,10 @@ import org.xml.sax.SAXException;
  * práctica (nadie lo cubre en {@code XmlGeneratorServiceImplTest} tampoco). Acá se resuelve de
  * verdad: se bundlea una copia local del schema W3C estándar
  * ({@code src/main/resources/xsd/xmldsig-core-schema.xsd}, descargado de
- * {@code https://www.w3.org/TR/xmldsig-core/xmldsig-core-schema.xsd}) y se registra un
- * {@link LSResourceResolver} en el {@link SchemaFactory} que intercepta ese import por namespace
- * y lo resuelve desde el classpath, sin tocar red en tiempo de ejecución.
+ * {@code https://www.w3.org/TR/xmldsig-core/xmldsig-core-schema.xsd}) y se compila JUNTO con el
+ * XSD oficial en una sola llamada a {@link SchemaFactory#newSchema(Source[])} -- ver
+ * {@link #cargarEsquema(TipoComprobantePerfil)} para por qué esto reemplazó a un
+ * {@code LSResourceResolver} custom (intentado primero, descartado por inestable).
  *
  * <p><b>Hallazgo arquitectónico mayor de esta sub-tarea -- {@code ds:Signature} es OBLIGATORIO en
  * el XSD real, no opcional:</b> {@code FacturaElectronicaType} termina su secuencia con
@@ -94,17 +96,23 @@ import org.xml.sax.SAXException;
  * vez compilado (así lo documenta la propia Javadoc de {@code javax.xml.validation}), así que
  * cachearlo en un bean {@code @Component} (singleton por defecto en Spring) es seguro. Lo que NO
  * se cachea es el {@link Validator} -- ese sí es stateful y no thread-safe, por eso
- * {@link #validar(String)} crea uno nuevo con {@link Schema#newValidator()} en cada llamada,
- * igual que el original.
+ * {@link #validar(String, TipoComprobantePerfil)} crea uno nuevo con {@link Schema#newValidator()}
+ * en cada llamada, igual que el original.
+ *
+ * <p><b>Release 2 / Fase B -- parametrizado por {@link TipoComprobantePerfil}:</b> lo descrito
+ * arriba, escrito para el Release 1 (solo Factura Electrónica), sigue siendo válido en su
+ * totalidad; lo único que cambia es que ahora se compilan y cachean los 4 esquemas v4.4 (uno por
+ * {@link TipoComprobantePerfil}), en un {@link EnumMap} en vez de un único {@link Schema}. El
+ * método de un solo argumento ({@code validar(String)}) se elimina por completo -- el único
+ * llamador real siempre tiene un perfil disponible (lo deriva del {@code ComprobanteElectronico}
+ * ya cargado), y mantener ambas firmas reintroduciría la trampa de sobrecarga ambigua ya
+ * documentada como ADR-1 en {@code ComprobanteXmlPersistenceService}.
  */
 @Component
 public class XmlFacturaXsdValidator {
 
-    private static final String XSD_CLASSPATH = "xsd/FacturaElectronica_V4.4.xsd";
     private static final String XMLDSIG_NAMESPACE = "http://www.w3.org/2000/09/xmldsig#";
     private static final String XMLDSIG_CLASSPATH = "xsd/xmldsig-core-schema.xsd";
-
-    private static final String CIERRE_RAIZ = "</FacturaElectronica>";
 
     /**
      * Placeholder de {@code <ds:Signature>} usado SOLO dentro de {@link #validar(String)} -- ver
@@ -129,57 +137,76 @@ public class XmlFacturaXsdValidator {
                     + "</ds:SignatureValue>"
                     + "</ds:Signature>";
 
-    private final Schema schema;
+    // EnumMap en vez de Map<String, Schema> -- clave total por construcción (una entrada por
+    // cada TipoComprobantePerfil, sin posibilidad de un mapa parcialmente poblado en runtime).
+    // Ver el javadoc de la clase, sección "Release 2 / Fase B".
+    private final Map<TipoComprobantePerfil, Schema> esquemas;
 
     public XmlFacturaXsdValidator() {
-        this.schema = cargarSchema();
+        this.esquemas = cargarEsquemas();
     }
 
-    private Schema cargarSchema() {
-        ClassPathResource recurso = new ClassPathResource(XSD_CLASSPATH);
-        if (!recurso.exists()) {
-            // Bug de empaquetado (XSD no incluido en resources), no un caso a degradar -- ver el
-            // javadoc de la clase.
-            throw new IllegalStateException(
-                    "XSD de Factura Electrónica no encontrado en el classpath: " + XSD_CLASSPATH);
+    private Map<TipoComprobantePerfil, Schema> cargarEsquemas() {
+        Map<TipoComprobantePerfil, Schema> resultado = new EnumMap<>(TipoComprobantePerfil.class);
+        for (TipoComprobantePerfil perfil : TipoComprobantePerfil.values()) {
+            resultado.put(perfil, cargarEsquema(perfil));
         }
-        try {
-            SchemaFactory schemaFactory = SchemaFactory.newInstance(XMLConstants.W3C_XML_SCHEMA_NS_URI);
-            // Resuelve el import a xmldsig-core-schema.xsd desde el classpath -- ver el javadoc
-            // de la clase sobre por qué la schemaLocation relativa del XSD oficial no sirve acá.
-            schemaFactory.setResourceResolver(crearResolvedorXmldsig());
-            return schemaFactory.newSchema(new StreamSource(recurso.getInputStream()));
-        } catch (IOException | SAXException e) {
-            throw new IllegalStateException(
-                    "No se pudo compilar el XSD de Factura Electrónica: " + XSD_CLASSPATH, e);
-        }
-    }
-
-    private LSResourceResolver crearResolvedorXmldsig() {
-        return (type, namespaceURI, publicId, systemId, baseURI) -> {
-            boolean esImportXmldsig = XMLDSIG_NAMESPACE.equals(namespaceURI)
-                    || (systemId != null && systemId.endsWith("xmldsig-core-schema.xsd"));
-            if (!esImportXmldsig) {
-                // Ningún otro import se espera en este XSD -- si apareciera uno, dejar que el
-                // resolvedor por defecto de Xerces lo intente (probablemente falle igual, pero de
-                // forma diagnosticable) en vez de silenciarlo acá.
-                return null;
-            }
-            try {
-                InputStream contenido = new ClassPathResource(XMLDSIG_CLASSPATH).getInputStream();
-                ClasspathLSInput entrada = new ClasspathLSInput(contenido);
-                entrada.setSystemId(XMLDSIG_CLASSPATH);
-                return entrada;
-            } catch (IOException e) {
-                throw new IllegalStateException(
-                        "No se pudo cargar el esquema auxiliar xmldsig-core-schema.xsd desde el classpath: "
-                                + XMLDSIG_CLASSPATH, e);
-            }
-        };
+        return resultado;
     }
 
     /**
-     * Valida el XML contra el XSD de Factura Electrónica v4.4.
+     * Compila {@code xmldsig-core-schema.xsd} y el XSD oficial de {@code perfil} JUNTOS, en una
+     * sola llamada a {@link SchemaFactory#newSchema(Source[])}.
+     *
+     * <p><b>Causa raíz real de la inestabilidad en CI (3 intentos previos fallidos antes de
+     * encontrarla):</b> {@code xmldsig-core-schema.xsd} (descargado de w3.org, ver el javadoc de
+     * la clase) trae en su cabecera {@code <!DOCTYPE schema PUBLIC "-//W3C//DTD XMLSchema
+     * 200102//EN" "http://www.w3.org/2001/XMLSchema.dtd">} -- por defecto, Xerces intenta
+     * RESOLVER ESE DTD POR RED cada vez que parsea el archivo. En local nunca falló porque la
+     * conexión a w3.org siempre respondía rápido; en GitHub Actions, con IPs compartidas entre
+     * miles de runners golpeando el mismo servidor, w3.org devolvía {@code 429 Too Many Requests}
+     * de forma intermitente -- síntoma que además se manifestaba con mensajes distintos según en
+     * qué momento del parseo abortaba la conexión ({@code SAXParseException} sobre
+     * {@code ds:Signature} en unos casos, {@code IOException} con el 429 explícito en otros). No
+     * tenía nada que ver con reutilizar {@code SchemaFactory}, con streams de un solo uso, ni con
+     * el {@code LSResourceResolver} custom -- esas tres hipótesis anteriores atacaban síntomas,
+     * no la causa. El fix real son las dos propiedades JAXP que deshabilitan por completo el
+     * acceso externo a DTD/schema (mismo hardening recomendado contra XXE): con
+     * {@code ACCESS_EXTERNAL_DTD}/{@code ACCESS_EXTERNAL_SCHEMA} en {@code ""}, Xerces nunca
+     * vuelve a intentar tocar la red, sin importar cuántas veces se parsee el archivo.
+     */
+    private Schema cargarEsquema(TipoComprobantePerfil perfil) {
+        SchemaFactory schemaFactory = SchemaFactory.newInstance(XMLConstants.W3C_XML_SCHEMA_NS_URI);
+        try {
+            schemaFactory.setProperty(XMLConstants.ACCESS_EXTERNAL_DTD, "");
+            schemaFactory.setProperty(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
+        } catch (SAXException e) {
+            throw new IllegalStateException(
+                    "El SchemaFactory no soporta deshabilitar acceso externo a DTD/schema", e);
+        }
+        String xsdClasspath = perfil.getXsdClasspath();
+        ClassPathResource recursoXsd = new ClassPathResource(xsdClasspath);
+        ClassPathResource recursoXmldsig = new ClassPathResource(XMLDSIG_CLASSPATH);
+        if (!recursoXsd.exists()) {
+            // Bug de empaquetado (XSD no incluido en resources), no un caso a degradar -- ver el
+            // javadoc de la clase.
+            throw new IllegalStateException(
+                    "XSD de " + perfil + " no encontrado en el classpath: " + xsdClasspath);
+        }
+        try {
+            Source[] fuentes = {
+                    new StreamSource(recursoXmldsig.getInputStream(), XMLDSIG_CLASSPATH),
+                    new StreamSource(recursoXsd.getInputStream(), xsdClasspath)
+            };
+            return schemaFactory.newSchema(fuentes);
+        } catch (IOException | SAXException e) {
+            throw new IllegalStateException(
+                    "No se pudo compilar el XSD de " + perfil + ": " + xsdClasspath, e);
+        }
+    }
+
+    /**
+     * Valida el XML contra el XSD v4.4 correspondiente a {@code perfil}.
      *
      * <p>Internamente valida una COPIA del XML con {@link #FIRMA_PLACEHOLDER} insertado -- ver el
      * javadoc de la clase ("Hallazgo arquitectónico mayor..."). El {@code xml} recibido nunca se
@@ -187,14 +214,19 @@ public class XmlFacturaXsdValidator {
      *
      * @param xml el XML ya generado (con declaración {@code <?xml ...?>} y namespace) a validar,
      *     sin firmar
+     * @param perfil el {@link TipoComprobantePerfil} que determina QUÉ esquema del
+     *     {@link #esquemas EnumMap} se usa -- si {@code xml} fue generado para un tipo de
+     *     comprobante distinto al de {@code perfil}, la validación DEBE fallar por mismatch de
+     *     elemento raíz/namespace, nunca pasar silenciosamente (ver
+     *     {@code XmlFacturaXsdValidatorProfileTest}).
      * @throws XmlFacturaInvalidoException si el XML no cumple el esquema -- el mensaje incluye el
      *     detalle de la regla del XSD que falló (via {@link SAXException#getMessage()}), útil
      *     para diagnosticar rechazos de Hacienda más adelante.
      */
-    public void validar(String xml) {
-        String xmlParaEsquema = insertarFirmaPlaceholder(xml);
+    public void validar(String xml, TipoComprobantePerfil perfil) {
+        String xmlParaEsquema = insertarFirmaPlaceholder(xml, perfil);
         try {
-            Validator validator = schema.newValidator();
+            Validator validator = esquemas.get(perfil).newValidator();
             validator.validate(new StreamSource(new StringReader(xmlParaEsquema)));
         } catch (SAXException e) {
             throw new XmlFacturaInvalidoException(e.getMessage(), e);
@@ -206,112 +238,16 @@ public class XmlFacturaXsdValidator {
     }
 
     /**
-     * Inserta {@link #FIRMA_PLACEHOLDER} justo antes del cierre de {@code <FacturaElectronica>}.
-     * Si el cierre esperado no aparece (documento con otra forma, ya inválido de por sí), se
-     * valida el XML tal cual -- el propio XSD reportará el problema real, más útil que enmascararlo.
+     * Inserta {@link #FIRMA_PLACEHOLDER} justo antes del cierre de {@code perfil.cierreRaiz()}.
+     * Si el cierre esperado no aparece (documento con otra forma, ya inválido de por sí -- o
+     * generado para un perfil distinto, ver el javadoc de {@link #validar}), se valida el XML tal
+     * cual -- el propio XSD reportará el problema real, más útil que enmascararlo.
      */
-    private String insertarFirmaPlaceholder(String xml) {
-        int indiceCierre = xml.lastIndexOf(CIERRE_RAIZ);
+    private String insertarFirmaPlaceholder(String xml, TipoComprobantePerfil perfil) {
+        int indiceCierre = xml.lastIndexOf(perfil.cierreRaiz());
         if (indiceCierre < 0) {
             return xml;
         }
         return xml.substring(0, indiceCierre) + FIRMA_PLACEHOLDER + xml.substring(indiceCierre);
-    }
-
-    /**
-     * Implementación mínima de {@link LSInput} solo para exponer un {@link InputStream} del
-     * classpath a {@link LSResourceResolver#resolveResource} -- Xerces únicamente necesita
-     * {@code getByteStream()}/{@code getSystemId()} en este uso, el resto de los métodos del
-     * contrato (character stream, string data, public id, base URI, encoding, certified text) no
-     * aplican para un recurso binario ya resuelto y quedan como no-ops.
-     */
-    private static final class ClasspathLSInput implements LSInput {
-
-        private final InputStream byteStream;
-        private String systemId;
-
-        private ClasspathLSInput(InputStream byteStream) {
-            this.byteStream = byteStream;
-        }
-
-        @Override
-        public Reader getCharacterStream() {
-            return null;
-        }
-
-        @Override
-        public void setCharacterStream(Reader characterStream) {
-            // No aplica -- ver el javadoc de la clase.
-        }
-
-        @Override
-        public InputStream getByteStream() {
-            return byteStream;
-        }
-
-        @Override
-        public void setByteStream(InputStream byteStream) {
-            // No aplica -- el stream se fija en el constructor.
-        }
-
-        @Override
-        public String getStringData() {
-            return null;
-        }
-
-        @Override
-        public void setStringData(String stringData) {
-            // No aplica -- ver el javadoc de la clase.
-        }
-
-        @Override
-        public String getSystemId() {
-            return systemId;
-        }
-
-        @Override
-        public void setSystemId(String systemId) {
-            this.systemId = systemId;
-        }
-
-        @Override
-        public String getPublicId() {
-            return null;
-        }
-
-        @Override
-        public void setPublicId(String publicId) {
-            // No aplica -- ver el javadoc de la clase.
-        }
-
-        @Override
-        public String getBaseURI() {
-            return null;
-        }
-
-        @Override
-        public void setBaseURI(String baseURI) {
-            // No aplica -- ver el javadoc de la clase.
-        }
-
-        @Override
-        public String getEncoding() {
-            return null;
-        }
-
-        @Override
-        public void setEncoding(String encoding) {
-            // No aplica -- ver el javadoc de la clase.
-        }
-
-        @Override
-        public boolean getCertifiedText() {
-            return false;
-        }
-
-        @Override
-        public void setCertifiedText(boolean certifiedText) {
-            // No aplica -- ver el javadoc de la clase.
-        }
     }
 }
