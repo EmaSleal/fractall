@@ -347,6 +347,66 @@ class NotaCreditoDebitoServiceTest {
         assertThat(facturaRepository.count()).isEqualTo(facturasAntes);
     }
 
+    /**
+     * Triangulación del límite exacto de regla 2: {@code CantidadAcreditadaExcedeOrigenException}
+     * se lanza con {@code >}, no {@code >=} (ver el pre-chequeo en {@code NotaCreditoDebitoService}).
+     * El test previo ({@link #crearNotaCreditoConCantidadMayorAOrigenLanzaCantidadAcreditadaExcedeOrigen})
+     * solo prueba 11 sobre un origen de 10 (excede); acreditar exactamente la cantidad completa del
+     * origen (10 sobre 10) es la anulación total de regla 2 y debe permitirse.
+     */
+    @Test
+    void crearNotaCreditoConCantidadIgualAOrigenSePermite() {
+        FacturaOrigenFixture origen = crearFacturaOrigenConLinea(
+                BigDecimal.TEN, new BigDecimal("1000.00000"), new BigDecimal("13.00"), null, "ACEPTADO");
+
+        CrearNotaCreditoRequest request = new CrearNotaCreditoRequest(
+                origen.factura().getId(), "01", null, "Anulación total",
+                List.of(new LineaNotaCreditoRequest(origen.linea().getId(), BigDecimal.TEN)));
+
+        FacturaResponse response = notaCreditoDebitoService.crearNotaCredito(request);
+
+        assertThat(response.lineas().get(0).cantidad()).isEqualByComparingTo(BigDecimal.TEN);
+        assertThat(response.total()).isEqualByComparingTo(origen.factura().getTotal());
+    }
+
+    /**
+     * Triangulación de acumulación (regla 3, pre-chequeo Java): el test previo
+     * ({@link #crearNotaCreditoConMontoQueExcedeElSaldoLanzaMontoNotaCreditoExcedeOrigenAntesDeEscribir})
+     * solo cubre una NC que agota el 100% del saldo de una sola vez. Acá dos NC parciales
+     * (60% + 40%) alcanzan exactamente el saldo total sin exceder -- ambas deben permitirse -- y una
+     * tercera NC, por el monto más pequeño posible, debe rechazarse. Mismo patrón que
+     * {@code topeNotaCreditoAcumulaTresParcialesYBloqueaElMinimoExcesoEnLaCuarta} de
+     * {@code AislamientoMultiTenantTest} (Fase A), pero ejercitando el pre-chequeo de Java en vez
+     * del trigger de motor.
+     */
+    @Test
+    void crearNotaCreditoAcumulaDosParcialesHastaElSaldoExactoYBloqueaLaTerceraPorMinimoExceso() {
+        FacturaOrigenFixture origen = crearFacturaOrigenConLinea(
+                BigDecimal.TEN, new BigDecimal("1000.00000"), new BigDecimal("13.00"), null, "ACEPTADO");
+        // origen: subtotal=10000.00000, impuesto=1300.00000, total=11300.00000
+
+        CrearNotaCreditoRequest primera = new CrearNotaCreditoRequest(
+                origen.factura().getId(), "02", null, "Primera NC (60%)",
+                List.of(new LineaNotaCreditoRequest(origen.linea().getId(), new BigDecimal("6"))));
+        notaCreditoDebitoService.crearNotaCredito(primera);
+        // NC1: subtotal=6000.00000, impuesto=780.00000, total=6780.00000
+
+        CrearNotaCreditoRequest segunda = new CrearNotaCreditoRequest(
+                origen.factura().getId(), "02", null, "Segunda NC (40%, completa el saldo)",
+                List.of(new LineaNotaCreditoRequest(origen.linea().getId(), new BigDecimal("4"))));
+        FacturaResponse respuestaSegunda = notaCreditoDebitoService.crearNotaCredito(segunda);
+        // NC2: subtotal=4000.00000, impuesto=520.00000, total=4520.00000 -> acumulado 11300.00000
+
+        assertThat(respuestaSegunda.total()).isEqualByComparingTo("4520.00000");
+
+        CrearNotaCreditoRequest tercera = new CrearNotaCreditoRequest(
+                origen.factura().getId(), "02", null, "Tercera NC (saldo ya agotado)",
+                List.of(new LineaNotaCreditoRequest(origen.linea().getId(), BigDecimal.ONE)));
+
+        assertThatThrownBy(() -> notaCreditoDebitoService.crearNotaCredito(tercera))
+                .isInstanceOf(MontoNotaCreditoExcedeOrigenException.class);
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Nota de Crédito -- camino feliz: herencia de cliente (regla 6), totales, prorrateo (task 3.5)
     // ─────────────────────────────────────────────────────────────────────────
