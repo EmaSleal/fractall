@@ -156,4 +156,45 @@ class NotaCreditoDebitoControllerTest {
                         .content(body))
                 .andExpect(status().isCreated());
     }
+
+    /**
+     * Cierra el gap CRITICAL detectado por sdd-verify: {@code CrearNotaCreditoRequest} declara
+     * {@code @NotBlank} en {@code codigoReferencia}, pero hasta ahora ningún test del change
+     * mandaba ese campo en blanco y confirmaba el 400 -- solo se probaba la parte estructural
+     * (campos prohibidos ausentes), nunca el rechazo de Bean Validation en sí. No requiere cambio
+     * de producción: la validación ya existe en el DTO.
+     */
+    @Test
+    void crearNotaCreditoConCodigoReferenciaEnBlancoRetorna400() throws Exception {
+        NotaCreditoDebitoService servicio = mock(NotaCreditoDebitoService.class);
+
+        String body = """
+                {"facturaReferenciaId":"%s","codigoReferencia":"","razon":"Corrección",
+                 "lineas":[{"lineaFacturaOrigenId":"%s","cantidad":1}]}
+                """.formatted(UUID.randomUUID(), UUID.randomUUID());
+
+        mockMvcNotaCredito(servicio).perform(post("/notas-credito")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isBadRequest());
+    }
+
+    /**
+     * Contraparte de {@link #crearNotaCreditoConCodigoReferenciaEnBlancoRetorna400} para ND --
+     * mismo gap CRITICAL, mismo DTO field, mismo fix (solo cobertura, sin cambio de producción).
+     */
+    @Test
+    void crearNotaDebitoConCodigoReferenciaEnBlancoRetorna400() throws Exception {
+        NotaCreditoDebitoService servicio = mock(NotaCreditoDebitoService.class);
+
+        String body = """
+                {"facturaReferenciaId":"%s","codigoReferencia":"","razon":"Cargo olvidado",
+                 "lineas":[{"productoId":"%s","cantidad":1,"precioUnitario":500}]}
+                """.formatted(UUID.randomUUID(), UUID.randomUUID());
+
+        mockMvcNotaDebito(servicio).perform(post("/notas-debito")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isBadRequest());
+    }
 }
