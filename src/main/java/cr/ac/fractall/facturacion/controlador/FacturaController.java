@@ -30,20 +30,10 @@ import cr.ac.fractall.shared.PaginaResponse;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 
-import cr.ac.fractall.catalogo.servicio.ClienteExoneracionNoEncontradaException;
-import cr.ac.fractall.catalogo.servicio.ClienteNoEncontradoException;
-import cr.ac.fractall.catalogo.servicio.ProductoNoEncontradoException;
 import cr.ac.fractall.facturacion.dto.CrearFacturaRequest;
 import cr.ac.fractall.facturacion.dto.FacturaResponse;
-import cr.ac.fractall.facturacion.servicio.CondicionVentaInvalidaException;
 import cr.ac.fractall.facturacion.pdf.FacturaPdfService;
 import cr.ac.fractall.facturacion.servicio.ComprobanteXmlPersistenceService;
-import cr.ac.fractall.facturacion.servicio.ContadorConsecutivoNoEncontradoException;
-import cr.ac.fractall.facturacion.servicio.CredencialHaciendaNoEncontradaException;
-import cr.ac.fractall.facturacion.servicio.EmpresaSinCorreoElectronicoException;
-import cr.ac.fractall.facturacion.servicio.ExoneracionNoAplicableAFacturaElectronicaException;
-import cr.ac.fractall.facturacion.servicio.ExoneracionNoPerteneceAlClienteException;
-import cr.ac.fractall.facturacion.servicio.ExoneracionNoVigenteException;
 import cr.ac.fractall.facturacion.servicio.FacturaService;
 import cr.ac.fractall.seguridad.dto.MensajeResponse;
 import jakarta.validation.Valid;
@@ -59,9 +49,18 @@ import jakarta.validation.Valid;
  * controlador invoca {@link ComprobanteXmlPersistenceService#generarYPersistirXml} como una
  * SEGUNDA llamada separada -- nunca dentro de la transacción de {@code crear()} (ver el javadoc
  * de esa clase para el porqué). Si esa segunda llamada falla, la excepción se deja propagar sin
- * capturar (ninguno de los catch de abajo la reconoce): la factura y el comprobante ya quedaron
- * persistidos, pero el cliente HTTP recibe un error en vez de un 201 -- riesgo de fallo parcial
- * documentado y aceptado, ver el javadoc de {@code ComprobanteXmlPersistenceService}.
+ * capturar: la factura y el comprobante ya quedaron persistidos, pero el cliente HTTP recibe un
+ * error en vez de un 201 -- riesgo de fallo parcial documentado y aceptado, ver el javadoc de
+ * {@code ComprobanteXmlPersistenceService}.
+ *
+ * <p><b>Release 2 / Fase B (ver diseño D-B2/D-G):</b> el try/catch explícito de {@link #crear}
+ * se eliminó -- las 10 excepciones que capturaba ahora se manejan globalmente en
+ * {@code GlobalExceptionHandler} (ver su javadoc), con los mismos statuses. La secuencia de 2
+ * llamadas ({@code facturaService.crear} → {@code comprobanteXmlPersistenceService.generarYPersistirXml})
+ * se mantiene EXPLÍCITA en este controlador (decisión D-B2: no se colapsa en una sola llamada de
+ * fachada) -- la misma secuencia de 2 pasos que usarán {@code NotaCreditoController}/
+ * {@code NotaDebitoController} a partir de la Fase 3 de este release, vía
+ * {@code ComprobanteEmisionService#procesarXmlYEnvio}.
  */
 @Tag(name = "Facturas", description = "Emisión, consulta y reenvío de facturas electrónicas")
 @Validated
@@ -185,37 +184,9 @@ public class FacturaController {
     })
     @SecurityRequirement(name = "bearerAuth")
     @PostMapping
-    public ResponseEntity<?> crear(@Valid @RequestBody CrearFacturaRequest request) {
-        try {
-            FacturaResponse response = facturaService.crear(request);
-            comprobanteXmlPersistenceService.generarYPersistirXml(response.comprobanteId());
-            return ResponseEntity.status(HttpStatus.CREATED).body(response);
-        } catch (ClienteNoEncontradoException | ProductoNoEncontradoException
-                | ClienteExoneracionNoEncontradaException excepcion) {
-            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new MensajeResponse(excepcion.getMessage()));
-        } catch (ExoneracionNoPerteneceAlClienteException
-                | ExoneracionNoAplicableAFacturaElectronicaException
-                | ExoneracionNoVigenteException
-                | CondicionVentaInvalidaException excepcion) {
-            return ResponseEntity.badRequest().body(new MensajeResponse(excepcion.getMessage()));
-        } catch (ContadorConsecutivoNoEncontradoException | CredencialHaciendaNoEncontradaException
-                | EmpresaSinCorreoElectronicoException excepcion) {
-            // No debería ocurrir en operación normal -- ConsecutivoService crea la fila de
-            // contador_consecutivo de forma perezosa si no existe (ver su javadoc), y toda empresa
-            // debería tener su CredencialHacienda y su correo electrónico configurados antes de
-            // facturar (Emisor.CorreoElectronico es obligatorio en el XSD -- ver el javadoc de
-            // EmpresaSinCorreoElectronicoException). Si cualquiera de las tres llega aquí de todos
-            // modos, es un fallo real de infraestructura/configuración, no un error de datos del
-            // cliente -- 503, nunca un 500 crudo ni 400/404/409. Para
-            // CredencialHaciendaNoEncontradaException específicamente: la factura y el comprobante
-            // ya quedaron persistidos (en FIRMADO) para este punto -- ver el javadoc de
-            // ComprobanteXmlPersistenceService sobre por qué ese estado parcial es un riesgo
-            // aceptado y no algo que este catch intente revertir. EmpresaSinCorreoElectronicoException
-            // se lanza más temprano en el mismo flujo (dentro de la generación del XML, antes de
-            // firmar/subir), pero facturaService.crear() de todos modos ya hizo commit de la
-            // factura y el comprobante (en GENERADO) ANTES de esta llamada -- mismo estado parcial
-            // aceptado, solo que en GENERADO en vez de FIRMADO.
-            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(new MensajeResponse(excepcion.getMessage()));
-        }
+    public ResponseEntity<FacturaResponse> crear(@Valid @RequestBody CrearFacturaRequest request) {
+        FacturaResponse response = facturaService.crear(request);
+        comprobanteXmlPersistenceService.generarYPersistirXml(response.comprobanteId());
+        return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 }

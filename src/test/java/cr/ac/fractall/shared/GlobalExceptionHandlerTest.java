@@ -22,8 +22,18 @@ import tools.jackson.databind.ObjectMapper;
 
 import cr.ac.fractall.catalogo.controlador.ClienteController;
 import cr.ac.fractall.catalogo.dto.CrearClienteRequest;
+import cr.ac.fractall.catalogo.servicio.ClienteExoneracionNoEncontradaException;
+import cr.ac.fractall.catalogo.servicio.ClienteNoEncontradoException;
 import cr.ac.fractall.catalogo.servicio.ClienteService;
+import cr.ac.fractall.catalogo.servicio.ProductoNoEncontradoException;
 import cr.ac.fractall.facturacion.servicio.ComprobanteNoReenviableException;
+import cr.ac.fractall.facturacion.servicio.CondicionVentaInvalidaException;
+import cr.ac.fractall.facturacion.servicio.ContadorConsecutivoNoEncontradoException;
+import cr.ac.fractall.facturacion.servicio.CredencialHaciendaNoEncontradaException;
+import cr.ac.fractall.facturacion.servicio.EmpresaSinCorreoElectronicoException;
+import cr.ac.fractall.facturacion.servicio.ExoneracionNoAplicableAFacturaElectronicaException;
+import cr.ac.fractall.facturacion.servicio.ExoneracionNoPerteneceAlClienteException;
+import cr.ac.fractall.facturacion.servicio.ExoneracionNoVigenteException;
 import cr.ac.fractall.hacienda.servicio.HaciendaApiService;
 import cr.ac.fractall.hacienda.servicio.TipoCambioNoDisponibleException;
 
@@ -111,5 +121,143 @@ class GlobalExceptionHandlerTest {
         public void reenviar(@PathVariable UUID id) {
             throw new ComprobanteNoReenviableException(facturaId, "ACEPTADO");
         }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Fase B / PR2: migración de las 10 excepciones que FacturaController capturaba
+    // explícitamente (D-G) -- ahora mapeadas globalmente por el advice, con los mismos 3
+    // statuses agrupados y mismo MensajeResponse. "Ensanchamiento de comportamiento registrado":
+    // estas 10 excepciones ahora se capturan en CUALQUIER endpoint, no solo POST /facturas.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /** Controlador mínimo para disparar las 10 excepciones migradas desde cualquier endpoint. */
+    @RestController
+    static class ControladorDeExcepcionesMigradasStub {
+
+        @PostMapping("/test/cliente-no-encontrado")
+        public void clienteNoEncontrado() {
+            throw new ClienteNoEncontradoException(UUID.randomUUID());
+        }
+
+        @PostMapping("/test/producto-no-encontrado")
+        public void productoNoEncontrado() {
+            throw new ProductoNoEncontradoException(UUID.randomUUID());
+        }
+
+        @PostMapping("/test/cliente-exoneracion-no-encontrada")
+        public void clienteExoneracionNoEncontrada() {
+            throw new ClienteExoneracionNoEncontradaException(UUID.randomUUID());
+        }
+
+        @PostMapping("/test/exoneracion-no-pertenece-al-cliente")
+        public void exoneracionNoPerteneceAlCliente() {
+            throw new ExoneracionNoPerteneceAlClienteException(UUID.randomUUID(), UUID.randomUUID());
+        }
+
+        @PostMapping("/test/exoneracion-no-aplicable")
+        public void exoneracionNoAplicable() {
+            throw new ExoneracionNoAplicableAFacturaElectronicaException(UUID.randomUUID(), "01");
+        }
+
+        @PostMapping("/test/exoneracion-no-vigente")
+        public void exoneracionNoVigente() {
+            throw new ExoneracionNoVigenteException(UUID.randomUUID());
+        }
+
+        @PostMapping("/test/condicion-venta-invalida")
+        public void condicionVentaInvalida() {
+            throw new CondicionVentaInvalidaException("plazoCredito es obligatorio");
+        }
+
+        @PostMapping("/test/contador-consecutivo-no-encontrado")
+        public void contadorConsecutivoNoEncontrado() {
+            throw new ContadorConsecutivoNoEncontradoException(UUID.randomUUID(), "SANDBOX", "01");
+        }
+
+        @PostMapping("/test/credencial-hacienda-no-encontrada")
+        public void credencialHaciendaNoEncontrada() {
+            throw new CredencialHaciendaNoEncontradaException(UUID.randomUUID(), "SANDBOX");
+        }
+
+        @PostMapping("/test/empresa-sin-correo")
+        public void empresaSinCorreo() {
+            throw new EmpresaSinCorreoElectronicoException(UUID.randomUUID());
+        }
+    }
+
+    private MockMvc mockMvcConExcepcionesMigradas() {
+        return MockMvcBuilders.standaloneSetup(new ControladorDeExcepcionesMigradasStub())
+                .setControllerAdvice(new GlobalExceptionHandler())
+                .build();
+    }
+
+    @Test
+    void handler_clienteNoEncontrado_devuelve404() throws Exception {
+        mockMvcConExcepcionesMigradas().perform(post("/test/cliente-no-encontrado"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.mensaje").isString());
+    }
+
+    @Test
+    void handler_productoNoEncontrado_devuelve404() throws Exception {
+        mockMvcConExcepcionesMigradas().perform(post("/test/producto-no-encontrado"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.mensaje").isString());
+    }
+
+    @Test
+    void handler_clienteExoneracionNoEncontrada_devuelve404() throws Exception {
+        mockMvcConExcepcionesMigradas().perform(post("/test/cliente-exoneracion-no-encontrada"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.mensaje").isString());
+    }
+
+    @Test
+    void handler_exoneracionNoPerteneceAlCliente_devuelve400() throws Exception {
+        mockMvcConExcepcionesMigradas().perform(post("/test/exoneracion-no-pertenece-al-cliente"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.mensaje").isString());
+    }
+
+    @Test
+    void handler_exoneracionNoAplicable_devuelve400() throws Exception {
+        mockMvcConExcepcionesMigradas().perform(post("/test/exoneracion-no-aplicable"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.mensaje").isString());
+    }
+
+    @Test
+    void handler_exoneracionNoVigente_devuelve400() throws Exception {
+        mockMvcConExcepcionesMigradas().perform(post("/test/exoneracion-no-vigente"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.mensaje").isString());
+    }
+
+    @Test
+    void handler_condicionVentaInvalida_devuelve400() throws Exception {
+        mockMvcConExcepcionesMigradas().perform(post("/test/condicion-venta-invalida"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.mensaje").isString());
+    }
+
+    @Test
+    void handler_contadorConsecutivoNoEncontrado_devuelve503() throws Exception {
+        mockMvcConExcepcionesMigradas().perform(post("/test/contador-consecutivo-no-encontrado"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.mensaje").isString());
+    }
+
+    @Test
+    void handler_credencialHaciendaNoEncontrada_devuelve503() throws Exception {
+        mockMvcConExcepcionesMigradas().perform(post("/test/credencial-hacienda-no-encontrada"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.mensaje").isString());
+    }
+
+    @Test
+    void handler_empresaSinCorreo_devuelve503() throws Exception {
+        mockMvcConExcepcionesMigradas().perform(post("/test/empresa-sin-correo"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.mensaje").isString());
     }
 }

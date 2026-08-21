@@ -23,9 +23,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import cr.ac.fractall.catalogo.repositorio.ClienteExoneracionRepository;
 import cr.ac.fractall.catalogo.repositorio.ClienteRepository;
-import cr.ac.fractall.catalogo.repositorio.ProductoRepository;
 import cr.ac.fractall.empresa.repositorio.EmpresaRepository;
 import cr.ac.fractall.facturacion.dto.FacturaResumenResponse;
 import cr.ac.fractall.facturacion.dto.FacturaResponse;
@@ -81,10 +79,7 @@ class FacturaServiceListarTest {
 
         facturaService = new FacturaService(
                 mock(ClienteRepository.class),
-                mock(ProductoRepository.class),
-                mock(ClienteExoneracionRepository.class),
                 mock(EmpresaRepository.class),
-                mock(ConsecutivoService.class),
                 facturaRepository,
                 lineaFacturaRepository,
                 comprobanteElectronicoRepository,
@@ -94,8 +89,8 @@ class FacturaServiceListarTest {
                 facturaOtrosCargosRepository,
                 facturaInformacionReferenciaRepository,
                 facturaMedioPagoRepository,
-                mock(ComprobanteXmlCifradoDescargador.class),
-                mock(ComprobanteHaciendaEnvioService.class),
+                mock(LineaFacturaEnsamblador.class),
+                mock(ComprobanteEmisionService.class),
                 mock(HaciendaApiService.class));
     }
 

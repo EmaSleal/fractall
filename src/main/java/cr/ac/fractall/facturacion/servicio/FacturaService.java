@@ -2,13 +2,10 @@ package cr.ac.fractall.facturacion.servicio;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
-import java.util.ArrayList;
 import java.util.List;
-import java.util.Set;
 import java.util.UUID;
 
 import org.springframework.security.core.Authentication;
@@ -21,39 +18,29 @@ import lombok.extern.slf4j.Slf4j;
 import java.time.LocalDate;
 
 import cr.ac.fractall.catalogo.modelo.Cliente;
-import cr.ac.fractall.catalogo.modelo.ClienteExoneracion;
-import cr.ac.fractall.catalogo.modelo.Producto;
 import cr.ac.fractall.catalogo.modelo.TipoIdentificacion;
-import cr.ac.fractall.catalogo.repositorio.ClienteExoneracionRepository;
 import cr.ac.fractall.catalogo.repositorio.ClienteRepository;
-import cr.ac.fractall.catalogo.repositorio.ProductoRepository;
-import cr.ac.fractall.catalogo.servicio.ClienteExoneracionNoEncontradaException;
-import cr.ac.fractall.catalogo.servicio.ClienteExoneracionService;
 import cr.ac.fractall.catalogo.servicio.ClienteNoEncontradoException;
-import cr.ac.fractall.catalogo.servicio.ProductoNoEncontradoException;
 import cr.ac.fractall.empresa.modelo.Empresa;
 import cr.ac.fractall.empresa.repositorio.EmpresaRepository;
-import cr.ac.fractall.facturacion.dto.CodigoComercialRequest;
 import cr.ac.fractall.facturacion.dto.CrearFacturaRequest;
-import cr.ac.fractall.facturacion.dto.DescuentoRequest;
-import cr.ac.fractall.facturacion.dto.ExoneracionRequest;
 import cr.ac.fractall.facturacion.dto.FacturaResumenResponse;
 import cr.ac.fractall.facturacion.dto.FacturaResponse;
-import cr.ac.fractall.facturacion.dto.LineaFacturaItemRequest;
 import cr.ac.fractall.facturacion.dto.LineaFacturaResponse;
 import cr.ac.fractall.facturacion.dto.MedioPagoRequest;
 import cr.ac.fractall.facturacion.dto.OtrosCargoRequest;
 import cr.ac.fractall.facturacion.dto.ReferenciaRequest;
+import cr.ac.fractall.facturacion.fe.TipoComprobantePerfil;
 import cr.ac.fractall.shared.PaginaResponse;
 import cr.ac.fractall.facturacion.modelo.ComprobanteElectronico;
 import cr.ac.fractall.facturacion.modelo.Factura;
 import cr.ac.fractall.facturacion.modelo.FacturaInformacionReferencia;
 import cr.ac.fractall.facturacion.modelo.FacturaMedioPago;
 import cr.ac.fractall.facturacion.modelo.FacturaOtrosCargos;
-import cr.ac.fractall.facturacion.modelo.ImpuestoLineaExoneracion;
 import cr.ac.fractall.facturacion.modelo.LineaCodigoComercial;
 import cr.ac.fractall.facturacion.modelo.LineaDescuento;
 import cr.ac.fractall.facturacion.modelo.LineaFactura;
+import cr.ac.fractall.facturacion.modelo.ImpuestoLineaExoneracion;
 import cr.ac.fractall.facturacion.repositorio.ComprobanteElectronicoRepository;
 import cr.ac.fractall.facturacion.repositorio.FacturaInformacionReferenciaRepository;
 import cr.ac.fractall.facturacion.repositorio.FacturaMedioPagoRepository;
@@ -84,15 +71,19 @@ import cr.ac.fractall.tenant.TenantContext;
  * {@code fn_validar_mismo_tenant} (V10) son defensa en profundidad a nivel de motor; las
  * excepciones de dominio limpias que ve el cliente HTTP las lanza este método, ANTES de intentar
  * persistir -- mismo principio ya corregido en revisiones de código de las Fases 5/6.
+ *
+ * <p><b>Release 2 / Fase B (ver diseño D-B/D-E):</b> el armado de líneas desde catálogo se delegó
+ * a {@link LineaFacturaEnsamblador}, y la asignación de consecutivo+clave numérica+creación de
+ * {@code ComprobanteElectronico} (además de {@link #reenviar}) se delegó a
+ * {@link ComprobanteEmisionService} -- ambas extracciones type-parameterizadas, compartidas con
+ * Nota de Crédito/Débito a partir de la Fase 3 de este release. {@link #crear} sigue siendo el
+ * dueño de la transacción completa: {@code comprobanteEmisionService.registrarComprobante} corre
+ * con {@code @Transactional(propagation = MANDATORY)} precisamente para seguir viviendo DENTRO de
+ * esta misma transacción, preservando el invariante de rollback descrito arriba.
  */
 @Slf4j
 @Service
 public class FacturaService {
-
-    /** Release 1 solo emite Factura Electrónica -- sección 8.1. */
-    private static final String TIPO_COMPROBANTE_FACTURA_ELECTRONICA = "01";
-
-    private static final String ESTADO_GENERADO = "GENERADO";
 
     private static final String CONDICION_VENTA_DEFECTO = "01";
     private static final String CONDICION_VENTA_CREDITO = "02";
@@ -100,21 +91,11 @@ public class FacturaService {
     private static final String MONEDA_DEFECTO = "CRC";
     private static final String MONEDA_DOLAR = "USD";
     private static final BigDecimal TIPO_CAMBIO_DEFECTO = new BigDecimal("1.00000");
-    private static final String TIPO_TRANSACCION_DEFECTO = "01";
-
-    /**
-     * Catálogo oficial de 12 tipos de documento de exoneración (sección 4.15.1); estos 4 son
-     * exclusivos de Nota de Crédito/Débito y quedan bloqueados para Factura Electrónica.
-     */
-    private static final Set<String> TIPOS_EXONERACION_EXCLUSIVOS_NC_ND = Set.of("01", "05", "06", "07");
 
     private static final int ESCALA_MONETARIA = 5;
 
     private final ClienteRepository clienteRepository;
-    private final ProductoRepository productoRepository;
-    private final ClienteExoneracionRepository clienteExoneracionRepository;
     private final EmpresaRepository empresaRepository;
-    private final ConsecutivoService consecutivoService;
     private final FacturaRepository facturaRepository;
     private final LineaFacturaRepository lineaFacturaRepository;
     private final ComprobanteElectronicoRepository comprobanteElectronicoRepository;
@@ -124,16 +105,13 @@ public class FacturaService {
     private final FacturaOtrosCargosRepository facturaOtrosCargosRepository;
     private final FacturaInformacionReferenciaRepository facturaInformacionReferenciaRepository;
     private final FacturaMedioPagoRepository facturaMedioPagoRepository;
-    private final ComprobanteXmlCifradoDescargador comprobanteXmlCifradoDescargador;
-    private final ComprobanteHaciendaEnvioService comprobanteHaciendaEnvioService;
+    private final LineaFacturaEnsamblador lineaFacturaEnsamblador;
+    private final ComprobanteEmisionService comprobanteEmisionService;
     private final HaciendaApiService haciendaApiService;
 
     public FacturaService(
             ClienteRepository clienteRepository,
-            ProductoRepository productoRepository,
-            ClienteExoneracionRepository clienteExoneracionRepository,
             EmpresaRepository empresaRepository,
-            ConsecutivoService consecutivoService,
             FacturaRepository facturaRepository,
             LineaFacturaRepository lineaFacturaRepository,
             ComprobanteElectronicoRepository comprobanteElectronicoRepository,
@@ -143,14 +121,11 @@ public class FacturaService {
             FacturaOtrosCargosRepository facturaOtrosCargosRepository,
             FacturaInformacionReferenciaRepository facturaInformacionReferenciaRepository,
             FacturaMedioPagoRepository facturaMedioPagoRepository,
-            ComprobanteXmlCifradoDescargador comprobanteXmlCifradoDescargador,
-            ComprobanteHaciendaEnvioService comprobanteHaciendaEnvioService,
+            LineaFacturaEnsamblador lineaFacturaEnsamblador,
+            ComprobanteEmisionService comprobanteEmisionService,
             HaciendaApiService haciendaApiService) {
         this.clienteRepository = clienteRepository;
-        this.productoRepository = productoRepository;
-        this.clienteExoneracionRepository = clienteExoneracionRepository;
         this.empresaRepository = empresaRepository;
-        this.consecutivoService = consecutivoService;
         this.facturaRepository = facturaRepository;
         this.lineaFacturaRepository = lineaFacturaRepository;
         this.comprobanteElectronicoRepository = comprobanteElectronicoRepository;
@@ -160,8 +135,8 @@ public class FacturaService {
         this.facturaOtrosCargosRepository = facturaOtrosCargosRepository;
         this.facturaInformacionReferenciaRepository = facturaInformacionReferenciaRepository;
         this.facturaMedioPagoRepository = facturaMedioPagoRepository;
-        this.comprobanteXmlCifradoDescargador = comprobanteXmlCifradoDescargador;
-        this.comprobanteHaciendaEnvioService = comprobanteHaciendaEnvioService;
+        this.lineaFacturaEnsamblador = lineaFacturaEnsamblador;
+        this.comprobanteEmisionService = comprobanteEmisionService;
         this.haciendaApiService = haciendaApiService;
     }
 
@@ -284,40 +259,16 @@ public class FacturaService {
 
     /**
      * Reenvía a Hacienda un comprobante atascado en un estado terminal/inalcanzable (FIRMADO,
-     * RECHAZADO, ERROR). Descarga el XML firmado desde Object Storage, restablece el contador de
-     * intentos de envío y llama a {@link ComprobanteHaciendaEnvioService#enviarComprobante}.
-     *
-     * <p>Deliberadamente SIN {@code @Transactional}: la descarga del XML y el envío a Hacienda son
-     * operaciones de red que no deben correr dentro de una transacción abierta -- mismo principio
-     * ya documentado en {@code ComprobanteXmlPersistenceService} y {@code ComprobanteHaciendaEnvioService}.
-     *
-     * <p>{@code intentosConsulta} no se toca aquí: es un contador de consultas, no de envíos;
-     * el reenvío es una operación de envío a Hacienda, no de consulta.
+     * RECHAZADO, ERROR). Delegado a {@link ComprobanteEmisionService#reenviar} (Fase B, ver el
+     * javadoc de la clase) -- {@code FacturaService} sigue siendo el dueño de la proyección
+     * {@link FacturaResponse} devuelta al cliente HTTP, vía {@link #obtener}.
      *
      * @throws FacturaNoEncontradaException si no existe comprobante para {@code facturaId}
      * @throws ComprobanteNoReenviableException si el estado no es FIRMADO/RECHAZADO/ERROR, o si
      *     {@code xmlComprobanteReferencia} es null
      */
     public FacturaResponse reenviar(UUID facturaId) {
-        ComprobanteElectronico comprobante = comprobanteElectronicoRepository.findByFacturaId(facturaId)
-                .orElseThrow(() -> new FacturaNoEncontradaException(facturaId));
-
-        if (!Set.of("FIRMADO", "RECHAZADO", "ERROR").contains(comprobante.getEstado())) {
-            throw new ComprobanteNoReenviableException(facturaId, comprobante.getEstado());
-        }
-        if (comprobante.getXmlComprobanteReferencia() == null) {
-            throw new ComprobanteNoReenviableException(facturaId, comprobante.getEstado());
-        }
-
-        byte[] xmlBytes = comprobanteXmlCifradoDescargador.descargarYDescifrar(
-                comprobante.getXmlComprobanteReferencia());
-        String xmlFirmado = new String(xmlBytes, StandardCharsets.UTF_8);
-
-        comprobante.setIntentosEnvio(0);
-        comprobanteElectronicoRepository.save(comprobante);
-
-        comprobanteHaciendaEnvioService.enviarComprobante(xmlFirmado, comprobante);
-
+        comprobanteEmisionService.reenviar(facturaId);
         return obtener(facturaId);
     }
 
@@ -339,76 +290,13 @@ public class FacturaService {
         ZonedDateTime ahoraUtc = ZonedDateTime.now(ZoneOffset.UTC);
         LocalDateTime ahora = ahoraUtc.toLocalDateTime();
 
-        List<LineaFactura> lineas = new ArrayList<>();
-        // Parallel lists to store child data per line (before lines have ids)
-        List<List<CodigoComercialRequest>> codigosComerciales = new ArrayList<>();
-        List<List<DescuentoRequest>> descuentosPorLinea = new ArrayList<>();
-        List<ExoneracionRequest> exoneracionesPorLinea = new ArrayList<>();
-
-        BigDecimal subtotalFactura = BigDecimal.ZERO;
-        BigDecimal totalImpuestoFactura = BigDecimal.ZERO;
-        int numeroLinea = 1;
-
-        for (LineaFacturaItemRequest item : request.lineas()) {
-            Producto producto = productoRepository.findById(item.productoId())
-                    .orElseThrow(() -> new ProductoNoEncontradoException(item.productoId()));
-
-            // Compute MontoTotal = precioUnitario * cantidad (before discounts)
-            BigDecimal montoTotal = item.cantidad().multiply(item.precioUnitario())
-                    .setScale(ESCALA_MONETARIA, RoundingMode.HALF_UP);
-
-            // Compute subtotalLinea = montoTotal - Σ descuentos (taxable base)
-            BigDecimal totalDescuentosLinea = BigDecimal.ZERO;
-            if (item.descuentos() != null) {
-                for (DescuentoRequest d : item.descuentos()) {
-                    if (d.montoDescuento() != null) {
-                        totalDescuentosLinea = totalDescuentosLinea.add(d.montoDescuento());
-                    }
-                }
-            }
-            BigDecimal subtotalLinea = montoTotal.subtract(totalDescuentosLinea)
-                    .setScale(ESCALA_MONETARIA, RoundingMode.HALF_UP);
-
-            BigDecimal impuestoLinea = subtotalLinea
-                    .multiply(producto.getPorcentajeImpuesto())
-                    .divide(BigDecimal.valueOf(100), ESCALA_MONETARIA, RoundingMode.HALF_UP);
-
-            LineaFactura linea = new LineaFactura();
-            linea.setProductoId(producto.getId());
-            linea.setNumeroLinea(numeroLinea++);
-            linea.setCantidad(item.cantidad());
-            linea.setPrecioUnitario(item.precioUnitario());
-            linea.setSubtotal(subtotalLinea);
-            linea.setCodigoCabysAplicado(producto.getCodigoCabys());
-            linea.setGravadoAplicado(producto.isGravado());
-            linea.setPorcentajeImpuestoAplicado(producto.getPorcentajeImpuesto());
-
-            // New V11 scalar fields
-            linea.setTipoTransaccion(item.tipoTransaccion() != null ? item.tipoTransaccion() : TIPO_TRANSACCION_DEFECTO);
-            linea.setUnidadMedidaComercial(item.unidadMedidaComercial());
-            linea.setIvaCobradoFabrica(item.ivaCobradoFabrica() != null ? item.ivaCobradoFabrica() : BigDecimal.ZERO);
-            linea.setFactorCalculoIva(item.factorCalculoIva());
-
-            BigDecimal montoExoneracionAplicado = BigDecimal.ZERO;
-
-            // Inline exoneracion takes precedence over legacy exoneracionId path
-            if (item.exoneracion() != null) {
-                // Inline path: montoExoneracion comes from the request block
-                montoExoneracionAplicado = item.exoneracion().montoExoneracion() != null
-                        ? item.exoneracion().montoExoneracion() : BigDecimal.ZERO;
-                // Do NOT set legacy exoneracionId columns for inline block lines
-            } else if (item.exoneracionId() != null) {
-                montoExoneracionAplicado = aplicarExoneracion(item.exoneracionId(), cliente, linea, impuestoLinea);
-            }
-
-            codigosComerciales.add(item.codigosComerciales() != null ? item.codigosComerciales() : List.of());
-            descuentosPorLinea.add(item.descuentos() != null ? item.descuentos() : List.of());
-            exoneracionesPorLinea.add(item.exoneracion());
-
-            lineas.add(linea);
-            subtotalFactura = subtotalFactura.add(subtotalLinea);
-            totalImpuestoFactura = totalImpuestoFactura.add(impuestoLinea).subtract(montoExoneracionAplicado);
-        }
+        // Armado de líneas desde catálogo delegado a LineaFacturaEnsamblador (Fase B, ver diseño
+        // D-E) -- no persiste nada todavía, las líneas aún no tienen facturaId.
+        LineaFacturaEnsamblador.LineasEnsambladas ensambladas = lineaFacturaEnsamblador.ensamblar(
+                request.lineas(), cliente, TipoComprobantePerfil.FACTURA_ELECTRONICA);
+        List<LineaFactura> lineas = ensambladas.lineas();
+        BigDecimal subtotalFactura = ensambladas.subtotal();
+        BigDecimal totalImpuestoFactura = ensambladas.totalImpuesto();
 
         BigDecimal totalOtrosCargos = BigDecimal.ZERO;
         if (request.otrosCargos() != null) {
@@ -451,40 +339,16 @@ public class FacturaService {
 
         facturaRepository.saveAndFlush(factura);
 
-        // Persist lines (need factura.id first)
-        for (LineaFactura linea : lineas) {
-            linea.setFacturaId(factura.getId());
-        }
-        lineaFacturaRepository.saveAll(lineas);
-        lineaFacturaRepository.flush();
+        // Persistencia de líneas + hijos delegada a LineaFacturaEnsamblador (Fase B, ver diseño
+        // D-E) -- fija facturaId en cada línea (recién disponible) y persiste sus hijos.
+        lineaFacturaEnsamblador.persistir(factura.getId(), ensambladas);
 
-        // Persist line-level children
-        for (int i = 0; i < lineas.size(); i++) {
-            LineaFactura linea = lineas.get(i);
-            persistirCodigosComerciales(linea.getId(), codigosComerciales.get(i));
-            persistirDescuentos(linea.getId(), descuentosPorLinea.get(i));
-            persistirExoneracionInline(linea.getId(), exoneracionesPorLinea.get(i));
-        }
-
-        // Reclamo del consecutivo DENTRO de la misma transacción que ya escribió factura/líneas
-        long numeroConsecutivo = consecutivoService.siguienteConsecutivo(
-                empresaId, empresa.getAmbienteHacienda(), TIPO_COMPROBANTE_FACTURA_ELECTRONICA);
-
-        String consecutivoFormateado = ClaveNumericaGenerator.formatearConsecutivo(
-                numeroConsecutivo, TIPO_COMPROBANTE_FACTURA_ELECTRONICA);
-        String claveNumerica = ClaveNumericaGenerator.generar(
-                empresa.getNumeroIdentificacion(), numeroConsecutivo, TIPO_COMPROBANTE_FACTURA_ELECTRONICA, ahoraUtc);
-
-        ComprobanteElectronico comprobante = new ComprobanteElectronico();
-        comprobante.setFacturaId(factura.getId());
-        comprobante.setAmbienteHacienda(empresa.getAmbienteHacienda());
-        comprobante.setTipoComprobante(TIPO_COMPROBANTE_FACTURA_ELECTRONICA);
-        comprobante.setConsecutivo(consecutivoFormateado);
-        comprobante.setClaveNumerica(claveNumerica);
-        comprobante.setEstado(ESTADO_GENERADO);
-        comprobante.setIntentosEnvio(0);
-        comprobante.setFechaEmision(ahora);
-        comprobanteElectronicoRepository.saveAndFlush(comprobante);
+        // Reclamo del consecutivo + clave numérica + creación de ComprobanteElectronico delegado a
+        // ComprobanteEmisionService (Fase B, ver diseño D-B) -- MANDATORY: sigue corriendo DENTRO
+        // de esta misma transacción, preservando el invariante de rollback de la Fase 7 (ver el
+        // javadoc de la clase).
+        ComprobanteElectronico comprobante = comprobanteEmisionService.registrarComprobante(
+                factura, TipoComprobantePerfil.FACTURA_ELECTRONICA, empresa, ahoraUtc);
 
         // Persist factura-level children (after factura has id)
         persistirOtrosCargos(factura.getId(), request.otrosCargos());
@@ -510,55 +374,6 @@ public class FacturaService {
         }).toList();
         return FacturaResponse.desde(factura, comprobante, lineasResponse,
                 otrosCargosGuardados, referenciasGuardadas, mediosPagoGuardados, cliente.getNombre());
-    }
-
-    // =========================================================================
-    // Line-level child persistence
-    // =========================================================================
-
-    private void persistirCodigosComerciales(UUID lineaId, List<CodigoComercialRequest> codigos) {
-        if (codigos == null || codigos.isEmpty()) return;
-        short orden = 1;
-        for (CodigoComercialRequest req : codigos) {
-            LineaCodigoComercial entidad = new LineaCodigoComercial();
-            entidad.setLineaId(lineaId);
-            entidad.setOrden(orden++);
-            entidad.setTipo(req.tipo());
-            entidad.setCodigo(req.codigo());
-            lineaCodigoComercialRepository.save(entidad);
-        }
-    }
-
-    private void persistirDescuentos(UUID lineaId, List<DescuentoRequest> descuentos) {
-        if (descuentos == null || descuentos.isEmpty()) return;
-        short orden = 1;
-        for (DescuentoRequest req : descuentos) {
-            LineaDescuento entidad = new LineaDescuento();
-            entidad.setLineaId(lineaId);
-            entidad.setOrden(orden++);
-            entidad.setMontoDescuento(req.montoDescuento());
-            entidad.setCodigoDescuento(req.codigoDescuento());
-            entidad.setCodigoDescuentoOtro(req.codigoDescuentoOtro());
-            entidad.setNaturalezaDescuento(req.naturalezaDescuento());
-            lineaDescuentoRepository.save(entidad);
-        }
-    }
-
-    private void persistirExoneracionInline(UUID lineaId, ExoneracionRequest req) {
-        if (req == null) return;
-        ImpuestoLineaExoneracion entidad = new ImpuestoLineaExoneracion();
-        entidad.setLineaId(lineaId);
-        entidad.setTipoDocumentoEx1(req.tipoDocumentoEx1());
-        entidad.setTipoDocumentoOtro(req.tipoDocumentoOtro());
-        entidad.setNumeroDocumento(req.numeroDocumento());
-        entidad.setArticulo(req.articulo());
-        entidad.setInciso(req.inciso());
-        entidad.setNombreInstitucion(req.nombreInstitucion());
-        entidad.setNombreInstitucionOtros(req.nombreInstitucionOtros());
-        entidad.setFechaEmisionEx(req.fechaEmisionEx() != null ? req.fechaEmisionEx().atStartOfDay() : null);
-        entidad.setTarifaExonerada(req.tarifaExonerada());
-        entidad.setMontoExoneracion(req.montoExoneracion() != null ? req.montoExoneracion() : BigDecimal.ZERO);
-        impuestoLineaExoneracionRepository.save(entidad);
     }
 
     // =========================================================================
@@ -689,46 +504,6 @@ public class FacturaService {
             throw new CondicionVentaInvalidaException(
                     "plazoCredito es obligatorio cuando condicionVenta = '02' (crédito)");
         }
-    }
-
-    /**
-     * Verifica y aplica una exoneración a una línea, en este orden (sección 4.15.2): (i)
-     * pertenece al mismo cliente de la factura, (ii) está vigente (reusa
-     * {@code ClienteExoneracionService#estaVigente}, no la reimplementa), (iii) su
-     * {@code tipoDocumento} no es uno de los 4 exclusivos de Nota de Crédito/Débito.
-     *
-     * <p>Fórmula del monto de exoneración: {@code impuesto * porcentaje / 100} -- una exoneración
-     * de Hacienda reduce la carga TRIBUTARIA (el IVA), nunca el precio comercial del bien o
-     * servicio; aplicarla sobre subtotal+impuesto en vez de sobre el impuesto solo regalaría
-     * también parte del precio base y, en el límite de un 100% de exoneración, podría llevar el
-     * impuesto total de la factura a un valor negativo -- una factura no puede declarar impuesto
-     * negativo ante Hacienda. Con esta fórmula, {@code montoExoneracionAplicado} queda siempre
-     * acotado entre 0 y el propio {@code impuestoLinea}, nunca puede excederlo.
-     */
-    private BigDecimal aplicarExoneracion(
-            UUID exoneracionId, Cliente cliente, LineaFactura linea, BigDecimal impuestoLinea) {
-        ClienteExoneracion exoneracion = clienteExoneracionRepository.findById(exoneracionId)
-                .orElseThrow(() -> new ClienteExoneracionNoEncontradaException(exoneracionId));
-
-        if (!exoneracion.getClienteId().equals(cliente.getId())) {
-            throw new ExoneracionNoPerteneceAlClienteException(exoneracionId, cliente.getId());
-        }
-        if (!ClienteExoneracionService.estaVigente(exoneracion)) {
-            throw new ExoneracionNoVigenteException(exoneracionId);
-        }
-        if (TIPOS_EXONERACION_EXCLUSIVOS_NC_ND.contains(exoneracion.getTipoDocumento())) {
-            throw new ExoneracionNoAplicableAFacturaElectronicaException(exoneracionId, exoneracion.getTipoDocumento());
-        }
-
-        BigDecimal porcentajeExoneracion = exoneracion.getPorcentajeExoneracion();
-        BigDecimal montoExoneracionAplicado = impuestoLinea
-                .multiply(porcentajeExoneracion)
-                .divide(BigDecimal.valueOf(100), ESCALA_MONETARIA, RoundingMode.HALF_UP);
-
-        linea.setExoneracionId(exoneracionId);
-        linea.setPorcentajeExoneracionAplicado(porcentajeExoneracion);
-        linea.setMontoExoneracionAplicado(montoExoneracionAplicado);
-        return montoExoneracionAplicado;
     }
 
     /**
