@@ -27,8 +27,12 @@ import cr.ac.fractall.catalogo.repositorio.ClienteRepository;
 import cr.ac.fractall.catalogo.repositorio.ProductoRepository;
 import cr.ac.fractall.empresa.modelo.Empresa;
 import cr.ac.fractall.empresa.repositorio.EmpresaRepository;
+import cr.ac.fractall.facturacion.modelo.ComprobanteElectronico;
 import cr.ac.fractall.facturacion.modelo.Factura;
+import cr.ac.fractall.facturacion.modelo.FacturaInformacionReferencia;
 import cr.ac.fractall.facturacion.modelo.LineaFactura;
+import cr.ac.fractall.facturacion.repositorio.ComprobanteElectronicoRepository;
+import cr.ac.fractall.facturacion.repositorio.FacturaInformacionReferenciaRepository;
 import cr.ac.fractall.facturacion.repositorio.FacturaRepository;
 import cr.ac.fractall.facturacion.repositorio.LineaFacturaRepository;
 import cr.ac.fractall.seguridad.modelo.Usuario;
@@ -152,6 +156,12 @@ class AislamientoMultiTenantTest {
     @Autowired
     private LineaFacturaRepository lineaFacturaRepository;
 
+    @Autowired
+    private ComprobanteElectronicoRepository comprobanteElectronicoRepository;
+
+    @Autowired
+    private FacturaInformacionReferenciaRepository facturaInformacionReferenciaRepository;
+
     private Empresa empresaA;
     private Empresa empresaB;
 
@@ -249,6 +259,41 @@ class AislamientoMultiTenantTest {
         return linea;
     }
 
+    private static ComprobanteElectronico nuevoComprobante(
+            UUID facturaId, String tipoComprobante, String consecutivo, String claveNumerica) {
+        ComprobanteElectronico comprobante = new ComprobanteElectronico();
+        comprobante.setFacturaId(facturaId);
+        comprobante.setAmbienteHacienda("SANDBOX");
+        comprobante.setTipoComprobante(tipoComprobante);
+        comprobante.setConsecutivo(consecutivo);
+        comprobante.setClaveNumerica(claveNumerica);
+        comprobante.setEstado("GENERADO");
+        comprobante.setIntentosEnvio(0);
+        comprobante.setFechaEmision(LocalDateTime.now());
+        comprobante.setIntentosConsulta(0);
+        return comprobante;
+    }
+
+    private static FacturaInformacionReferencia nuevaInformacionReferencia(
+            UUID facturaId, String codigo, String codigoReferenciaOtro) {
+        FacturaInformacionReferencia referencia = new FacturaInformacionReferencia();
+        referencia.setFacturaId(facturaId);
+        referencia.setOrden((short) 1);
+        referencia.setTipoDocIr("01");
+        referencia.setFechaEmisionIr(LocalDateTime.now());
+        referencia.setCodigo(codigo);
+        referencia.setCodigoReferenciaOtro(codigoReferenciaOtro);
+        return referencia;
+    }
+
+    private static Throwable raizDe(Throwable error) {
+        Throwable causa = error;
+        while (causa.getCause() != null && causa.getCause() != causa) {
+            causa = causa.getCause();
+        }
+        return causa;
+    }
+
     private static Cliente nuevoCliente(String nombre, String numeroIdentificacion) {
         Cliente cliente = new Cliente();
         cliente.setNombre(nombre);
@@ -342,5 +387,277 @@ class AislamientoMultiTenantTest {
         assertThat(facturaRepository.findClienteNombreByFacturaId(facturaB.getId(), empresaA.getId()))
                 .as("la query nativa con JOIN no debe devolver el cliente de una factura de otra empresa")
                 .isEmpty();
+    }
+
+    /**
+     * Fase A de Release 2: {@code factura.factura_referencia_id} pasa por
+     * {@code fn_validar_mismo_tenant} igual que {@code cliente_id}/{@code producto_id}/
+     * {@code exoneracion_id} -- ver el comentario de cabecera de
+     * {@code V18__factura_referencia_y_tope_nota_credito.sql}.
+     */
+    @Test
+    void notaCreditoNoPuedeReferenciarFacturaDeOtroTenant() {
+        TenantContext.set(empresaA.getId());
+        Cliente clienteA = clienteRepository.save(nuevoCliente("Cliente Origen A", "600000001"));
+        Factura facturaOrigenA = facturaRepository.save(nuevaFactura(clienteA.getId(), empresaA.getCreadoPor()));
+        comprobanteElectronicoRepository.saveAndFlush(
+                nuevoComprobante(facturaOrigenA.getId(), "01", "origen-tenant-01", "clave-origen-tenant-0001"));
+
+        TenantContext.set(empresaB.getId());
+        Cliente clienteB = clienteRepository.save(nuevoCliente("Cliente B", "600000002"));
+        Factura notaCreditoB = nuevaFactura(clienteB.getId(), empresaB.getCreadoPor());
+        notaCreditoB.setFacturaReferenciaId(facturaOrigenA.getId());
+
+        Exception excepcion = assertThrows(Exception.class, () -> facturaRepository.saveAndFlush(notaCreditoB));
+        assertThat(raizDe(excepcion).getMessage()).contains("Referencia cruzada entre tenants");
+    }
+
+    /**
+     * Regla de negocio 7: solo Factura Electrónica (tipo {@code 01}) puede ser el documento de
+     * referencia -- ver {@code fn_validar_referencia_es_factura_electronica} en
+     * {@code V18__factura_referencia_y_tope_nota_credito.sql}. El catálogo {@code TipoDocumentoIR}
+     * permite técnicamente encadenar NC/ND, pero se restringe deliberadamente por alcance.
+     */
+    @Test
+    void referenciaDebeSerFacturaElectronicaNoOtraNotaCreditoDebito() {
+        TenantContext.set(empresaA.getId());
+        Cliente cliente = clienteRepository.save(nuevoCliente("Cliente Ref Tipo Invalido", "600000012"));
+
+        Factura documentoNoFactura = facturaRepository.save(nuevaFactura(cliente.getId(), empresaA.getCreadoPor()));
+        comprobanteElectronicoRepository.saveAndFlush(
+                nuevoComprobante(documentoNoFactura.getId(), "03", "nc-no-factura-01", "clave-nc-no-factura-0001"));
+
+        Factura segundaNc = nuevaFactura(cliente.getId(), empresaA.getCreadoPor());
+        segundaNc.setFacturaReferenciaId(documentoNoFactura.getId());
+
+        Exception excepcion = assertThrows(Exception.class, () -> facturaRepository.saveAndFlush(segundaNc));
+        assertThat(raizDe(excepcion).getMessage()).contains("debe ser una Factura Electrónica");
+    }
+
+    /**
+     * Fase A de Release 2: {@code fn_validar_tope_nota_credito} se engancha en
+     * {@code comprobante_electronico} (no en {@code factura}) porque
+     * {@code tipo_comprobante} vive únicamente ahí -- ver el comentario de cabecera de
+     * {@code V18__factura_referencia_y_tope_nota_credito.sql} para el detalle de por qué la fila
+     * {@code factura} ya existe en ese punto de la transacción.
+     */
+    @Test
+    void topeMontoNotaCreditoBloqueaExcesoSobreFacturaOrigen() {
+        TenantContext.set(empresaA.getId());
+        Cliente cliente = clienteRepository.save(nuevoCliente("Cliente Origen Tope", "600000003"));
+        Factura facturaOrigen = facturaRepository.save(nuevaFactura(cliente.getId(), empresaA.getCreadoPor()));
+        comprobanteElectronicoRepository.saveAndFlush(
+                nuevoComprobante(facturaOrigen.getId(), "01", "origen-tope-01", "clave-origen-tope-0001"));
+        // facturaOrigen.total = 1130.00000 (default de nuevaFactura)
+
+        Factura notaCredito = nuevaFactura(cliente.getId(), empresaA.getCreadoPor());
+        notaCredito.setFacturaReferenciaId(facturaOrigen.getId());
+        notaCredito.setTotal(new BigDecimal("2000.00000"));
+        notaCredito = facturaRepository.saveAndFlush(notaCredito);
+
+        ComprobanteElectronico comprobanteNc = nuevoComprobante(
+                notaCredito.getId(), "03", "nc-tope-01", "clave-tope-excede-0001");
+
+        Exception excepcion = assertThrows(Exception.class,
+                () -> comprobanteElectronicoRepository.saveAndFlush(comprobanteNc));
+        assertThat(raizDe(excepcion).getMessage()).containsIgnoringCase("excede");
+    }
+
+    /**
+     * Contraparte de {@link #topeMontoNotaCreditoBloqueaExcesoSobreFacturaOrigen}: dos NC
+     * parciales cuya suma NO excede el total de la factura origen deben poder insertarse ambas.
+     */
+    @Test
+    void segundaNotaCreditoParcialSePermiteMientrasNoExcedaTotal() {
+        TenantContext.set(empresaA.getId());
+        Cliente cliente = clienteRepository.save(nuevoCliente("Cliente Origen Parcial", "600000004"));
+        Factura facturaOrigen = facturaRepository.save(nuevaFactura(cliente.getId(), empresaA.getCreadoPor()));
+        comprobanteElectronicoRepository.saveAndFlush(
+                nuevoComprobante(facturaOrigen.getId(), "01", "origen-parcial-01", "clave-origen-parcial-0001"));
+        // facturaOrigen.total = 1130.00000 (default de nuevaFactura)
+
+        Factura primeraNc = nuevaFactura(cliente.getId(), empresaA.getCreadoPor());
+        primeraNc.setFacturaReferenciaId(facturaOrigen.getId());
+        primeraNc.setTotal(new BigDecimal("500.00000"));
+        primeraNc = facturaRepository.saveAndFlush(primeraNc);
+        comprobanteElectronicoRepository.saveAndFlush(
+                nuevoComprobante(primeraNc.getId(), "03", "nc-parcial-01", "clave-nc-parcial-0001"));
+
+        Factura segundaNc = nuevaFactura(cliente.getId(), empresaA.getCreadoPor());
+        segundaNc.setFacturaReferenciaId(facturaOrigen.getId());
+        segundaNc.setTotal(new BigDecimal("600.00000"));
+        segundaNc = facturaRepository.saveAndFlush(segundaNc);
+
+        ComprobanteElectronico comprobanteSegundaNc = comprobanteElectronicoRepository.saveAndFlush(
+                nuevoComprobante(segundaNc.getId(), "03", "nc-parcial-02", "clave-nc-parcial-0002"));
+
+        assertThat(comprobanteSegundaNc.getId()).isNotNull();
+    }
+
+    /**
+     * Triangulación del límite exacto: regla 3 dice "no puede exceder", no "debe ser menor" --
+     * el trigger usa {@code >}, no {@code >=} (ver {@code fn_validar_tope_nota_credito} en
+     * V18). Una NC cuyo total iguala exactamente el total de la factura origen (anulación total,
+     * regla 2) debe permitirse.
+     */
+    @Test
+    void topeNotaCreditoPermiteSumaExactamenteIgualAlTotal() {
+        TenantContext.set(empresaA.getId());
+        Cliente cliente = clienteRepository.save(nuevoCliente("Cliente Origen Exacto", "600000005"));
+        Factura facturaOrigen = facturaRepository.save(nuevaFactura(cliente.getId(), empresaA.getCreadoPor()));
+        comprobanteElectronicoRepository.saveAndFlush(
+                nuevoComprobante(facturaOrigen.getId(), "01", "origen-exacto-01", "clave-origen-exacto-0001"));
+        // facturaOrigen.total = 1130.00000 (default de nuevaFactura)
+
+        Factura notaCredito = nuevaFactura(cliente.getId(), empresaA.getCreadoPor());
+        notaCredito.setFacturaReferenciaId(facturaOrigen.getId());
+        notaCredito.setTotal(new BigDecimal("1130.00000"));
+        notaCredito = facturaRepository.saveAndFlush(notaCredito);
+
+        ComprobanteElectronico comprobante = comprobanteElectronicoRepository.saveAndFlush(
+                nuevoComprobante(notaCredito.getId(), "03", "nc-exacto-01", "clave-nc-exacto-0001"));
+
+        assertThat(comprobante.getId()).isNotNull();
+    }
+
+    /**
+     * Triangulación de acumulación: el trigger suma TODAS las NC previas contra la misma
+     * factura origen, no solo compara contra la última insertada. Tres NC parciales que suman
+     * exactamente el total se permiten; una cuarta que excede por el margen más pequeño posible
+     * (precisión de {@code NUMERIC(14,5)}) se bloquea -- confirma que la comparación no pierde
+     * precisión al acumular sobre más de dos filas.
+     */
+    @Test
+    void topeNotaCreditoAcumulaTresParcialesYBloqueaElMinimoExcesoEnLaCuarta() {
+        TenantContext.set(empresaA.getId());
+        Cliente cliente = clienteRepository.save(nuevoCliente("Cliente Origen Acumulado", "600000006"));
+        Factura facturaOrigen = facturaRepository.save(nuevaFactura(cliente.getId(), empresaA.getCreadoPor()));
+        comprobanteElectronicoRepository.saveAndFlush(
+                nuevoComprobante(facturaOrigen.getId(), "01", "origen-acum-01", "clave-origen-acum-0001"));
+        // facturaOrigen.total = 1130.00000 (default de nuevaFactura)
+
+        BigDecimal[] montosParciales = {
+                new BigDecimal("400.00000"), new BigDecimal("400.00000"), new BigDecimal("330.00000")
+        };
+        for (int i = 0; i < montosParciales.length; i++) {
+            Factura nc = nuevaFactura(cliente.getId(), empresaA.getCreadoPor());
+            nc.setFacturaReferenciaId(facturaOrigen.getId());
+            nc.setTotal(montosParciales[i]);
+            nc = facturaRepository.saveAndFlush(nc);
+            comprobanteElectronicoRepository.saveAndFlush(
+                    nuevoComprobante(nc.getId(), "03", "nc-acum-0" + i, "clave-nc-acum-000" + i));
+        }
+        // Suma acumulada tras las 3 anteriores: exactamente 1130.00000 (el total de la factura origen).
+
+        Factura cuartaNc = nuevaFactura(cliente.getId(), empresaA.getCreadoPor());
+        cuartaNc.setFacturaReferenciaId(facturaOrigen.getId());
+        cuartaNc.setTotal(new BigDecimal("0.00001"));
+        cuartaNc = facturaRepository.saveAndFlush(cuartaNc);
+
+        ComprobanteElectronico comprobanteCuartaNc = nuevoComprobante(
+                cuartaNc.getId(), "03", "nc-acum-04", "clave-nc-acum-0004");
+        Exception excepcion = assertThrows(Exception.class,
+                () -> comprobanteElectronicoRepository.saveAndFlush(comprobanteCuartaNc));
+        assertThat(raizDe(excepcion).getMessage()).containsIgnoringCase("excede");
+    }
+
+    /**
+     * Triangulación de la exclusión explícita de regla 3: "No aplica a ND -- Nota de Débito
+     * agrega monto, no lo resta". El {@code WHEN} de {@code trg_validar_tope_nota_credito} filtra
+     * {@code tipo_comprobante = '03'}, así que una ND con total muy superior al de la factura
+     * origen debe insertarse sin que el trigger siquiera se ejecute.
+     */
+    @Test
+    void notaDebitoNoTieneTopeDeMontoSobreFacturaOrigen() {
+        TenantContext.set(empresaA.getId());
+        Cliente cliente = clienteRepository.save(nuevoCliente("Cliente Origen ND", "600000007"));
+        Factura facturaOrigen = facturaRepository.save(nuevaFactura(cliente.getId(), empresaA.getCreadoPor()));
+        comprobanteElectronicoRepository.saveAndFlush(
+                nuevoComprobante(facturaOrigen.getId(), "01", "origen-nd-01", "clave-origen-nd-0001"));
+        // facturaOrigen.total = 1130.00000 (default de nuevaFactura)
+
+        Factura notaDebito = nuevaFactura(cliente.getId(), empresaA.getCreadoPor());
+        notaDebito.setFacturaReferenciaId(facturaOrigen.getId());
+        notaDebito.setTotal(new BigDecimal("50000.00000"));
+        notaDebito = facturaRepository.saveAndFlush(notaDebito);
+
+        ComprobanteElectronico comprobante = comprobanteElectronicoRepository.saveAndFlush(
+                nuevoComprobante(notaDebito.getId(), "02", "nd-sin-tope-01", "clave-nd-sin-tope-0001"));
+
+        assertThat(comprobante.getId()).isNotNull();
+    }
+
+    /**
+     * Triangulación de regla 5 (motivo obligatorio): el CHECK sin nombre de
+     * {@code factura_informacion_referencia} (V11) exige {@code codigo_referencia_otro}
+     * únicamente cuando {@code codigo = '99'} -- el campo que Hacienda documenta como
+     * condicionalmente obligatorio en ese caso ({@code CodigoReferenciaOTRO} en los XSD
+     * oficiales), no {@code razon} (libre siempre, sin obligatoriedad condicional en el XSD).
+     * Esta regla ya existía antes de Release 2 pero no tenía cobertura de test explícita.
+     */
+    @Test
+    void codigoReferenciaOtroEsObligatorioCuandoCodigoEsOtros() {
+        TenantContext.set(empresaA.getId());
+        Cliente cliente = clienteRepository.save(nuevoCliente("Cliente Ref Otros Null", "600000008"));
+        Factura factura = facturaRepository.save(nuevaFactura(cliente.getId(), empresaA.getCreadoPor()));
+
+        FacturaInformacionReferencia referencia = nuevaInformacionReferencia(factura.getId(), "99", null);
+
+        assertThrows(Exception.class,
+                () -> facturaInformacionReferenciaRepository.saveAndFlush(referencia));
+    }
+
+    /**
+     * Contraparte de {@link #codigoReferenciaOtroEsObligatorioCuandoCodigoEsOtros}: el CHECK
+     * exige {@code codigo_referencia_otro IS NOT NULL AND codigo_referencia_otro <> ''}, no solo
+     * {@code IS NOT NULL} -- una cadena vacía no cuenta como descripción real y debe bloquear
+     * igual que {@code NULL}.
+     */
+    @Test
+    void codigoReferenciaOtroVacioNoCuentaComoValidoCuandoCodigoEsOtros() {
+        TenantContext.set(empresaA.getId());
+        Cliente cliente = clienteRepository.save(nuevoCliente("Cliente Ref Otros Vacio", "600000009"));
+        Factura factura = facturaRepository.save(nuevaFactura(cliente.getId(), empresaA.getCreadoPor()));
+
+        FacturaInformacionReferencia referencia = nuevaInformacionReferencia(factura.getId(), "99", "");
+
+        assertThrows(Exception.class,
+                () -> facturaInformacionReferenciaRepository.saveAndFlush(referencia));
+    }
+
+    /**
+     * Contraparte positiva: {@code codigo = '99'} con un {@code codigo_referencia_otro} real sí
+     * se permite.
+     */
+    @Test
+    void codigoReferenciaOtroPresenteConCodigoOtrosSePermite() {
+        TenantContext.set(empresaA.getId());
+        Cliente cliente = clienteRepository.save(nuevoCliente("Cliente Ref Otros Con Descripcion", "600000010"));
+        Factura factura = facturaRepository.save(nuevaFactura(cliente.getId(), empresaA.getCreadoPor()));
+
+        FacturaInformacionReferencia referencia = nuevaInformacionReferencia(
+                factura.getId(), "99", "Descripción puntual del código de referencia utilizado");
+        FacturaInformacionReferencia guardada =
+                facturaInformacionReferenciaRepository.saveAndFlush(referencia);
+
+        assertThat(guardada.getId()).isNotNull();
+    }
+
+    /**
+     * Triangulación de la mitad "opcional" de regla 5: con un {@code codigo} distinto de
+     * {@code '99'} (p. ej. {@code '01'}, Anula documento de referencia),
+     * {@code codigo_referencia_otro} puede ser {@code NULL} sin violar el CHECK.
+     */
+    @Test
+    void codigoReferenciaOtroEsOpcionalCuandoCodigoNoEsOtros() {
+        TenantContext.set(empresaA.getId());
+        Cliente cliente = clienteRepository.save(nuevoCliente("Cliente Ref No Otros", "600000011"));
+        Factura factura = facturaRepository.save(nuevaFactura(cliente.getId(), empresaA.getCreadoPor()));
+
+        FacturaInformacionReferencia referencia = nuevaInformacionReferencia(factura.getId(), "01", null);
+        FacturaInformacionReferencia guardada =
+                facturaInformacionReferenciaRepository.saveAndFlush(referencia);
+
+        assertThat(guardada.getId()).isNotNull();
     }
 }
