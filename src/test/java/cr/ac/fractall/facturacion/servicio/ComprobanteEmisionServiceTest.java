@@ -252,6 +252,127 @@ class ComprobanteEmisionServiceTest {
         verify(comprobanteXmlCifradoDescargador, never()).descargarYDescifrar(anyString());
     }
 
+    /**
+     * Triangulación de {@code ESTADOS_REENVIABLES}: el test previo
+     * ({@link #reenviarConEstadoReenviableDescargaXmlReiniciaIntentosYReenviaAHacienda}) solo
+     * probaba {@code RECHAZADO}, uno de los 3 valores del {@code Set}. Si la implementación
+     * comparara contra un único string en vez de contra el conjunto real, este test lo detectaría
+     * para los otros dos ({@code FIRMADO}, {@code ERROR}).
+     */
+    @Test
+    void reenviarFuncionaParaLosTresEstadosReenviablesDelConjunto() {
+        for (String estadoReenviable : new String[] {"FIRMADO", "RECHAZADO", "ERROR"}) {
+            Cliente cliente = crearCliente();
+            Factura factura = crearFacturaMinima(cliente.getId());
+            ZonedDateTime ahoraUtc = ZonedDateTime.now(ZoneOffset.UTC);
+
+            TransactionTemplate transactionTemplate = new TransactionTemplate(transactionManager);
+            ComprobanteElectronico comprobante = transactionTemplate.execute(status ->
+                    comprobanteEmisionService.registrarComprobante(
+                            factura, TipoComprobantePerfil.FACTURA_ELECTRONICA, empresa, ahoraUtc));
+
+            comprobante.setEstado(estadoReenviable);
+            comprobante.setXmlComprobanteReferencia("empresas/ref/comprobante-" + estadoReenviable + ".xml.enc");
+            comprobante.setIntentosEnvio(3);
+            comprobanteElectronicoRepository.save(comprobante);
+
+            org.mockito.Mockito.reset(comprobanteXmlCifradoDescargador, comprobanteHaciendaEnvioService);
+            String xmlFirmado = "<FacturaElectronica>" + estadoReenviable + "</FacturaElectronica>";
+            when(comprobanteXmlCifradoDescargador.descargarYDescifrar(anyString()))
+                    .thenReturn(xmlFirmado.getBytes(StandardCharsets.UTF_8));
+
+            ComprobanteElectronico resultado = comprobanteEmisionService.reenviar(factura.getId());
+
+            assertThat(resultado.getIntentosEnvio())
+                    .as("estado %s debe reiniciar intentos", estadoReenviable)
+                    .isZero();
+            verify(comprobanteHaciendaEnvioService, times(1))
+                    .enviarComprobante(org.mockito.ArgumentMatchers.eq(xmlFirmado), any(ComprobanteElectronico.class));
+        }
+    }
+
+    /**
+     * Triangulación de la contraparte negativa: el test previo
+     * ({@link #reenviarConEstadoNoReenviableLanzaComprobanteNoReenviable}) solo probaba
+     * {@code GENERADO}. {@code ENVIADO} y {@code ACEPTADO} son estados terminales/en curso
+     * distintos que tampoco deben ser reenviables -- si la implementación solo excluyera
+     * {@code GENERADO} explícitamente en vez de exigir membership en el {@code Set} de
+     * reenviables, este test lo detectaría.
+     */
+    @Test
+    void reenviarRechazaOtrosEstadosNoReenviablesDistintosDeGenerado() {
+        for (String estadoNoReenviable : new String[] {"ENVIADO", "ACEPTADO"}) {
+            Cliente cliente = crearCliente();
+            Factura factura = crearFacturaMinima(cliente.getId());
+            ZonedDateTime ahoraUtc = ZonedDateTime.now(ZoneOffset.UTC);
+
+            TransactionTemplate transactionTemplate = new TransactionTemplate(transactionManager);
+            ComprobanteElectronico comprobante = transactionTemplate.execute(status ->
+                    comprobanteEmisionService.registrarComprobante(
+                            factura, TipoComprobantePerfil.FACTURA_ELECTRONICA, empresa, ahoraUtc));
+
+            comprobante.setEstado(estadoNoReenviable);
+            comprobanteElectronicoRepository.save(comprobante);
+
+            org.mockito.Mockito.reset(comprobanteXmlCifradoDescargador);
+            assertThatThrownBy(() -> comprobanteEmisionService.reenviar(factura.getId()))
+                    .as("estado %s no debe ser reenviable", estadoNoReenviable)
+                    .isInstanceOf(ComprobanteNoReenviableException.class);
+
+            verify(comprobanteXmlCifradoDescargador, never()).descargarYDescifrar(anyString());
+        }
+    }
+
+    /**
+     * Rama distinta a la del estado: un comprobante en estado reenviable (FIRMADO) pero SIN
+     * {@code xmlComprobanteReferencia} (nunca llegó a persistir el XML firmado) debe rechazarse
+     * igual -- es una condición separada en {@code reenviar()}, no cubierta por los tests de
+     * estado.
+     */
+    @Test
+    void reenviarConEstadoReenviablePeroSinXmlPersistidoLanzaComprobanteNoReenviable() {
+        Cliente cliente = crearCliente();
+        Factura factura = crearFacturaMinima(cliente.getId());
+        ZonedDateTime ahoraUtc = ZonedDateTime.now(ZoneOffset.UTC);
+
+        TransactionTemplate transactionTemplate = new TransactionTemplate(transactionManager);
+        ComprobanteElectronico comprobante = transactionTemplate.execute(status ->
+                comprobanteEmisionService.registrarComprobante(
+                        factura, TipoComprobantePerfil.FACTURA_ELECTRONICA, empresa, ahoraUtc));
+
+        comprobante.setEstado("FIRMADO");
+        // xmlComprobanteReferencia deliberadamente sin setear -- queda null.
+        comprobanteElectronicoRepository.save(comprobante);
+
+        assertThatThrownBy(() -> comprobanteEmisionService.reenviar(factura.getId()))
+                .isInstanceOf(ComprobanteNoReenviableException.class);
+
+        verify(comprobanteXmlCifradoDescargador, never()).descargarYDescifrar(anyString());
+    }
+
+    /**
+     * Triangulación de {@link #registrarComprobanteDentroDeUnaTransaccionAsignaConsecutivoYClaveSegunElCodigoDelPerfil}:
+     * ese test solo prueba {@code NOTA_CREDITO} ("03"). Un segundo tipo distinto confirma que el
+     * código embebido en consecutivo/clave viene realmente de {@code perfil.getCodigo()}, no de un
+     * valor hardcodeado a "03" que coincidiera por casualidad con ese único test.
+     */
+    @Test
+    void registrarComprobanteConOtroTipoEmbebeSuPropioCodigo() {
+        Cliente cliente = crearCliente();
+        Factura factura = crearFacturaMinima(cliente.getId());
+        ZonedDateTime ahoraUtc = ZonedDateTime.now(ZoneOffset.UTC);
+
+        TransactionTemplate transactionTemplate = new TransactionTemplate(transactionManager);
+        ComprobanteElectronico comprobante = transactionTemplate.execute(status ->
+                comprobanteEmisionService.registrarComprobante(
+                        factura, TipoComprobantePerfil.NOTA_DEBITO, empresa, ahoraUtc));
+
+        assertThat(comprobante.getTipoComprobante()).isEqualTo("02");
+        assertThat(comprobante.getConsecutivo().substring(8, 10)).isEqualTo("02");
+        String segmentoConsecutivoEnClave = comprobante.getClaveNumerica().substring(21, 41);
+        assertThat(segmentoConsecutivoEnClave).isEqualTo(comprobante.getConsecutivo());
+    }
+
     @Test
     void procesarXmlYEnvioDelegaEnComprobanteXmlPersistenceService() {
         UUID comprobanteId = UUID.randomUUID();
