@@ -1,5 +1,6 @@
 package cr.ac.fractall.facturacion.repositorio;
 
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -69,4 +70,22 @@ public interface FacturaRepository extends JpaRepository<Factura, UUID> {
             + "WHERE f.id = :facturaId AND f.empresa_id = :empresaId", nativeQuery = true)
     Optional<String> findClienteNombreByFacturaId(
             @Param("facturaId") UUID facturaId, @Param("empresaId") UUID empresaId);
+
+    /**
+     * Regla de negocio 3 (Release 2 / Fase B): suma de {@code factura.total} de todas las Notas
+     * de Crédito (tipo_comprobante='03') ya emitidas contra la factura origen indicada -- misma
+     * agregación que hace el trigger {@code fn_validar_tope_nota_credito} (V18), pre-calculada
+     * aquí en Java por {@code NotaCreditoDebitoService} ANTES de intentar el {@code INSERT} (el
+     * trigger queda como defensa en profundidad para la carrera de concurrencia, ver su javadoc
+     * en V18 y {@code GlobalExceptionHandler#manejarErrorSqlNoCategorizado}). Nativa (no
+     * JPQL/Criteria) porque agrega sobre dos tablas vía JOIN -- mismo motivo que {@link
+     * #buscarNativo}; {@code empresaId} se filtra explícitamente por el mismo principio (el
+     * {@code @TenantId} de Hibernate no aplica a SQL nativo).
+     */
+    @Query(value = "SELECT COALESCE(SUM(f.total), 0) FROM factura f "
+            + "JOIN comprobante_electronico ce ON ce.factura_id = f.id "
+            + "WHERE ce.tipo_comprobante = '03' AND f.factura_referencia_id = :facturaOrigenId "
+            + "AND f.empresa_id = :empresaId", nativeQuery = true)
+    BigDecimal sumarTotalNotasCreditoPorFacturaOrigen(
+            @Param("facturaOrigenId") UUID facturaOrigenId, @Param("empresaId") UUID empresaId);
 }

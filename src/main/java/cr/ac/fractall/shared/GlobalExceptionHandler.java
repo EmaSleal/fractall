@@ -3,6 +3,7 @@ package cr.ac.fractall.shared;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.jdbc.UncategorizedSQLException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -10,6 +11,7 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import cr.ac.fractall.catalogo.servicio.ClienteExoneracionNoEncontradaException;
 import cr.ac.fractall.catalogo.servicio.ClienteNoEncontradoException;
 import cr.ac.fractall.catalogo.servicio.ProductoNoEncontradoException;
+import cr.ac.fractall.facturacion.servicio.CantidadAcreditadaExcedeOrigenException;
 import cr.ac.fractall.facturacion.servicio.ComprobanteNoReenviableException;
 import cr.ac.fractall.facturacion.servicio.CondicionVentaInvalidaException;
 import cr.ac.fractall.facturacion.servicio.ContadorConsecutivoNoEncontradoException;
@@ -20,6 +22,10 @@ import cr.ac.fractall.facturacion.servicio.ExoneracionNoAplicableAFacturaElectro
 import cr.ac.fractall.facturacion.servicio.ExoneracionNoPerteneceAlClienteException;
 import cr.ac.fractall.facturacion.servicio.ExoneracionNoVigenteException;
 import cr.ac.fractall.facturacion.servicio.FacturaNoEncontradaException;
+import cr.ac.fractall.facturacion.servicio.FacturaOrigenNoAceptadaException;
+import cr.ac.fractall.facturacion.servicio.LineaOrigenNoPerteneceAFacturaException;
+import cr.ac.fractall.facturacion.servicio.MontoNotaCreditoExcedeOrigenException;
+import cr.ac.fractall.facturacion.servicio.ReferenciaNoEsFacturaElectronicaException;
 import cr.ac.fractall.hacienda.servicio.TipoCambioNoDisponibleException;
 import cr.ac.fractall.seguridad.dto.MensajeResponse;
 import jakarta.validation.ConstraintViolationException;
@@ -138,5 +144,50 @@ public class GlobalExceptionHandler {
             EmpresaSinCorreoElectronicoException.class})
     public ResponseEntity<MensajeResponse> manejarFalloDeInfraestructuraOConfiguracion(RuntimeException excepcion) {
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(new MensajeResponse(excepcion.getMessage()));
+    }
+
+    /**
+     * Reglas de negocio de Nota de Crédito/Débito (Release 2 / Fase B, ver diseño D-E/D-G): el
+     * estado de datos del origen (estado de aceptación, o saldo ya consumido por NC previas)
+     * entra en conflicto con la operación solicitada.
+     */
+    @ExceptionHandler({FacturaOrigenNoAceptadaException.class, MontoNotaCreditoExcedeOrigenException.class})
+    public ResponseEntity<MensajeResponse> manejarConflictoDeEstadoNotaCreditoDebito(RuntimeException excepcion) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(new MensajeResponse(excepcion.getMessage()));
+    }
+
+    /**
+     * Reglas de negocio de Nota de Crédito/Débito detectadas en Java ANTES de persistir (Release
+     * 2 / Fase B, ver diseño D-E/D-G).
+     */
+    @ExceptionHandler({ReferenciaNoEsFacturaElectronicaException.class,
+            LineaOrigenNoPerteneceAFacturaException.class,
+            CantidadAcreditadaExcedeOrigenException.class})
+    public ResponseEntity<MensajeResponse> manejarReglaDeNegocioInvalidaNotaCreditoDebito(RuntimeException excepcion) {
+        return ResponseEntity.badRequest().body(new MensajeResponse(excepcion.getMessage()));
+    }
+
+    /**
+     * Complemento de defensa en profundidad al pre-chequeo de Java de {@code
+     * NotaCreditoDebitoService#crearNotaCredito} (regla 3, tope de monto) -- cubre la carrera de
+     * concurrencia entre dos Notas de Crédito que ambas pasan el pre-chequeo antes de que
+     * cualquiera haga commit (ver el diseño de Fase B, sección "Open Questions", y el javadoc de
+     * {@code MontoNotaCreditoExcedeOrigenException}). Un {@code RAISE EXCEPTION} de Postgres sin
+     * código SQLSTATE explícito (el caso del trigger {@code fn_validar_tope_nota_credito}, V18)
+     * NO se traduce a {@link DataIntegrityViolationException} -- pertenece a otra clase de
+     * SQLSTATE ({@code P0001}) -- así que sin este handler escalaría como un 500 crudo.
+     *
+     * <p>Filtra explícitamente por {@code SQLSTATE == "P0001"} para no capturar cualquier otro
+     * {@link UncategorizedSQLException} no relacionado con NC/ND: si no coincide, se re-lanza
+     * para escalar sin manejar (mismo comportamiento que tenía ANTES de este handler).
+     */
+    @ExceptionHandler(UncategorizedSQLException.class)
+    public ResponseEntity<MensajeResponse> manejarErrorSqlNoCategorizado(UncategorizedSQLException excepcion) {
+        String sqlState = excepcion.getSQLException().getSQLState();
+        if (!"P0001".equals(sqlState)) {
+            throw excepcion;
+        }
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(new MensajeResponse(excepcion.getSQLException().getMessage()));
     }
 }
