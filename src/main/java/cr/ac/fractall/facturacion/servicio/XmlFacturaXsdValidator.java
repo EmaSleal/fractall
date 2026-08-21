@@ -156,23 +156,34 @@ public class XmlFacturaXsdValidator {
 
     /**
      * Compila {@code xmldsig-core-schema.xsd} y el XSD oficial de {@code perfil} JUNTOS, en una
-     * sola llamada a {@link SchemaFactory#newSchema(Source[])} -- reemplaza dos intentos previos
-     * que resultaron inestables en CI (nunca en local, sí ahí, con distintos XSD fallando en
-     * corridas distintas): primero una única {@code SchemaFactory} reutilizada entre los 4
-     * {@code newSchema()} del loop, después una {@code SchemaFactory} nueva por XSD pero con un
-     * {@code LSResourceResolver} custom resolviendo el import en tiempo de ejecución. Ninguna de
-     * las dos hipótesis (estado filtrándose entre compilaciones, stream de un solo uso mal
-     * reabierto) resolvió el problema de fondo: el patrón "{@code LSResourceResolver} que
-     * intercepta un {@code <xs:import>}" tiene comportamiento no completamente determinístico
-     * documentado contra la implementación de Xerces embebida en el JDK cuando se ejecuta
-     * repetidamente en la misma JVM (el primer XSD del loop, {@code FACTURA_ELECTRONICA}, NUNCA
-     * fallaba -- solo los que se compilaban después). Pasar ambos XSD como un {@code Source[]} le
-     * entrega a JAXP el set completo de antemano, sin ningún callback en medio: es el patrón
-     * estándar de la API para "un schema que importa un componente de otro schema que ya tenés en
-     * disco", y no depende de temporalidad ni de cuántas veces se invoque un resolver.
+     * sola llamada a {@link SchemaFactory#newSchema(Source[])}.
+     *
+     * <p><b>Causa raíz real de la inestabilidad en CI (3 intentos previos fallidos antes de
+     * encontrarla):</b> {@code xmldsig-core-schema.xsd} (descargado de w3.org, ver el javadoc de
+     * la clase) trae en su cabecera {@code <!DOCTYPE schema PUBLIC "-//W3C//DTD XMLSchema
+     * 200102//EN" "http://www.w3.org/2001/XMLSchema.dtd">} -- por defecto, Xerces intenta
+     * RESOLVER ESE DTD POR RED cada vez que parsea el archivo. En local nunca falló porque la
+     * conexión a w3.org siempre respondía rápido; en GitHub Actions, con IPs compartidas entre
+     * miles de runners golpeando el mismo servidor, w3.org devolvía {@code 429 Too Many Requests}
+     * de forma intermitente -- síntoma que además se manifestaba con mensajes distintos según en
+     * qué momento del parseo abortaba la conexión ({@code SAXParseException} sobre
+     * {@code ds:Signature} en unos casos, {@code IOException} con el 429 explícito en otros). No
+     * tenía nada que ver con reutilizar {@code SchemaFactory}, con streams de un solo uso, ni con
+     * el {@code LSResourceResolver} custom -- esas tres hipótesis anteriores atacaban síntomas,
+     * no la causa. El fix real son las dos propiedades JAXP que deshabilitan por completo el
+     * acceso externo a DTD/schema (mismo hardening recomendado contra XXE): con
+     * {@code ACCESS_EXTERNAL_DTD}/{@code ACCESS_EXTERNAL_SCHEMA} en {@code ""}, Xerces nunca
+     * vuelve a intentar tocar la red, sin importar cuántas veces se parsee el archivo.
      */
     private Schema cargarEsquema(TipoComprobantePerfil perfil) {
         SchemaFactory schemaFactory = SchemaFactory.newInstance(XMLConstants.W3C_XML_SCHEMA_NS_URI);
+        try {
+            schemaFactory.setProperty(XMLConstants.ACCESS_EXTERNAL_DTD, "");
+            schemaFactory.setProperty(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
+        } catch (SAXException e) {
+            throw new IllegalStateException(
+                    "El SchemaFactory no soporta deshabilitar acceso externo a DTD/schema", e);
+        }
         String xsdClasspath = perfil.getXsdClasspath();
         ClassPathResource recursoXsd = new ClassPathResource(xsdClasspath);
         ClassPathResource recursoXmldsig = new ClassPathResource(XMLDSIG_CLASSPATH);
