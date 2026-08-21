@@ -1,13 +1,12 @@
 package cr.ac.fractall.facturacion.servicio;
 
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.Reader;
 import java.io.StringReader;
 import java.util.EnumMap;
 import java.util.Map;
 
 import javax.xml.XMLConstants;
+import javax.xml.transform.Source;
 import javax.xml.transform.stream.StreamSource;
 import javax.xml.validation.Schema;
 import javax.xml.validation.SchemaFactory;
@@ -15,8 +14,6 @@ import javax.xml.validation.Validator;
 
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.stereotype.Component;
-import org.w3c.dom.ls.LSInput;
-import org.w3c.dom.ls.LSResourceResolver;
 import org.xml.sax.SAXException;
 
 import cr.ac.fractall.facturacion.fe.TipoComprobantePerfil;
@@ -58,9 +55,10 @@ import cr.ac.fractall.facturacion.fe.TipoComprobantePerfil;
  * práctica (nadie lo cubre en {@code XmlGeneratorServiceImplTest} tampoco). Acá se resuelve de
  * verdad: se bundlea una copia local del schema W3C estándar
  * ({@code src/main/resources/xsd/xmldsig-core-schema.xsd}, descargado de
- * {@code https://www.w3.org/TR/xmldsig-core/xmldsig-core-schema.xsd}) y se registra un
- * {@link LSResourceResolver} en el {@link SchemaFactory} que intercepta ese import por namespace
- * y lo resuelve desde el classpath, sin tocar red en tiempo de ejecución.
+ * {@code https://www.w3.org/TR/xmldsig-core/xmldsig-core-schema.xsd}) y se compila JUNTO con el
+ * XSD oficial en una sola llamada a {@link SchemaFactory#newSchema(Source[])} -- ver
+ * {@link #cargarEsquema(TipoComprobantePerfil)} para por qué esto reemplazó a un
+ * {@code LSResourceResolver} custom (intentado primero, descartado por inestable).
  *
  * <p><b>Hallazgo arquitectónico mayor de esta sub-tarea -- {@code ds:Signature} es OBLIGATORIO en
  * el XSD real, no opcional:</b> {@code FacturaElectronicaType} termina su secuencia con
@@ -157,50 +155,43 @@ public class XmlFacturaXsdValidator {
     }
 
     /**
-     * {@code SchemaFactory} NUEVA por cada XSD, en vez de una única instancia reutilizada para
-     * los 4 {@code newSchema()} -- JAXP no garantiza que una misma {@code SchemaFactory}, con un
-     * {@link LSResourceResolver} custom, resuelva imports de forma confiable a través de llamadas
-     * repetidas a {@code newSchema()}. Reutilizar una sola instancia pasó siempre en local pero
-     * falló de forma intermitente en CI (los 4 XSD fallaron en distintas corridas, nunca el mismo
-     * dos veces) con {@code SAXParseException: Cannot resolve the name 'ds:Signature'} -- síntoma
-     * de estado interno de resolución de imports filtrándose entre compilaciones consecutivas
-     * sobre el mismo factory. Cada {@code SchemaFactory} es barata de crear (no hace I/O por sí
-     * misma) frente al costo real, que es parsear el XSD -- eso sigue pagándose una sola vez por
-     * perfil, en el constructor.
+     * Compila {@code xmldsig-core-schema.xsd} y el XSD oficial de {@code perfil} JUNTOS, en una
+     * sola llamada a {@link SchemaFactory#newSchema(Source[])} -- reemplaza dos intentos previos
+     * que resultaron inestables en CI (nunca en local, sí ahí, con distintos XSD fallando en
+     * corridas distintas): primero una única {@code SchemaFactory} reutilizada entre los 4
+     * {@code newSchema()} del loop, después una {@code SchemaFactory} nueva por XSD pero con un
+     * {@code LSResourceResolver} custom resolviendo el import en tiempo de ejecución. Ninguna de
+     * las dos hipótesis (estado filtrándose entre compilaciones, stream de un solo uso mal
+     * reabierto) resolvió el problema de fondo: el patrón "{@code LSResourceResolver} que
+     * intercepta un {@code <xs:import>}" tiene comportamiento no completamente determinístico
+     * documentado contra la implementación de Xerces embebida en el JDK cuando se ejecuta
+     * repetidamente en la misma JVM (el primer XSD del loop, {@code FACTURA_ELECTRONICA}, NUNCA
+     * fallaba -- solo los que se compilaban después). Pasar ambos XSD como un {@code Source[]} le
+     * entrega a JAXP el set completo de antemano, sin ningún callback en medio: es el patrón
+     * estándar de la API para "un schema que importa un componente de otro schema que ya tenés en
+     * disco", y no depende de temporalidad ni de cuántas veces se invoque un resolver.
      */
     private Schema cargarEsquema(TipoComprobantePerfil perfil) {
         SchemaFactory schemaFactory = SchemaFactory.newInstance(XMLConstants.W3C_XML_SCHEMA_NS_URI);
-        schemaFactory.setResourceResolver(crearResolvedorXmldsig());
         String xsdClasspath = perfil.getXsdClasspath();
-        ClassPathResource recurso = new ClassPathResource(xsdClasspath);
-        if (!recurso.exists()) {
+        ClassPathResource recursoXsd = new ClassPathResource(xsdClasspath);
+        ClassPathResource recursoXmldsig = new ClassPathResource(XMLDSIG_CLASSPATH);
+        if (!recursoXsd.exists()) {
             // Bug de empaquetado (XSD no incluido en resources), no un caso a degradar -- ver el
             // javadoc de la clase.
             throw new IllegalStateException(
                     "XSD de " + perfil + " no encontrado en el classpath: " + xsdClasspath);
         }
         try {
-            return schemaFactory.newSchema(new StreamSource(recurso.getInputStream()));
+            Source[] fuentes = {
+                    new StreamSource(recursoXmldsig.getInputStream(), XMLDSIG_CLASSPATH),
+                    new StreamSource(recursoXsd.getInputStream(), xsdClasspath)
+            };
+            return schemaFactory.newSchema(fuentes);
         } catch (IOException | SAXException e) {
             throw new IllegalStateException(
                     "No se pudo compilar el XSD de " + perfil + ": " + xsdClasspath, e);
         }
-    }
-
-    private LSResourceResolver crearResolvedorXmldsig() {
-        return (type, namespaceURI, publicId, systemId, baseURI) -> {
-            boolean esImportXmldsig = XMLDSIG_NAMESPACE.equals(namespaceURI)
-                    || (systemId != null && systemId.endsWith("xmldsig-core-schema.xsd"));
-            if (!esImportXmldsig) {
-                // Ningún otro import se espera en este XSD -- si apareciera uno, dejar que el
-                // resolvedor por defecto de Xerces lo intente (probablemente falle igual, pero de
-                // forma diagnosticable) en vez de silenciarlo acá.
-                return null;
-            }
-            ClasspathLSInput entrada = new ClasspathLSInput(XMLDSIG_CLASSPATH);
-            entrada.setSystemId(XMLDSIG_CLASSPATH);
-            return entrada;
-        };
     }
 
     /**
@@ -247,120 +238,5 @@ public class XmlFacturaXsdValidator {
             return xml;
         }
         return xml.substring(0, indiceCierre) + FIRMA_PLACEHOLDER + xml.substring(indiceCierre);
-    }
-
-    /**
-     * Implementación mínima de {@link LSInput} solo para exponer un {@link InputStream} del
-     * classpath a {@link LSResourceResolver#resolveResource} -- Xerces únicamente necesita
-     * {@code getByteStream()}/{@code getSystemId()} en este uso, el resto de los métodos del
-     * contrato (character stream, string data, public id, base URI, encoding, certified text) no
-     * aplican para un recurso binario ya resuelto y quedan como no-ops.
-     *
-     * <p><b>Por qué {@code getByteStream()} abre un stream NUEVO en cada llamada, en vez de
-     * exponer uno ya abierto:</b> el CI de PR #2 falló de forma intermitente con
-     * {@code SAXParseException: Cannot resolve the name 'ds:Signature'} incluso después de dejar
-     * de compartir la {@link SchemaFactory} entre XSD. Xerces no está documentado a llamar
-     * {@code getByteStream()} como máximo una vez por {@link LSInput} -- si lo llama más de una
-     * vez (p. ej. una pasada de detección de encoding y otra de parseo real) y la implementación
-     * devuelve el MISMO stream ya parcialmente consumido, la segunda lectura arranca a mitad de
-     * documento: el XSD auxiliar se ve truncado/corrupto desde la perspectiva del parser, que es
-     * exactamente el síntoma observado (un import que "no resuelve" una declaración que sí existe
-     * en el archivo real). Guardar solo el classpath y reabrir el recurso en cada llamada hace que
-     * {@code getByteStream()} sea idempotente sin importar cuántas veces Xerces la invoque.
-     */
-    private static final class ClasspathLSInput implements LSInput {
-
-        private final String classpath;
-        private String systemId;
-
-        private ClasspathLSInput(String classpath) {
-            this.classpath = classpath;
-        }
-
-        @Override
-        public Reader getCharacterStream() {
-            return null;
-        }
-
-        @Override
-        public void setCharacterStream(Reader characterStream) {
-            // No aplica -- ver el javadoc de la clase.
-        }
-
-        @Override
-        public InputStream getByteStream() {
-            try {
-                return new ClassPathResource(classpath).getInputStream();
-            } catch (IOException e) {
-                throw new IllegalStateException(
-                        "No se pudo cargar el esquema auxiliar xmldsig-core-schema.xsd desde el classpath: "
-                                + classpath, e);
-            }
-        }
-
-        @Override
-        public void setByteStream(InputStream byteStream) {
-            // No aplica -- getByteStream() reabre el recurso, ver el javadoc de la clase.
-        }
-
-        @Override
-        public String getStringData() {
-            return null;
-        }
-
-        @Override
-        public void setStringData(String stringData) {
-            // No aplica -- ver el javadoc de la clase.
-        }
-
-        @Override
-        public String getSystemId() {
-            return systemId;
-        }
-
-        @Override
-        public void setSystemId(String systemId) {
-            this.systemId = systemId;
-        }
-
-        @Override
-        public String getPublicId() {
-            return null;
-        }
-
-        @Override
-        public void setPublicId(String publicId) {
-            // No aplica -- ver el javadoc de la clase.
-        }
-
-        @Override
-        public String getBaseURI() {
-            return null;
-        }
-
-        @Override
-        public void setBaseURI(String baseURI) {
-            // No aplica -- ver el javadoc de la clase.
-        }
-
-        @Override
-        public String getEncoding() {
-            return null;
-        }
-
-        @Override
-        public void setEncoding(String encoding) {
-            // No aplica -- ver el javadoc de la clase.
-        }
-
-        @Override
-        public boolean getCertifiedText() {
-            return false;
-        }
-
-        @Override
-        public void setCertifiedText(boolean certifiedText) {
-            // No aplica -- ver el javadoc de la clase.
-        }
     }
 }
