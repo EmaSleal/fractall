@@ -1,0 +1,54 @@
+name: nc-nd-sandbox
+
+# Release 2 / Fase B (diseño D-H, criterio de salida "Opcional SANDBOX round-trip"): corre
+# NotaCreditoDebitoSandboxIT, que hace un round-trip REAL de una Nota de Crédito y una Nota de
+# Débito contra el ambiente SANDBOX de Hacienda (https://api-sandbox.comprobanteselectronicos.go.cr).
+#
+# Deliberadamente SEPARADO del gate de PR (tests.yml, ver el commit 07617bb): nunca se dispara por
+# push ni pull_request. Solo workflow_dispatch manual -- este es un round-trip contra un tercero
+# externo (Hacienda), no una prueba hermética, y no debe bloquear ni ralentizar cada PR.
+#
+# Secretos de repo esperados (NINGUNO existe todavía al momento de crear este workflow -- deben
+# aprovisionarse como infraestructura nueva antes del primer disparo manual; ver el javadoc de
+# NotaCreditoDebitoSandboxIT para el detalle de cada uno):
+#   FRACTALL_SANDBOX_CEDULA               -- cédula del emisor ya registrado en SANDBOX de Hacienda
+#   FRACTALL_SANDBOX_TIPO_IDENTIFICACION  -- tipo de identificación del emisor (01-04)
+#   FRACTALL_SANDBOX_CODIGO_ACTIVIDAD     -- código de actividad económica registrado
+#   FRACTALL_SANDBOX_P12_BASE64           -- certificado .p12 REAL del emisor, codificado en Base64
+#                                             (no puede ser un certificado autofirmado local --
+#                                             Hacienda valida la cadena de confianza)
+#   FRACTALL_SANDBOX_P12_PIN              -- PIN del certificado anterior
+#   FRACTALL_SANDBOX_HACIENDA_USUARIO     -- usuario del API de Hacienda (cpj-cedula-99/cpf-cedula-99)
+#   FRACTALL_SANDBOX_HACIENDA_PASSWORD    -- contraseña del API de Hacienda
+#
+# Si falta cualquiera de estos secretos, NotaCreditoDebitoSandboxIT se salta limpiamente (JUnit5
+# Assumptions.assumeTrue) en vez de fallar de forma confusa -- ver su javadoc.
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  sandbox-round-trip:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Run NotaCreditoDebitoSandboxIT (real SANDBOX round-trip, bounded polling)
+        env:
+          FRACTALL_SANDBOX_CEDULA: ${{ secrets.FRACTALL_SANDBOX_CEDULA }}
+          FRACTALL_SANDBOX_TIPO_IDENTIFICACION: ${{ secrets.FRACTALL_SANDBOX_TIPO_IDENTIFICACION }}
+          FRACTALL_SANDBOX_CODIGO_ACTIVIDAD: ${{ secrets.FRACTALL_SANDBOX_CODIGO_ACTIVIDAD }}
+          FRACTALL_SANDBOX_P12_BASE64: ${{ secrets.FRACTALL_SANDBOX_P12_BASE64 }}
+          FRACTALL_SANDBOX_P12_PIN: ${{ secrets.FRACTALL_SANDBOX_P12_PIN }}
+          FRACTALL_SANDBOX_HACIENDA_USUARIO: ${{ secrets.FRACTALL_SANDBOX_HACIENDA_USUARIO }}
+          FRACTALL_SANDBOX_HACIENDA_PASSWORD: ${{ secrets.FRACTALL_SANDBOX_HACIENDA_PASSWORD }}
+        run: >
+          ./mvnw --batch-mode test
+          -Dgroups=sandbox
+          -DexcludedGroups=

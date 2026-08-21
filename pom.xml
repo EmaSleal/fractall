@@ -28,6 +28,11 @@
 	</scm>
 	<properties>
 		<java.version>21</java.version>
+		<!-- Release 2 / Fase B (diseño D-H): valor por defecto del gate de PR, sobreescribible con
+		     `-DexcludedGroups=` (vacío) para que NotaCreditoDebitoSandboxIT corra vía
+		     workflow_dispatch (ver .github/workflows/nc-nd-sandbox.yml). No se declara `groups` acá
+		     a propósito: sin `-Dgroups=sandbox`, el default de surefire ya no filtra por tag. -->
+		<excludedGroups>sandbox</excludedGroups>
 	</properties>
 	<dependencies>
 		<dependency>
@@ -268,6 +273,32 @@
 							<artifactId>lombok</artifactId>
 						</exclude>
 					</excludes>
+				</configuration>
+			</plugin>
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-surefire-plugin</artifactId>
+				<configuration>
+					<!-- Brecha preexistente descubierta al implementar la Fase B: los patrones de
+					     inclusión por defecto de surefire (Test*.java, *Test.java, *Tests.java,
+					     *TestCase.java) NUNCA incluyen *IT.java (ese patrón es de failsafe, un plugin
+					     no configurado en este proyecto). FacturaElectronicaFullFieldsIT llevaba
+					     desde su creación sin correr jamás bajo `./mvnw test` (el comando exacto del
+					     gate de CI, tests.yml) salvo que se invocara con `-Dtest=` explícito. Sin este
+					     include explícito, NotaCreditoDebitoEmisionIT (criterio de salida de esta
+					     fase, "dentro de ./mvnw test") tendría el mismo problema. -->
+					<includes>
+						<include>**/Test*.java</include>
+						<include>**/*Test.java</include>
+						<include>**/*Tests.java</include>
+						<include>**/*TestCase.java</include>
+						<include>**/*IT.java</include>
+					</includes>
+					<!-- ${excludedGroups} (propiedad declarada arriba, default "sandbox") en vez de un
+					     literal, así `-DexcludedGroups=` en la línea de comandos SÍ sobreescribe este
+					     valor (un literal XML estático ignora el override de CLI). Ver el comentario de
+					     la propiedad y el javadoc de NotaCreditoDebitoSandboxIT. -->
+					<excludedGroups>${excludedGroups}</excludedGroups>
 				</configuration>
 			</plugin>
 			<plugin>
