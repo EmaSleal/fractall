@@ -4,6 +4,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.Reader;
 import java.io.StringReader;
+import java.util.EnumMap;
+import java.util.Map;
 
 import javax.xml.XMLConstants;
 import javax.xml.transform.stream.StreamSource;
@@ -16,6 +18,8 @@ import org.springframework.stereotype.Component;
 import org.w3c.dom.ls.LSInput;
 import org.w3c.dom.ls.LSResourceResolver;
 import org.xml.sax.SAXException;
+
+import cr.ac.fractall.facturacion.fe.TipoComprobantePerfil;
 
 /**
  * Valida un XML de Factura Electrónica contra el XSD v4.4 oficial de Hacienda Costa Rica
@@ -94,17 +98,23 @@ import org.xml.sax.SAXException;
  * vez compilado (así lo documenta la propia Javadoc de {@code javax.xml.validation}), así que
  * cachearlo en un bean {@code @Component} (singleton por defecto en Spring) es seguro. Lo que NO
  * se cachea es el {@link Validator} -- ese sí es stateful y no thread-safe, por eso
- * {@link #validar(String)} crea uno nuevo con {@link Schema#newValidator()} en cada llamada,
- * igual que el original.
+ * {@link #validar(String, TipoComprobantePerfil)} crea uno nuevo con {@link Schema#newValidator()}
+ * en cada llamada, igual que el original.
+ *
+ * <p><b>Release 2 / Fase B -- parametrizado por {@link TipoComprobantePerfil}:</b> lo descrito
+ * arriba, escrito para el Release 1 (solo Factura Electrónica), sigue siendo válido en su
+ * totalidad; lo único que cambia es que ahora se compilan y cachean los 4 esquemas v4.4 (uno por
+ * {@link TipoComprobantePerfil}), en un {@link EnumMap} en vez de un único {@link Schema}. El
+ * método de un solo argumento ({@code validar(String)}) se elimina por completo -- el único
+ * llamador real siempre tiene un perfil disponible (lo deriva del {@code ComprobanteElectronico}
+ * ya cargado), y mantener ambas firmas reintroduciría la trampa de sobrecarga ambigua ya
+ * documentada como ADR-1 en {@code ComprobanteXmlPersistenceService}.
  */
 @Component
 public class XmlFacturaXsdValidator {
 
-    private static final String XSD_CLASSPATH = "xsd/FacturaElectronica_V4.4.xsd";
     private static final String XMLDSIG_NAMESPACE = "http://www.w3.org/2000/09/xmldsig#";
     private static final String XMLDSIG_CLASSPATH = "xsd/xmldsig-core-schema.xsd";
-
-    private static final String CIERRE_RAIZ = "</FacturaElectronica>";
 
     /**
      * Placeholder de {@code <ds:Signature>} usado SOLO dentro de {@link #validar(String)} -- ver
@@ -129,29 +139,42 @@ public class XmlFacturaXsdValidator {
                     + "</ds:SignatureValue>"
                     + "</ds:Signature>";
 
-    private final Schema schema;
+    // EnumMap en vez de Map<String, Schema> -- clave total por construcción (una entrada por
+    // cada TipoComprobantePerfil, sin posibilidad de un mapa parcialmente poblado en runtime).
+    // Ver el javadoc de la clase, sección "Release 2 / Fase B".
+    private final Map<TipoComprobantePerfil, Schema> esquemas;
 
     public XmlFacturaXsdValidator() {
-        this.schema = cargarSchema();
+        this.esquemas = cargarEsquemas();
     }
 
-    private Schema cargarSchema() {
-        ClassPathResource recurso = new ClassPathResource(XSD_CLASSPATH);
+    private Map<TipoComprobantePerfil, Schema> cargarEsquemas() {
+        Map<TipoComprobantePerfil, Schema> resultado = new EnumMap<>(TipoComprobantePerfil.class);
+        SchemaFactory schemaFactory = SchemaFactory.newInstance(XMLConstants.W3C_XML_SCHEMA_NS_URI);
+        // Resuelve el import a xmldsig-core-schema.xsd desde el classpath -- ver el javadoc
+        // de la clase sobre por qué la schemaLocation relativa del XSD oficial no sirve acá. Los
+        // 4 XSD importan el mismo namespace xmldsig, así que un único resolvedor sirve para todos.
+        schemaFactory.setResourceResolver(crearResolvedorXmldsig());
+        for (TipoComprobantePerfil perfil : TipoComprobantePerfil.values()) {
+            resultado.put(perfil, cargarEsquema(schemaFactory, perfil));
+        }
+        return resultado;
+    }
+
+    private Schema cargarEsquema(SchemaFactory schemaFactory, TipoComprobantePerfil perfil) {
+        String xsdClasspath = perfil.getXsdClasspath();
+        ClassPathResource recurso = new ClassPathResource(xsdClasspath);
         if (!recurso.exists()) {
             // Bug de empaquetado (XSD no incluido en resources), no un caso a degradar -- ver el
             // javadoc de la clase.
             throw new IllegalStateException(
-                    "XSD de Factura Electrónica no encontrado en el classpath: " + XSD_CLASSPATH);
+                    "XSD de " + perfil + " no encontrado en el classpath: " + xsdClasspath);
         }
         try {
-            SchemaFactory schemaFactory = SchemaFactory.newInstance(XMLConstants.W3C_XML_SCHEMA_NS_URI);
-            // Resuelve el import a xmldsig-core-schema.xsd desde el classpath -- ver el javadoc
-            // de la clase sobre por qué la schemaLocation relativa del XSD oficial no sirve acá.
-            schemaFactory.setResourceResolver(crearResolvedorXmldsig());
             return schemaFactory.newSchema(new StreamSource(recurso.getInputStream()));
         } catch (IOException | SAXException e) {
             throw new IllegalStateException(
-                    "No se pudo compilar el XSD de Factura Electrónica: " + XSD_CLASSPATH, e);
+                    "No se pudo compilar el XSD de " + perfil + ": " + xsdClasspath, e);
         }
     }
 
@@ -179,7 +202,7 @@ public class XmlFacturaXsdValidator {
     }
 
     /**
-     * Valida el XML contra el XSD de Factura Electrónica v4.4.
+     * Valida el XML contra el XSD v4.4 correspondiente a {@code perfil}.
      *
      * <p>Internamente valida una COPIA del XML con {@link #FIRMA_PLACEHOLDER} insertado -- ver el
      * javadoc de la clase ("Hallazgo arquitectónico mayor..."). El {@code xml} recibido nunca se
@@ -187,14 +210,19 @@ public class XmlFacturaXsdValidator {
      *
      * @param xml el XML ya generado (con declaración {@code <?xml ...?>} y namespace) a validar,
      *     sin firmar
+     * @param perfil el {@link TipoComprobantePerfil} que determina QUÉ esquema del
+     *     {@link #esquemas EnumMap} se usa -- si {@code xml} fue generado para un tipo de
+     *     comprobante distinto al de {@code perfil}, la validación DEBE fallar por mismatch de
+     *     elemento raíz/namespace, nunca pasar silenciosamente (ver
+     *     {@code XmlFacturaXsdValidatorProfileTest}).
      * @throws XmlFacturaInvalidoException si el XML no cumple el esquema -- el mensaje incluye el
      *     detalle de la regla del XSD que falló (via {@link SAXException#getMessage()}), útil
      *     para diagnosticar rechazos de Hacienda más adelante.
      */
-    public void validar(String xml) {
-        String xmlParaEsquema = insertarFirmaPlaceholder(xml);
+    public void validar(String xml, TipoComprobantePerfil perfil) {
+        String xmlParaEsquema = insertarFirmaPlaceholder(xml, perfil);
         try {
-            Validator validator = schema.newValidator();
+            Validator validator = esquemas.get(perfil).newValidator();
             validator.validate(new StreamSource(new StringReader(xmlParaEsquema)));
         } catch (SAXException e) {
             throw new XmlFacturaInvalidoException(e.getMessage(), e);
@@ -206,12 +234,13 @@ public class XmlFacturaXsdValidator {
     }
 
     /**
-     * Inserta {@link #FIRMA_PLACEHOLDER} justo antes del cierre de {@code <FacturaElectronica>}.
-     * Si el cierre esperado no aparece (documento con otra forma, ya inválido de por sí), se
-     * valida el XML tal cual -- el propio XSD reportará el problema real, más útil que enmascararlo.
+     * Inserta {@link #FIRMA_PLACEHOLDER} justo antes del cierre de {@code perfil.cierreRaiz()}.
+     * Si el cierre esperado no aparece (documento con otra forma, ya inválido de por sí -- o
+     * generado para un perfil distinto, ver el javadoc de {@link #validar}), se valida el XML tal
+     * cual -- el propio XSD reportará el problema real, más útil que enmascararlo.
      */
-    private String insertarFirmaPlaceholder(String xml) {
-        int indiceCierre = xml.lastIndexOf(CIERRE_RAIZ);
+    private String insertarFirmaPlaceholder(String xml, TipoComprobantePerfil perfil) {
+        int indiceCierre = xml.lastIndexOf(perfil.cierreRaiz());
         if (indiceCierre < 0) {
             return xml;
         }

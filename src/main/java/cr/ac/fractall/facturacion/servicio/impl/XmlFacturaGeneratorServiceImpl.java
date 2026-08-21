@@ -22,6 +22,7 @@ import cr.ac.fractall.catalogo.repositorio.ClienteRepository;
 import cr.ac.fractall.catalogo.repositorio.ProductoRepository;
 import cr.ac.fractall.empresa.modelo.Empresa;
 import cr.ac.fractall.empresa.repositorio.EmpresaRepository;
+import cr.ac.fractall.facturacion.fe.TipoComprobantePerfil;
 import cr.ac.fractall.facturacion.modelo.ComprobanteElectronico;
 import cr.ac.fractall.facturacion.modelo.Factura;
 import cr.ac.fractall.facturacion.modelo.FacturaInformacionReferencia;
@@ -41,6 +42,7 @@ import cr.ac.fractall.facturacion.repositorio.LineaCodigoComercialRepository;
 import cr.ac.fractall.facturacion.repositorio.LineaDescuentoRepository;
 import cr.ac.fractall.facturacion.repositorio.LineaFacturaRepository;
 import cr.ac.fractall.facturacion.servicio.ComprobanteElectronicoNoEncontradoException;
+import cr.ac.fractall.facturacion.servicio.ComprobanteSinReferenciaObligatoriaException;
 import cr.ac.fractall.facturacion.servicio.EmpresaSinCorreoElectronicoException;
 import cr.ac.fractall.facturacion.servicio.XmlFacturaGeneratorService;
 import cr.ac.fractall.facturacion.servicio.XmlFacturaXsdValidator;
@@ -84,8 +86,6 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 public class XmlFacturaGeneratorServiceImpl implements XmlFacturaGeneratorService {
 
-    private static final String NAMESPACE =
-            "https://cdn.comprobanteselectronicos.go.cr/xml-schemas/v4.4/facturaElectronica";
     private static final DateTimeFormatter DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ssXXX");
     private static final ZoneId CR_ZONE = ZoneId.of("America/Costa_Rica");
     private static final BigDecimal CIEN = new BigDecimal("100");
@@ -148,6 +148,11 @@ public class XmlFacturaGeneratorServiceImpl implements XmlFacturaGeneratorServic
         ComprobanteElectronico comprobante = comprobanteElectronicoRepository.findById(comprobanteId)
                 .orElseThrow(() -> new ComprobanteElectronicoNoEncontradoException(comprobanteId));
 
+        // Release 2 / Fase B: el perfil (raíz, namespace, XSD, política de emisión) se deriva del
+        // comprobante ya cargado -- la firma de este método NO cambia, ver el diseño de Fase B,
+        // decisión D-C. Type-01 (Factura) sigue produciendo exactamente el mismo XML que antes.
+        TipoComprobantePerfil perfil = TipoComprobantePerfil.fromCodigo(comprobante.getTipoComprobante());
+
         // A partir de aquí las FKs (facturaId, clienteId, productoId) son invariantes internas
         // resueltas desde un comprobante ya validado como del tenant actual -- una FK rota acá
         // es un bug de integridad de datos, no una entrada de usuario inválida, así que se lanza
@@ -177,19 +182,29 @@ public class XmlFacturaGeneratorServiceImpl implements XmlFacturaGeneratorServic
 
         StringBuilder xml = new StringBuilder();
         xml.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
-        xml.append("<FacturaElectronica");
+        xml.append("<").append(perfil.getElementoRaiz());
         xml.append(" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"");
         xml.append(" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\"");
-        xml.append(" xmlns=\"").append(NAMESPACE).append("\"");
-        xml.append(" xsi:schemaLocation=\"").append(NAMESPACE).append(" ").append(NAMESPACE).append(".xsd\"");
+        xml.append(" xmlns=\"").append(perfil.namespace()).append("\"");
+        xml.append(" xsi:schemaLocation=\"").append(perfil.namespace()).append(" ").append(perfil.namespace()).append(".xsd\"");
         xml.append(">");
 
         xml.append("<Clave>").append(comprobante.getClaveNumerica()).append("</Clave>");
         xml.append("<ProveedorSistemas>").append(obtenerProveedorSistemas(empresa)).append("</ProveedorSistemas>");
-        xml.append("<CodigoActividadEmisor>").append(obtenerActividadEconomica(empresa)).append("</CodigoActividadEmisor>");
 
-        // T-16: CodigoActividadReceptor at ROOT level (after CodigoActividadEmisor)
-        if (factura.getCodigoActividadReceptor() != null && !factura.getCodigoActividadReceptor().isBlank()) {
+        // CodigoActividadEmisor: obligatorio (con fallback "620100") solo para los perfiles donde
+        // el XSD real no lo marca minOccurs="0" (Factura/Tiquete); para ND/NC se emite solo si la
+        // empresa tiene un código real, sin sintetizar un fallback que el XSD no exige.
+        if (perfil.isCodigoActividadEmisorObligatorio()) {
+            xml.append("<CodigoActividadEmisor>").append(obtenerActividadEconomica(empresa)).append("</CodigoActividadEmisor>");
+        } else if (empresa.getCodigoActividad() != null && !empresa.getCodigoActividad().isBlank()) {
+            xml.append("<CodigoActividadEmisor>").append(empresa.getCodigoActividad()).append("</CodigoActividadEmisor>");
+        }
+
+        // T-16: CodigoActividadReceptor at ROOT level (after CodigoActividadEmisor) -- ausente del
+        // XSD de Tiquete (perfil.isCodigoActividadReceptorSoportado() == false para ese perfil).
+        if (perfil.isCodigoActividadReceptorSoportado()
+                && factura.getCodigoActividadReceptor() != null && !factura.getCodigoActividadReceptor().isBlank()) {
             xml.append("<CodigoActividadReceptor>")
                     .append(factura.getCodigoActividadReceptor())
                     .append("</CodigoActividadReceptor>");
@@ -200,7 +215,13 @@ public class XmlFacturaGeneratorServiceImpl implements XmlFacturaGeneratorServic
         xml.append("<FechaEmision>").append(formatearFecha(comprobante.getFechaEmision())).append("</FechaEmision>");
 
         agregarEmisor(xml, empresa);
-        agregarReceptor(xml, cliente);
+        // Receptor: política de EMISIÓN, no minOccurs crudo (los 4 XSD lo marcan minOccurs="0")
+        // -- ver el javadoc de TipoComprobantePerfil#receptorObligatorio. No-op en Fase B: los 4
+        // perfiles cableados hoy (solo 01, vía FacturaService) siempre tienen receptorObligatorio
+        // == true; el gate queda listo para cuando Fase C permita un ND/NC sin cliente.
+        if (perfil.isReceptorObligatorio()) {
+            agregarReceptor(xml, cliente);
+        }
 
         String condicionVenta = factura.getCondicionVenta() != null ? factura.getCondicionVenta() : "01";
         xml.append("<CondicionVenta>").append(condicionVenta).append("</CondicionVenta>");
@@ -216,19 +237,19 @@ public class XmlFacturaGeneratorServiceImpl implements XmlFacturaGeneratorServic
             xml.append("<PlazoCredito>").append(factura.getPlazoCredito()).append("</PlazoCredito>");
         }
 
-        agregarDetalleFactura(xml, contextos);
+        agregarDetalleFactura(xml, contextos, perfil);
         agregarOtrosCargos(xml, facturaCtx.otrosCargos());
         agregarResumen(xml, factura, contextos, facturaCtx.mediosPago(), facturaCtx.otrosCargos());
-        agregarInformacionReferencia(xml, facturaCtx.informacionReferencia());
+        agregarInformacionReferencia(xml, facturaCtx.informacionReferencia(), perfil);
 
-        xml.append("</FacturaElectronica>");
+        xml.append(perfil.cierreRaiz());
 
         // Validación contra el XSD real (equivalente a XmlValidator.validarXml en el original) --
         // ver el javadoc de XmlFacturaXsdValidator. Lanza XmlFacturaInvalidoException si el XML
         // no cumple el esquema; nunca debería pasar con datos ya validados por FacturaService,
         // así que es un IllegalStateException-como-familia (bug interno), no un 404 de dominio.
         String xmlGenerado = xml.toString();
-        xmlFacturaXsdValidator.validar(xmlGenerado);
+        xmlFacturaXsdValidator.validar(xmlGenerado, perfil);
         return xmlGenerado;
     }
 
@@ -330,7 +351,7 @@ public class XmlFacturaGeneratorServiceImpl implements XmlFacturaGeneratorServic
         xml.append("</Receptor>");
     }
 
-    private void agregarDetalleFactura(StringBuilder xml, List<LineaContexto> contextos) {
+    private void agregarDetalleFactura(StringBuilder xml, List<LineaContexto> contextos, TipoComprobantePerfil perfil) {
         xml.append("<DetalleServicio>");
 
         for (LineaContexto contexto : contextos) {
@@ -355,7 +376,8 @@ public class XmlFacturaGeneratorServiceImpl implements XmlFacturaGeneratorServic
                     ? producto.getCodigoUnidadFe() : "Unid";
             xml.append("<UnidadMedida>").append(unidadMedida).append("</UnidadMedida>");
 
-            if (linea.getTipoTransaccion() != null && !linea.getTipoTransaccion().isBlank()) {
+            if (perfil.isTipoTransaccionSoportado()
+                    && linea.getTipoTransaccion() != null && !linea.getTipoTransaccion().isBlank()) {
                 xml.append("<TipoTransaccion>").append(linea.getTipoTransaccion()).append("</TipoTransaccion>");
             }
 
@@ -727,8 +749,17 @@ public class XmlFacturaGeneratorServiceImpl implements XmlFacturaGeneratorServic
     }
 
     // T-21: InformacionReferencia block after </ResumenFactura>
+    //
+    // Release 2 / Fase B: el XSD real exige mínimo 1 ocurrencia para ND/NC (sin minOccurs="0"),
+    // a diferencia de Factura/Tiquete donde es opcional -- ver perfil.getReferenciasMinimas() y
+    // el diseño de Fase B, decisión D-C sitio #7. Se falla ruidosamente en Java (mensaje
+    // diagnosticable) en vez de dejar que el XSD reporte una cardinalidad incumplida de forma
+    // opaca cuando la validación corra más abajo.
     private void agregarInformacionReferencia(StringBuilder xml,
-            List<FacturaInformacionReferencia> referencias) {
+            List<FacturaInformacionReferencia> referencias, TipoComprobantePerfil perfil) {
+        if (referencias.size() < perfil.getReferenciasMinimas()) {
+            throw new ComprobanteSinReferenciaObligatoriaException(perfil, referencias.size());
+        }
         for (FacturaInformacionReferencia ref : referencias) {
             xml.append("<InformacionReferencia>");
             xml.append("<TipoDocIR>").append(ref.getTipoDocIr()).append("</TipoDocIR>");
