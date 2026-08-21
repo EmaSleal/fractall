@@ -197,16 +197,9 @@ public class XmlFacturaXsdValidator {
                 // forma diagnosticable) en vez de silenciarlo acá.
                 return null;
             }
-            try {
-                InputStream contenido = new ClassPathResource(XMLDSIG_CLASSPATH).getInputStream();
-                ClasspathLSInput entrada = new ClasspathLSInput(contenido);
-                entrada.setSystemId(XMLDSIG_CLASSPATH);
-                return entrada;
-            } catch (IOException e) {
-                throw new IllegalStateException(
-                        "No se pudo cargar el esquema auxiliar xmldsig-core-schema.xsd desde el classpath: "
-                                + XMLDSIG_CLASSPATH, e);
-            }
+            ClasspathLSInput entrada = new ClasspathLSInput(XMLDSIG_CLASSPATH);
+            entrada.setSystemId(XMLDSIG_CLASSPATH);
+            return entrada;
         };
     }
 
@@ -262,14 +255,26 @@ public class XmlFacturaXsdValidator {
      * {@code getByteStream()}/{@code getSystemId()} en este uso, el resto de los métodos del
      * contrato (character stream, string data, public id, base URI, encoding, certified text) no
      * aplican para un recurso binario ya resuelto y quedan como no-ops.
+     *
+     * <p><b>Por qué {@code getByteStream()} abre un stream NUEVO en cada llamada, en vez de
+     * exponer uno ya abierto:</b> el CI de PR #2 falló de forma intermitente con
+     * {@code SAXParseException: Cannot resolve the name 'ds:Signature'} incluso después de dejar
+     * de compartir la {@link SchemaFactory} entre XSD. Xerces no está documentado a llamar
+     * {@code getByteStream()} como máximo una vez por {@link LSInput} -- si lo llama más de una
+     * vez (p. ej. una pasada de detección de encoding y otra de parseo real) y la implementación
+     * devuelve el MISMO stream ya parcialmente consumido, la segunda lectura arranca a mitad de
+     * documento: el XSD auxiliar se ve truncado/corrupto desde la perspectiva del parser, que es
+     * exactamente el síntoma observado (un import que "no resuelve" una declaración que sí existe
+     * en el archivo real). Guardar solo el classpath y reabrir el recurso en cada llamada hace que
+     * {@code getByteStream()} sea idempotente sin importar cuántas veces Xerces la invoque.
      */
     private static final class ClasspathLSInput implements LSInput {
 
-        private final InputStream byteStream;
+        private final String classpath;
         private String systemId;
 
-        private ClasspathLSInput(InputStream byteStream) {
-            this.byteStream = byteStream;
+        private ClasspathLSInput(String classpath) {
+            this.classpath = classpath;
         }
 
         @Override
@@ -284,12 +289,18 @@ public class XmlFacturaXsdValidator {
 
         @Override
         public InputStream getByteStream() {
-            return byteStream;
+            try {
+                return new ClassPathResource(classpath).getInputStream();
+            } catch (IOException e) {
+                throw new IllegalStateException(
+                        "No se pudo cargar el esquema auxiliar xmldsig-core-schema.xsd desde el classpath: "
+                                + classpath, e);
+            }
         }
 
         @Override
         public void setByteStream(InputStream byteStream) {
-            // No aplica -- el stream se fija en el constructor.
+            // No aplica -- getByteStream() reabre el recurso, ver el javadoc de la clase.
         }
 
         @Override
