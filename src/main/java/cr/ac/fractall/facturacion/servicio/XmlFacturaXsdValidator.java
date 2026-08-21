@@ -150,18 +150,27 @@ public class XmlFacturaXsdValidator {
 
     private Map<TipoComprobantePerfil, Schema> cargarEsquemas() {
         Map<TipoComprobantePerfil, Schema> resultado = new EnumMap<>(TipoComprobantePerfil.class);
-        SchemaFactory schemaFactory = SchemaFactory.newInstance(XMLConstants.W3C_XML_SCHEMA_NS_URI);
-        // Resuelve el import a xmldsig-core-schema.xsd desde el classpath -- ver el javadoc
-        // de la clase sobre por qué la schemaLocation relativa del XSD oficial no sirve acá. Los
-        // 4 XSD importan el mismo namespace xmldsig, así que un único resolvedor sirve para todos.
-        schemaFactory.setResourceResolver(crearResolvedorXmldsig());
         for (TipoComprobantePerfil perfil : TipoComprobantePerfil.values()) {
-            resultado.put(perfil, cargarEsquema(schemaFactory, perfil));
+            resultado.put(perfil, cargarEsquema(perfil));
         }
         return resultado;
     }
 
-    private Schema cargarEsquema(SchemaFactory schemaFactory, TipoComprobantePerfil perfil) {
+    /**
+     * {@code SchemaFactory} NUEVA por cada XSD, en vez de una única instancia reutilizada para
+     * los 4 {@code newSchema()} -- JAXP no garantiza que una misma {@code SchemaFactory}, con un
+     * {@link LSResourceResolver} custom, resuelva imports de forma confiable a través de llamadas
+     * repetidas a {@code newSchema()}. Reutilizar una sola instancia pasó siempre en local pero
+     * falló de forma intermitente en CI (los 4 XSD fallaron en distintas corridas, nunca el mismo
+     * dos veces) con {@code SAXParseException: Cannot resolve the name 'ds:Signature'} -- síntoma
+     * de estado interno de resolución de imports filtrándose entre compilaciones consecutivas
+     * sobre el mismo factory. Cada {@code SchemaFactory} es barata de crear (no hace I/O por sí
+     * misma) frente al costo real, que es parsear el XSD -- eso sigue pagándose una sola vez por
+     * perfil, en el constructor.
+     */
+    private Schema cargarEsquema(TipoComprobantePerfil perfil) {
+        SchemaFactory schemaFactory = SchemaFactory.newInstance(XMLConstants.W3C_XML_SCHEMA_NS_URI);
+        schemaFactory.setResourceResolver(crearResolvedorXmldsig());
         String xsdClasspath = perfil.getXsdClasspath();
         ClassPathResource recurso = new ClassPathResource(xsdClasspath);
         if (!recurso.exists()) {
