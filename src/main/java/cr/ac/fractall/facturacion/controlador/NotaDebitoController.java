@@ -44,7 +44,7 @@ public class NotaDebitoController {
         this.comprobanteEmisionService = comprobanteEmisionService;
     }
 
-    @Operation(summary = "Emitir nota de débito electrónica")
+    @Operation(operationId = "crearNotaDebito", summary = "Emitir nota de débito electrónica")
     @ApiResponses({
         @ApiResponse(responseCode = "201", description = "Nota de débito emitida exitosamente",
             content = @Content(schema = @Schema(implementation = FacturaResponse.class))),
