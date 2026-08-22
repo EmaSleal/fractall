@@ -144,8 +144,10 @@ public class FacturaController {
             @RequestParam(required = false) @DateTimeFormat(iso = ISO.DATE) LocalDate desde,
             @RequestParam(required = false) @DateTimeFormat(iso = ISO.DATE) LocalDate hasta,
             @RequestParam(required = false) String estado,
+            @RequestParam(required = false) String tipoComprobante,
             @RequestParam(defaultValue = "20") @Min(1) @Max(100) int limit) {
-        return ResponseEntity.ok(facturaService.listar(cursor, clienteId, desde, hasta, estado, limit));
+        return ResponseEntity.ok(
+                facturaService.listar(cursor, clienteId, desde, hasta, estado, tipoComprobante, limit));
     }
 
     /**

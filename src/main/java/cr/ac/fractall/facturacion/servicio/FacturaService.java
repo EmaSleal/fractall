@@ -161,7 +161,8 @@ public class FacturaService {
      */
     @Transactional(readOnly = true)
     public PaginaResponse<FacturaResumenResponse> listar(
-            UUID cursor, UUID clienteId, LocalDate desde, LocalDate hasta, String estado, int limit) {
+            UUID cursor, UUID clienteId, LocalDate desde, LocalDate hasta, String estado,
+            String tipoComprobante, int limit) {
         UUID empresaId = TenantContext.get();
         List<Object[]> filas = facturaRepository.buscarNativo(
                 empresaId,
@@ -170,6 +171,7 @@ public class FacturaService {
                 desde != null ? desde.toString() : null,
                 hasta != null ? hasta.toString() : null,
                 estado,
+                tipoComprobante,
                 limit + 1);
         List<FacturaResumenResponse> resumen = filas.stream()
                 .map(FacturaService::mapearFila)
@@ -184,24 +186,25 @@ public class FacturaService {
 
     /**
      * Mapea una fila {@code Object[]} del resultado de la query nativa a {@link FacturaResumenResponse}.
-     * Orden de columnas: id, consecutivo, cliente_id, nombre, ambiente_hacienda, moneda, total,
-     * estado, ultimo_resultado_consulta, fecha_emision.
+     * Orden de columnas: id, consecutivo, tipo_comprobante, cliente_id, nombre, ambiente_hacienda,
+     * moneda, total, estado, ultimo_resultado_consulta, fecha_emision.
      */
     private static FacturaResumenResponse mapearFila(Object[] row) {
         UUID id = row[0] instanceof UUID u ? u : UUID.fromString(row[0].toString());
         String consecutivo = row[1] != null ? row[1].toString() : null;
-        UUID clienteId = row[2] != null
-                ? (row[2] instanceof UUID u ? u : UUID.fromString(row[2].toString()))
+        String tipoComprobante = row[2] != null ? row[2].toString() : null;
+        UUID clienteId = row[3] != null
+                ? (row[3] instanceof UUID u ? u : UUID.fromString(row[3].toString()))
                 : null;
-        String clienteNombre = row[3] != null ? row[3].toString() : null;
-        String ambienteHacienda = row[4] != null ? row[4].toString() : null;
-        String moneda = row[5] != null ? row[5].toString() : null;
-        BigDecimal total = row[6] != null ? new BigDecimal(row[6].toString()) : null;
-        String estado = row[7] != null ? row[7].toString() : null;
-        String ultimoResultadoConsulta = row[8] != null ? row[8].toString() : null;
+        String clienteNombre = row[4] != null ? row[4].toString() : null;
+        String ambienteHacienda = row[5] != null ? row[5].toString() : null;
+        String moneda = row[6] != null ? row[6].toString() : null;
+        BigDecimal total = row[7] != null ? new BigDecimal(row[7].toString()) : null;
+        String estado = row[8] != null ? row[8].toString() : null;
+        String ultimoResultadoConsulta = row[9] != null ? row[9].toString() : null;
         LocalDate fechaEmision = null;
-        if (row[9] != null) {
-            Object raw = row[9];
+        if (row[10] != null) {
+            Object raw = row[10];
             if (raw instanceof java.sql.Timestamp ts) {
                 fechaEmision = ts.toLocalDateTime().toLocalDate();
             } else if (raw instanceof java.sql.Date d) {
@@ -212,7 +215,7 @@ public class FacturaService {
                 fechaEmision = LocalDate.parse(raw.toString().substring(0, 10));
             }
         }
-        return new FacturaResumenResponse(id, consecutivo, clienteId, clienteNombre,
+        return new FacturaResumenResponse(id, consecutivo, tipoComprobante, clienteId, clienteNombre,
                 ambienteHacienda, moneda, total, estado, ultimoResultadoConsulta, fechaEmision);
     }
 

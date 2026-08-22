@@ -367,6 +367,7 @@ class NotaCreditoDebitoServiceTest {
 
         assertThat(response.lineas().get(0).cantidad()).isEqualByComparingTo(BigDecimal.TEN);
         assertThat(response.total()).isEqualByComparingTo(origen.factura().getTotal());
+        assertThat(response.facturaReferenciaId()).isEqualTo(origen.factura().getId());
     }
 
     /**

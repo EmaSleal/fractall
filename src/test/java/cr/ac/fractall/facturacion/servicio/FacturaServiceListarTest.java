@@ -106,13 +106,14 @@ class FacturaServiceListarTest {
 
     /**
      * Crea una fila {@code Object[]} compatible con la proyección de {@code buscarNativo}.
-     * Orden: id, consecutivo, cliente_id, nombre, ambiente_hacienda, moneda, total,
-     * estado, ultimo_resultado_consulta, fecha_emision (como String ISO).
+     * Orden: id, consecutivo, tipo_comprobante, cliente_id, nombre, ambiente_hacienda, moneda,
+     * total, estado, ultimo_resultado_consulta, fecha_emision (como String ISO).
      */
     private static Object[] filaResumen(int index) {
         return new Object[] {
             UUID.fromString(String.format("00000000-0000-0000-0001-%012d", index)),
             "FE-001-00100001500300000" + index,
+            "01",
             UUID.randomUUID(),
             "Cliente " + index,
             "01",
@@ -176,11 +177,11 @@ class FacturaServiceListarTest {
     @Test
     void listarConMenosItemsQueLimitRetornaNextCursorNull() {
         List<Object[]> cincoFilas = generarFilas(5);
-        when(facturaRepository.buscarNativo(eq(EMPRESA_ID), isNull(), isNull(), isNull(), isNull(), isNull(), eq(21)))
+        when(facturaRepository.buscarNativo(eq(EMPRESA_ID), isNull(), isNull(), isNull(), isNull(), isNull(), isNull(), eq(21)))
                 .thenReturn(cincoFilas);
 
         PaginaResponse<FacturaResumenResponse> respuesta =
-                facturaService.listar(null, null, null, null, null, 20);
+                facturaService.listar(null, null, null, null, null, null, 20);
 
         assertThat(respuesta.items()).hasSize(5);
         assertThat(respuesta.nextCursor()).isNull();
@@ -191,11 +192,11 @@ class FacturaServiceListarTest {
         List<Object[]> veintiUnaFilas = generarFilas(21);
         // The 20th row id (index 19 in the list) becomes nextCursor
         UUID idDelItem20 = (UUID) veintiUnaFilas.get(19)[0];
-        when(facturaRepository.buscarNativo(eq(EMPRESA_ID), isNull(), isNull(), isNull(), isNull(), isNull(), eq(21)))
+        when(facturaRepository.buscarNativo(eq(EMPRESA_ID), isNull(), isNull(), isNull(), isNull(), isNull(), isNull(), eq(21)))
                 .thenReturn(veintiUnaFilas);
 
         PaginaResponse<FacturaResumenResponse> respuesta =
-                facturaService.listar(null, null, null, null, null, 20);
+                facturaService.listar(null, null, null, null, null, null, 20);
 
         assertThat(respuesta.items()).hasSize(20);
         assertThat(respuesta.nextCursor()).isEqualTo(idDelItem20);
@@ -203,46 +204,58 @@ class FacturaServiceListarTest {
 
     @Test
     void listarVerificaQueBuscarRecibeLimit1MasQueElSolicitado() {
-        when(facturaRepository.buscarNativo(eq(EMPRESA_ID), isNull(), isNull(), isNull(), isNull(), isNull(), eq(11)))
+        when(facturaRepository.buscarNativo(eq(EMPRESA_ID), isNull(), isNull(), isNull(), isNull(), isNull(), isNull(), eq(11)))
                 .thenReturn(generarFilas(5));
 
-        facturaService.listar(null, null, null, null, null, 10);
+        facturaService.listar(null, null, null, null, null, null, 10);
 
-        verify(facturaRepository).buscarNativo(eq(EMPRESA_ID), isNull(), isNull(), isNull(), isNull(), isNull(), eq(11));
+        verify(facturaRepository).buscarNativo(eq(EMPRESA_ID), isNull(), isNull(), isNull(), isNull(), isNull(), isNull(), eq(11));
     }
 
     @Test
     void listarConClienteIdFiltroForwardea() {
         UUID clienteId = UUID.randomUUID();
         String clienteIdStr = clienteId.toString();
-        when(facturaRepository.buscarNativo(eq(EMPRESA_ID), isNull(), eq(clienteIdStr), isNull(), isNull(), isNull(), eq(21)))
+        when(facturaRepository.buscarNativo(eq(EMPRESA_ID), isNull(), eq(clienteIdStr), isNull(), isNull(), isNull(), isNull(), eq(21)))
                 .thenReturn(generarFilas(1));
 
-        facturaService.listar(null, clienteId, null, null, null, 20);
+        facturaService.listar(null, clienteId, null, null, null, null, 20);
 
-        verify(facturaRepository).buscarNativo(eq(EMPRESA_ID), isNull(), eq(clienteIdStr), isNull(), isNull(), isNull(), eq(21));
+        verify(facturaRepository).buscarNativo(eq(EMPRESA_ID), isNull(), eq(clienteIdStr), isNull(), isNull(), isNull(), isNull(), eq(21));
     }
 
     @Test
     void listarConDesdeFiltroForwardea() {
         LocalDate desde = LocalDate.of(2025, 1, 1);
         LocalDate hasta = LocalDate.of(2025, 1, 31);
-        when(facturaRepository.buscarNativo(eq(EMPRESA_ID), isNull(), isNull(), eq("2025-01-01"), eq("2025-01-31"), isNull(), eq(21)))
+        when(facturaRepository.buscarNativo(eq(EMPRESA_ID), isNull(), isNull(), eq("2025-01-01"), eq("2025-01-31"), isNull(), isNull(), eq(21)))
                 .thenReturn(generarFilas(2));
 
-        facturaService.listar(null, null, desde, hasta, null, 20);
+        facturaService.listar(null, null, desde, hasta, null, null, 20);
 
-        verify(facturaRepository).buscarNativo(eq(EMPRESA_ID), isNull(), isNull(), eq("2025-01-01"), eq("2025-01-31"), isNull(), eq(21));
+        verify(facturaRepository).buscarNativo(eq(EMPRESA_ID), isNull(), isNull(), eq("2025-01-01"), eq("2025-01-31"), isNull(), isNull(), eq(21));
     }
 
     @Test
     void listarConEstadoFiltroForwardea() {
-        when(facturaRepository.buscarNativo(eq(EMPRESA_ID), isNull(), isNull(), isNull(), isNull(), eq("ACEPTADO"), eq(21)))
+        when(facturaRepository.buscarNativo(eq(EMPRESA_ID), isNull(), isNull(), isNull(), isNull(), eq("ACEPTADO"), isNull(), eq(21)))
                 .thenReturn(generarFilas(3));
 
-        facturaService.listar(null, null, null, null, "ACEPTADO", 20);
+        facturaService.listar(null, null, null, null, "ACEPTADO", null, 20);
 
-        verify(facturaRepository).buscarNativo(eq(EMPRESA_ID), isNull(), isNull(), isNull(), isNull(), eq("ACEPTADO"), eq(21));
+        verify(facturaRepository).buscarNativo(eq(EMPRESA_ID), isNull(), isNull(), isNull(), isNull(), eq("ACEPTADO"), isNull(), eq(21));
+    }
+
+    @Test
+    void listarConTipoComprobanteFiltroForwardea() {
+        when(facturaRepository.buscarNativo(eq(EMPRESA_ID), isNull(), isNull(), isNull(), isNull(), isNull(), eq("03"), eq(21)))
+                .thenReturn(generarFilas(2));
+
+        PaginaResponse<FacturaResumenResponse> respuesta =
+                facturaService.listar(null, null, null, null, null, "03", 20);
+
+        verify(facturaRepository).buscarNativo(eq(EMPRESA_ID), isNull(), isNull(), isNull(), isNull(), isNull(), eq("03"), eq(21));
+        assertThat(respuesta.items()).allSatisfy(item -> assertThat(item.tipoComprobante()).isEqualTo("01"));
     }
 
     // =========================================================================
