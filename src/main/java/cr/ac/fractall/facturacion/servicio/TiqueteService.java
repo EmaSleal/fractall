@@ -118,7 +118,6 @@ public class TiqueteService {
         // exoneracionId (ver ExoneracionRequiereClienteException).
         LineaFacturaEnsamblador.LineasEnsambladas ensambladas = lineaFacturaEnsamblador.ensamblar(
                 request.lineas(), cliente, TipoComprobantePerfil.TIQUETE);
-        List<LineaFactura> lineas = ensambladas.lineas();
         BigDecimal subtotal = ensambladas.subtotal();
         BigDecimal totalImpuesto = ensambladas.totalImpuesto();
 

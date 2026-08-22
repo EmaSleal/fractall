@@ -252,18 +252,16 @@ public class FacturaPdfService {
         // principio documentado en V19__tiquete_cliente_opcional.sql).
         if (cliente == null) {
             escribirLinea(cs, cursor, "Consumidor Final", normal, FUENTE_NORMAL);
-            cursor.y -= 8f;
-            return;
-        }
+        } else {
+            escribirLinea(cs, cursor, cliente.getNombre(), normal, FUENTE_NORMAL);
+            escribirLinea(cs, cursor,
+                    nvl(cliente.getTipoIdentificacion()) + " " + nvl(cliente.getNumeroIdentificacion()),
+                    normal, FUENTE_NORMAL);
 
-        escribirLinea(cs, cursor, cliente.getNombre(), normal, FUENTE_NORMAL);
-        escribirLinea(cs, cursor,
-                nvl(cliente.getTipoIdentificacion()) + " " + nvl(cliente.getNumeroIdentificacion()),
-                normal, FUENTE_NORMAL);
-
-        // Email is optional — skip if null (FR-08 equivalent for PDF)
-        if (cliente.getEmail() != null && !cliente.getEmail().isBlank()) {
-            escribirLinea(cs, cursor, cliente.getEmail(), normal, FUENTE_NORMAL);
+            // Email is optional — skip if null (FR-08 equivalent for PDF)
+            if (cliente.getEmail() != null && !cliente.getEmail().isBlank()) {
+                escribirLinea(cs, cursor, cliente.getEmail(), normal, FUENTE_NORMAL);
+            }
         }
 
         cursor.y -= 8f;

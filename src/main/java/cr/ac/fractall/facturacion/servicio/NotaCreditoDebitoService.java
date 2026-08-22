@@ -144,6 +144,22 @@ public class NotaCreditoDebitoService {
         return new OrigenValidado(origen, origenCe);
     }
 
+    /**
+     * Regla 6: cliente heredado del origen. {@code clienteId} nulo hoy es inalcanzable en la
+     * práctica -- regla 7 exige que el origen sea Factura Electrónica (tipo 01), y ese tipo
+     * siempre tiene {@code clienteId} no nulo (a diferencia de Tiquete, Fase C) -- pero se guarda
+     * la misma forma defensiva que el resto del codebase usa para {@code clienteId} potencialmente
+     * nulo, en vez de un {@code findById} incondicional que reventaría con
+     * {@code InvalidDataAccessApiUsageException} si regla 7 alguna vez se relaja.
+     */
+    private Cliente resolverClienteOrigen(UUID clienteId) {
+        if (clienteId == null) {
+            return null;
+        }
+        return clienteRepository.findById(clienteId)
+                .orElseThrow(() -> new ClienteNoEncontradoException(clienteId));
+    }
+
     @Transactional
     public FacturaResponse crearNotaCredito(CrearNotaCreditoRequest request) {
         UUID empresaId = TenantContext.get();
@@ -156,8 +172,10 @@ public class NotaCreditoDebitoService {
 
         // Regla 6 -- cliente heredado del origen; el DTO no expone clienteId, así que no hay nada
         // que "validar" contra un valor de cliente: es estructuralmente el único origen posible.
-        Cliente cliente = clienteRepository.findById(origen.getClienteId())
-                .orElseThrow(() -> new ClienteNoEncontradoException(origen.getClienteId()));
+        // Guard de clienteId nulo hoy inalcanzable (regla 7 exige origen tipo 01, que siempre
+        // tiene cliente) -- se mantiene por consistencia con los demás call sites de este mismo
+        // findById en el codebase, no por un caso real ejercitable todavía.
+        Cliente cliente = resolverClienteOrigen(origen.getClienteId());
 
         // Regla 2 (línea pertenece al origen) + regla 3 por línea (cantidad no excede el origen).
         List<LineaFactura> lineasOrigen = new ArrayList<>();
@@ -296,9 +314,9 @@ public class NotaCreditoDebitoService {
         Empresa empresa = empresaRepository.findById(empresaId)
                 .orElseThrow(() -> new IllegalStateException("Empresa de contexto no encontrada: " + empresaId));
 
-        // Regla 6 -- cliente heredado del origen (ver el javadoc de la clase).
-        Cliente cliente = clienteRepository.findById(origen.getClienteId())
-                .orElseThrow(() -> new ClienteNoEncontradoException(origen.getClienteId()));
+        // Regla 6 -- cliente heredado del origen (ver el javadoc de la clase). Guard de clienteId
+        // nulo hoy inalcanzable (regla 7 exige origen tipo 01) -- ver resolverClienteOrigen.
+        Cliente cliente = resolverClienteOrigen(origen.getClienteId());
 
         ZonedDateTime ahoraUtc = ZonedDateTime.now(ZoneOffset.UTC);
         LocalDateTime ahora = ahoraUtc.toLocalDateTime();

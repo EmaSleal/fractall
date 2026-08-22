@@ -82,6 +82,10 @@ class TiqueteServiceTest {
     @Autowired
     private FacturaMedioPagoRepository facturaMedioPagoRepository;
 
+    // Ninguno de los 3 se referencia directamente en los tests -- son dependencias transitivas
+    // de ComprobanteEmisionService (que TiqueteService sí usa) que tocan red real (Vault/OCI/
+    // Hacienda). Se mockean para que el contexto de Spring cargue sin esa infraestructura, mismo
+    // patrón que NotaCreditoDebitoServiceTest.
     @MockitoBean
     private ComprobanteXmlCifradoDescargador comprobanteXmlCifradoDescargador;
 
