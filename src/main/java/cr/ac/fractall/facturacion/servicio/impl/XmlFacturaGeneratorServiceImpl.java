@@ -224,11 +224,15 @@ public class XmlFacturaGeneratorServiceImpl implements XmlFacturaGeneratorServic
         xml.append("<FechaEmision>").append(formatearFecha(comprobante.getFechaEmision())).append("</FechaEmision>");
 
         agregarEmisor(xml, empresa);
-        // Receptor: política de EMISIÓN, no minOccurs crudo (los 4 XSD lo marcan minOccurs="0")
-        // -- ver el javadoc de TipoComprobantePerfil#receptorObligatorio. No-op en Fase B: los 4
-        // perfiles cableados hoy (solo 01, vía FacturaService) siempre tienen receptorObligatorio
-        // == true; el gate queda listo para cuando Fase C permita un ND/NC sin cliente.
-        if (perfil.isReceptorObligatorio()) {
+        // Receptor: se incluye si y solo si HAY un cliente resuelto para este documento -- no si
+        // perfil.isReceptorObligatorio() (política de tipo, no dato real de la instancia). Bug de
+        // code review sobre Fase C: para tipo 01/02/03, cliente siempre es no-null (obligatorio en
+        // esos DTOs), así que este gate se comporta idéntico a antes -- el único perfil que cambia
+        // es TIQUETE, donde antes se omitía SIEMPRE (aunque hubiera cliente) porque
+        // TipoComprobantePerfil.TIQUETE.receptorObligatorio == false; ahora depende de si el
+        // Tiquete realmente identificó un receptor, que es lo que el XSD real exige
+        // (minOccurs="0" en los 4 tipos -- ningún perfil "obliga" nada a nivel de esquema).
+        if (cliente != null) {
             agregarReceptor(xml, cliente);
         }
 

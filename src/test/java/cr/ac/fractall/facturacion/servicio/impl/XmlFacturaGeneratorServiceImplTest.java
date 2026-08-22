@@ -694,4 +694,35 @@ class XmlFacturaGeneratorServiceImplTest {
         assertThatCode(() -> xmlFacturaXsdValidator.validar(xml, TipoComprobantePerfil.TIQUETE))
                 .doesNotThrowAnyException();
     }
+
+    /**
+     * Contraparte de {@link #generaXmlTiqueteSinReceptorIdentificadoOmiteElementoReceptorYValidaXsd()}
+     * -- hallazgo de code review sobre esta misma fase: el gate del bloque {@code <Receptor>}
+     * (más abajo en este archivo) usaba {@code perfil.isReceptorObligatorio()} (el flag ESTÁTICO
+     * del tipo, {@code false} para {@code TIQUETE}) en vez de si {@code cliente} realmente existe.
+     * Un Tiquete CON receptor identificado (venta con cédula) nunca emitía {@code <Receptor>} al
+     * XML real enviado a Hacienda, aunque el PDF sí mostraba el cliente correctamente -- el
+     * documento legal y el PDF quedaban en desacuerdo. Este caso nunca tuvo cobertura antes.
+     */
+    @Test
+    void generaXmlTiqueteConReceptorIdentificadoIncluyeElementoReceptorYValidaXsd() throws Exception {
+        Cliente cliente = crearCliente("310895" + System.nanoTime() % 1_000_000, "100 metros este del parque");
+        Producto producto = crearProducto("PROD-TQ-CR-" + UUID.randomUUID(), new BigDecimal("13.00"));
+
+        Factura factura = crearFactura(cliente.getId(), new BigDecimal("1000.00000"), new BigDecimal("130.00000"));
+        LineaFactura linea = crearLinea(factura.getId(), producto, 1, BigDecimal.ONE, new BigDecimal("1000.00000"));
+        lineaFacturaRepository.saveAndFlush(linea);
+        ComprobanteElectronico comprobante = crearComprobante(factura.getId(), "04");
+
+        String xml = xmlFacturaGeneratorService.generarXmlFactura(comprobante.getId());
+
+        Document documento = parsear(xml);
+        assertThat(documento.getDocumentElement().getTagName()).isEqualTo("TiqueteElectronico");
+        assertThat(documento.getElementsByTagName("Receptor").getLength())
+                .as("un Tiquete con cliente identificado debe incluir <Receptor> en el XML real")
+                .isEqualTo(1);
+
+        assertThatCode(() -> xmlFacturaXsdValidator.validar(xml, TipoComprobantePerfil.TIQUETE))
+                .doesNotThrowAnyException();
+    }
 }
