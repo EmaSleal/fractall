@@ -34,6 +34,7 @@ build/
 
 docs/proyecto-referencia/
 docs/referencia/
+docs/openapi-snapshot.json
 
 .env
 .env.*

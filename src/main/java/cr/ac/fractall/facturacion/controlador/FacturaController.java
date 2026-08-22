@@ -171,7 +171,7 @@ public class FacturaController {
         return ResponseEntity.ok(facturaService.reenviar(id));
     }
 
-    @Operation(summary = "Emitir factura electrónica")
+    @Operation(operationId = "crearFactura", summary = "Emitir factura electrónica")
     @ApiResponses({
         @ApiResponse(responseCode = "201", description = "Factura emitida exitosamente",
             content = @Content(schema = @Schema(implementation = FacturaResponse.class))),

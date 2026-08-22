@@ -50,7 +50,7 @@ public class TiqueteController {
         this.comprobanteEmisionService = comprobanteEmisionService;
     }
 
-    @Operation(summary = "Emitir tiquete electrónico", description = "El receptor (clienteId) es opcional -- un Tiquete puede emitirse sin cliente identificado (venta de mostrador).")
+    @Operation(operationId = "crearTiquete", summary = "Emitir tiquete electrónico", description = "El receptor (clienteId) es opcional -- un Tiquete puede emitirse sin cliente identificado (venta de mostrador).")
     @ApiResponses({
         @ApiResponse(responseCode = "201", description = "Tiquete emitido exitosamente",
             content = @Content(schema = @Schema(implementation = FacturaResponse.class))),

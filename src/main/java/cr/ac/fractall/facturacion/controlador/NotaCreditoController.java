@@ -50,7 +50,7 @@ public class NotaCreditoController {
         this.comprobanteEmisionService = comprobanteEmisionService;
     }
 
-    @Operation(summary = "Emitir nota de crédito electrónica")
+    @Operation(operationId = "crearNotaCredito", summary = "Emitir nota de crédito electrónica")
     @ApiResponses({
         @ApiResponse(responseCode = "201", description = "Nota de crédito emitida exitosamente",
             content = @Content(schema = @Schema(implementation = FacturaResponse.class))),
