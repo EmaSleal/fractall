@@ -21,6 +21,7 @@ import cr.ac.fractall.facturacion.servicio.EmpresaSinCorreoElectronicoException;
 import cr.ac.fractall.facturacion.servicio.ExoneracionNoAplicableAFacturaElectronicaException;
 import cr.ac.fractall.facturacion.servicio.ExoneracionNoPerteneceAlClienteException;
 import cr.ac.fractall.facturacion.servicio.ExoneracionNoVigenteException;
+import cr.ac.fractall.facturacion.servicio.ExoneracionRequiereClienteException;
 import cr.ac.fractall.facturacion.servicio.FacturaNoEncontradaException;
 import cr.ac.fractall.facturacion.servicio.FacturaOrigenNoAceptadaException;
 import cr.ac.fractall.facturacion.servicio.LineaOrigenNoPerteneceAFacturaException;
@@ -129,6 +130,7 @@ public class GlobalExceptionHandler {
     @ExceptionHandler({ExoneracionNoPerteneceAlClienteException.class,
             ExoneracionNoAplicableAFacturaElectronicaException.class,
             ExoneracionNoVigenteException.class,
+            ExoneracionRequiereClienteException.class,
             CondicionVentaInvalidaException.class})
     public ResponseEntity<MensajeResponse> manejarReglaDeNegocioInvalida(RuntimeException excepcion) {
         return ResponseEntity.badRequest().body(new MensajeResponse(excepcion.getMessage()));

@@ -648,6 +648,26 @@ class AislamientoMultiTenantTest {
      * {@code '99'} (p. ej. {@code '01'}, Anula documento de referencia),
      * {@code codigo_referencia_otro} puede ser {@code NULL} sin violar el CHECK.
      */
+    /**
+     * Fase C de Release 2 (Tiquete Electrónico): un Tiquete sin receptor identificado (venta de
+     * mostrador) se persiste con {@code cliente_id NULL} -- {@code fn_validar_mismo_tenant} debe
+     * tolerarlo. Antes del guard {@code AND NEW.cliente_id IS NOT NULL} (V19), {@code SELECT
+     * empresa_id FROM cliente WHERE id = NULL} no matchea ninguna fila,
+     * {@code v_empresa_referencia} queda {@code NULL}, y {@code NULL IS DISTINCT FROM <uuid
+     * real>} evalúa verdadero -- el trigger rechazaría TODOS los Tiquetes sin cliente. Ver el
+     * comentario de cabecera de {@code V19__tiquete_cliente_opcional.sql}.
+     */
+    @Test
+    void facturaConClienteIdNuloNoDisparaElTriggerDeAislamientoTenant() {
+        TenantContext.set(empresaA.getId());
+        Factura tiquete = nuevaFactura(null, empresaA.getCreadoPor());
+
+        Factura guardado = facturaRepository.saveAndFlush(tiquete);
+
+        assertThat(guardado.getId()).isNotNull();
+        assertThat(guardado.getClienteId()).isNull();
+    }
+
     @Test
     void codigoReferenciaOtroEsOpcionalCuandoCodigoNoEsOtros() {
         TenantContext.set(empresaA.getId());

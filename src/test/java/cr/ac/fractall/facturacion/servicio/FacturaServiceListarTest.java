@@ -91,7 +91,8 @@ class FacturaServiceListarTest {
                 facturaMedioPagoRepository,
                 mock(LineaFacturaEnsamblador.class),
                 mock(ComprobanteEmisionService.class),
-                mock(HaciendaApiService.class));
+                mock(HaciendaApiService.class),
+                mock(CondicionesComercialesService.class));
     }
 
     @AfterEach

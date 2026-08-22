@@ -247,6 +247,37 @@ class ComprobanteEntregaServiceTest {
     }
 
     // -------------------------------------------------------------------------
+    // SC-08 (Release 2 / Fase C, Tiquete Electrónico): factura.clienteId == null — sin receptor
+    // identificado, no hay entrega por correo posible. Guard explícito ANTES de
+    // clienteRepository.findById (Spring Data lanza InvalidDataAccessApiUsageException con un id
+    // null, no un Optional vacío) -- comportamiento esperado y correcto, no un error.
+    // -------------------------------------------------------------------------
+
+    @Test
+    void sc08ClienteIdNuloOmiteEntregaPorCorreoSinLanzarExcepcion() {
+        ComprobanteElectronico comprobante = nuevoComprobante(XML_RESPUESTA_REF);
+        Factura factura = nuevaFactura();
+        factura.setClienteId(null);
+
+        when(comprobanteElectronicoRepository.findById(COMPROBANTE_ID)).thenReturn(Optional.of(comprobante));
+        when(facturaRepository.findById(FACTURA_ID)).thenReturn(Optional.of(factura));
+        when(facturaPdfService.generarPdf(COMPROBANTE_ID)).thenReturn(PDF_BYTES);
+        when(comprobanteXmlCifradoUploader.cifrarYSubir(any(byte[].class), anyString())).thenReturn(PDF_REF);
+
+        // No debe lanzar (ni NPE, ni InvalidDataAccessApiUsageException de Spring Data por id null)
+        servicio.entregar(COMPROBANTE_ID);
+
+        // Fase A completada igual: pdfReferencia persistido
+        assertThat(comprobante.getPdfReferencia()).isEqualTo(PDF_REF);
+        verify(comprobanteElectronicoRepository).save(comprobante);
+
+        // Fase B omitida por completo: sin cliente no hay a quién resolver ni a quién enviar
+        verifyNoInteractions(clienteRepository);
+        verifyNoInteractions(resendEmailClient);
+        verifyNoInteractions(comprobanteXmlCifradoDescargador);
+    }
+
+    // -------------------------------------------------------------------------
     // SC-07: pdfReferencia ya existe — entregar() es idempotente, no re-entrega
     // -------------------------------------------------------------------------
 

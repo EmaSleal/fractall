@@ -23,7 +23,13 @@ import lombok.Setter;
 @NoArgsConstructor
 public class Factura extends TenantAwareEntity {
 
-    @Column(name = "cliente_id", nullable = false)
+    /**
+     * Nullable desde Release 2 / Fase C (V19): un Tiquete Electrónico puede emitirse sin receptor
+     * identificado (venta de mostrador) -- ver el comentario de cabecera de
+     * {@code V19__tiquete_cliente_opcional.sql}. Factura/NC/ND siguen exigiendo cliente a nivel
+     * de servicio (DTOs con {@code @NotNull}), aunque el motor ya no lo fuerza.
+     */
+    @Column(name = "cliente_id")
     private UUID clienteId;
 
     @Column(name = "condicion_venta", nullable = false, length = 2)

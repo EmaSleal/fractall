@@ -295,6 +295,44 @@ class LineaFacturaEnsambladorTest {
         assertThat(resultado.lineas().get(1).getNumeroLinea()).isEqualTo(2);
     }
 
+    /**
+     * Release 2 / Fase C (Tiquete Electrónico): {@code cliente} puede ser {@code null} -- un
+     * Tiquete sin receptor identificado (venta de mostrador) no tiene cliente que pasarle al
+     * ensamblador. Sin exoneración inline/legacy en la línea, el armado no necesita el cliente
+     * para nada más, así que debe completarse con normalidad.
+     */
+    @Test
+    void ensamblarConClienteNuloYSinExoneracionCalculaTotalesCorrectamente() {
+        Producto producto = crearProducto(new BigDecimal("13.00"));
+
+        List<LineaFacturaItemRequest> items = List.of(
+                new LineaFacturaItemRequest(producto.getId(), BigDecimal.ONE, new BigDecimal("1000.00000"),
+                        null, null, null, null, null, null, null, null));
+
+        LineaFacturaEnsamblador.LineasEnsambladas resultado = lineaFacturaEnsamblador.ensamblar(
+                items, null, TipoComprobantePerfil.TIQUETE);
+
+        assertThat(resultado.subtotal()).isEqualByComparingTo("1000.00000");
+        assertThat(resultado.totalImpuesto()).isEqualByComparingTo("130.00000");
+        assertThat(resultado.lineas()).hasSize(1);
+    }
+
+    /**
+     * Contraparte negativa: con {@code cliente == null}, el path legacy de {@code exoneracionId}
+     * no tiene contra qué validar pertenencia (regla de negocio: exoneraciones son del cliente,
+     * y sin cliente no hay exoneración aplicable) -- debe rechazarse con un error de dominio
+     * explícito, nunca un {@code NullPointerException} crudo.
+     */
+    @Test
+    void ensamblarConClienteNuloYExoneracionIdLanzaExoneracionRequiereCliente() {
+        Producto producto = crearProducto(new BigDecimal("13.00"));
+
+        List<LineaFacturaItemRequest> items = List.of(itemConExoneracion(producto.getId(), UUID.randomUUID()));
+
+        assertThatThrownBy(() -> lineaFacturaEnsamblador.ensamblar(items, null, TipoComprobantePerfil.TIQUETE))
+                .isInstanceOf(ExoneracionRequiereClienteException.class);
+    }
+
     @Test
     void persistirGuardaLasLineasConElFacturaIdYSusHijos() {
         Cliente cliente = crearCliente();

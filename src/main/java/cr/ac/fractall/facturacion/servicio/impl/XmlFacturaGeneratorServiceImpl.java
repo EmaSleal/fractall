@@ -165,9 +165,18 @@ public class XmlFacturaGeneratorServiceImpl implements XmlFacturaGeneratorServic
         Empresa empresa = empresaRepository.findById(comprobante.getEmpresaId())
                 .orElseThrow(() -> new IllegalStateException("Empresa no encontrada: " + comprobante.getEmpresaId()));
 
-        Cliente cliente = clienteRepository.findById(factura.getClienteId())
-                .orElseThrow(() -> new IllegalStateException(
-                        "Cliente no encontrado para factura " + factura.getId() + ": " + factura.getClienteId()));
+        // Release 2 / Fase C, hallazgo real de integración: factura.getClienteId() puede ser null
+        // (Tiquete sin receptor identificado, ver TipoComprobantePerfil#receptorObligatorio ==
+        // false para TIQUETE) -- el lookup solo corre cuando hay un cliente que resolver. Antes de
+        // este guard, clienteRepository.findById(null) lanzaba InvalidDataAccessApiUsageException
+        // incondicionalmente, sin importar el perfil (ver el guard de perfil.isReceptorObligatorio()
+        // más abajo, que ya anticipaba este caso pero no evitaba el lookup en sí).
+        Cliente cliente = null;
+        if (factura.getClienteId() != null) {
+            cliente = clienteRepository.findById(factura.getClienteId())
+                    .orElseThrow(() -> new IllegalStateException(
+                            "Cliente no encontrado para factura " + factura.getId() + ": " + factura.getClienteId()));
+        }
 
         List<LineaFactura> lineas = lineaFacturaRepository.findByFacturaIdOrderByNumeroLinea(factura.getId());
         List<LineaContexto> contextos = lineas.stream()
@@ -215,11 +224,15 @@ public class XmlFacturaGeneratorServiceImpl implements XmlFacturaGeneratorServic
         xml.append("<FechaEmision>").append(formatearFecha(comprobante.getFechaEmision())).append("</FechaEmision>");
 
         agregarEmisor(xml, empresa);
-        // Receptor: política de EMISIÓN, no minOccurs crudo (los 4 XSD lo marcan minOccurs="0")
-        // -- ver el javadoc de TipoComprobantePerfil#receptorObligatorio. No-op en Fase B: los 4
-        // perfiles cableados hoy (solo 01, vía FacturaService) siempre tienen receptorObligatorio
-        // == true; el gate queda listo para cuando Fase C permita un ND/NC sin cliente.
-        if (perfil.isReceptorObligatorio()) {
+        // Receptor: se incluye si y solo si HAY un cliente resuelto para este documento -- no si
+        // perfil.isReceptorObligatorio() (política de tipo, no dato real de la instancia). Bug de
+        // code review sobre Fase C: para tipo 01/02/03, cliente siempre es no-null (obligatorio en
+        // esos DTOs), así que este gate se comporta idéntico a antes -- el único perfil que cambia
+        // es TIQUETE, donde antes se omitía SIEMPRE (aunque hubiera cliente) porque
+        // TipoComprobantePerfil.TIQUETE.receptorObligatorio == false; ahora depende de si el
+        // Tiquete realmente identificó un receptor, que es lo que el XSD real exige
+        // (minOccurs="0" en los 4 tipos -- ningún perfil "obliga" nada a nivel de esquema).
+        if (cliente != null) {
             agregarReceptor(xml, cliente);
         }
 

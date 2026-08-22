@@ -74,11 +74,15 @@ Antes de escribir este plan se auditó el repo directamente. Contra lo asumido a
 ## Fase C — Tiquete Electrónico
 
 **Trabajo:**
+- Migración: `factura.cliente_id` pasa de `NOT NULL` a nullable — un Tiquete sin receptor identificado (venta de mostrador) no tiene cliente real que referenciar. Se descarta el cliente sintético "Consumidor Final": la UI muestra esa etiqueta como presentación cuando `cliente == null`, sin persistir una fila falsa ni las complicaciones que trae (protección contra edición/borrado, exclusión del buscador de clientes, auto-creación por empresa).
+- **Riesgo crítico a corregir en el mismo cambio:** `fn_validar_mismo_tenant()` (sección 4.15) hace `SELECT empresa_id FROM cliente WHERE id = NEW.cliente_id` para la rama `factura`. Con `cliente_id NULL`, `v_empresa_referencia` queda `NULL`, y `NULL IS DISTINCT FROM NEW.empresa_id` evalúa verdadero — el trigger rechazaría todos los Tiquetes sin cliente con un error que no delata la causa real. Requiere guard explícito: `IF TG_TABLE_NAME = 'factura' AND NEW.cliente_id IS NOT NULL THEN ... END IF`.
+- `ComprobanteEntregaService.entregar()`: guard explícito antes de `clienteRepository.findById(factura.getClienteId())` — con `clienteId == null`, hoy lanzaría `InvalidDataAccessApiUsageException` en vez de manejarse como "sin entrega por correo posible" (comportamiento correcto y esperado para un Tiquete sin receptor).
+- `FacturaResponse`/`FacturaResumenResponse`: campo cliente pasa a nullable en las respuestas — usadas por los cuatro tipos de documento, no solo Tiquete.
 - `TiqueteService`: sin referencia a factura previa (no usa `factura_referencia_id`), `Receptor` opcional, sin `CodigoActividadReceptor` ni `TipoTransaccion` en el XML generado (confirmado ausentes en el XSD de Tiquete). `CodigoActividadEmisor` permanece obligatorio, igual que Factura.
 - Endpoint: `POST /tiquetes`.
 - Reutiliza el mismo perfil de configuración por tipo introducido en la Fase B — no un generador de XML aparte.
 
-**Criterio de salida:** un Tiquete Electrónico sin receptor identificado pasa por el ciclo completo hasta `ACEPTADO` en `SANDBOX`.
+**Criterio de salida:** un Tiquete Electrónico sin receptor identificado pasa por el ciclo completo hasta `ACEPTADO` en `SANDBOX`, sin disparar el trigger de aislamiento multi-tenant por error, y sin intentar entrega por correo cuando no hay cliente.
 
 ---
 

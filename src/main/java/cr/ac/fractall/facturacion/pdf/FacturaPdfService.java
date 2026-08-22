@@ -126,10 +126,18 @@ public class FacturaPdfService {
                 .orElseThrow(() -> new IllegalStateException(
                         "Empresa no encontrada: " + factura.getEmpresaId()));
 
-        Cliente cliente = clienteRepository.findById(factura.getClienteId())
-                .orElseThrow(() -> new IllegalStateException(
-                        "Cliente no encontrado para factura " + factura.getId()
-                                + ": " + factura.getClienteId()));
+        // Release 2 / Fase C: factura.getClienteId() puede ser null (Tiquete sin receptor
+        // identificado, venta de mostrador) -- ver el mismo guard y su hallazgo gemelo en
+        // XmlFacturaGeneratorServiceImpl#generarXmlFactura. cliente == null se resuelve más abajo
+        // en agregarBloqueCliente mostrando "Consumidor Final" como presentación (mismo principio
+        // documentado en V19__tiquete_cliente_opcional.sql: sin persistir una fila sintética).
+        Cliente cliente = null;
+        if (factura.getClienteId() != null) {
+            cliente = clienteRepository.findById(factura.getClienteId())
+                    .orElseThrow(() -> new IllegalStateException(
+                            "Cliente no encontrado para factura " + factura.getId()
+                                    + ": " + factura.getClienteId()));
+        }
 
         List<LineaFactura> lineas =
                 lineaFacturaRepository.findByFacturaIdOrderByNumeroLinea(factura.getId());
@@ -238,14 +246,22 @@ public class FacturaPdfService {
             PDType1Font normal) throws IOException {
 
         escribirLinea(cs, cursor, "Receptor:", bold, FUENTE_NORMAL);
-        escribirLinea(cs, cursor, cliente.getNombre(), normal, FUENTE_NORMAL);
-        escribirLinea(cs, cursor,
-                nvl(cliente.getTipoIdentificacion()) + " " + nvl(cliente.getNumeroIdentificacion()),
-                normal, FUENTE_NORMAL);
 
-        // Email is optional — skip if null (FR-08 equivalent for PDF)
-        if (cliente.getEmail() != null && !cliente.getEmail().isBlank()) {
-            escribirLinea(cs, cursor, cliente.getEmail(), normal, FUENTE_NORMAL);
+        // Release 2 / Fase C: cliente == null para un Tiquete sin receptor identificado (venta de
+        // mostrador) -- "Consumidor Final" es presentación pura, nunca una fila persistida (mismo
+        // principio documentado en V19__tiquete_cliente_opcional.sql).
+        if (cliente == null) {
+            escribirLinea(cs, cursor, "Consumidor Final", normal, FUENTE_NORMAL);
+        } else {
+            escribirLinea(cs, cursor, cliente.getNombre(), normal, FUENTE_NORMAL);
+            escribirLinea(cs, cursor,
+                    nvl(cliente.getTipoIdentificacion()) + " " + nvl(cliente.getNumeroIdentificacion()),
+                    normal, FUENTE_NORMAL);
+
+            // Email is optional — skip if null (FR-08 equivalent for PDF)
+            if (cliente.getEmail() != null && !cliente.getEmail().isBlank()) {
+                escribirLinea(cs, cursor, cliente.getEmail(), normal, FUENTE_NORMAL);
+            }
         }
 
         cursor.y -= 8f;
