@@ -27,6 +27,7 @@ import cr.ac.fractall.facturacion.servicio.FacturaOrigenNoAceptadaException;
 import cr.ac.fractall.facturacion.servicio.LineaOrigenNoPerteneceAFacturaException;
 import cr.ac.fractall.facturacion.servicio.MontoNotaCreditoExcedeOrigenException;
 import cr.ac.fractall.facturacion.servicio.ReferenciaNoEsFacturaElectronicaException;
+import cr.ac.fractall.facturacion.servicio.XmlFacturaFirmaException;
 import cr.ac.fractall.hacienda.servicio.TipoCambioNoDisponibleException;
 import cr.ac.fractall.seguridad.dto.MensajeResponse;
 import jakarta.validation.ConstraintViolationException;
@@ -140,10 +141,18 @@ public class GlobalExceptionHandler {
      * Fallo de infraestructura/configuración de la empresa, no un error de datos del cliente
      * (Fase B, migrado desde {@code FacturaController#crear} -- ver el javadoc de la clase y el de
      * cada excepción individual sobre por qué es 503, nunca un 500 crudo ni 400/404/409).
+     *
+     * <p>{@code XmlFacturaFirmaException} se une a este grupo porque cubre tanto la ausencia del
+     * certificado {@code .p12}/PIN de la empresa para el ambiente indicado como fallas del propio
+     * proceso de firma XAdES-BES (ver su javadoc) -- mismo tipo de fallo de configuración/infra
+     * que las otras tres, y como {@code XmlFacturaFirmaServiceImpl#firmar} corre detrás de
+     * {@code ComprobanteXmlPersistenceService#generarYPersistirXml}, este handler cubre por igual
+     * factura, tiquete, nota de crédito y nota de débito sin duplicar manejo por controlador.
      */
     @ExceptionHandler({ContadorConsecutivoNoEncontradoException.class,
             CredencialHaciendaNoEncontradaException.class,
-            EmpresaSinCorreoElectronicoException.class})
+            EmpresaSinCorreoElectronicoException.class,
+            XmlFacturaFirmaException.class})
     public ResponseEntity<MensajeResponse> manejarFalloDeInfraestructuraOConfiguracion(RuntimeException excepcion) {
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(new MensajeResponse(excepcion.getMessage()));
     }
