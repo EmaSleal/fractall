@@ -21,6 +21,7 @@ import java.util.UUID;
 public record FacturaResumenResponse(
         UUID id,
         String consecutivo,
+        String tipoComprobante,
         UUID clienteId,
         String clienteNombre,
         String ambienteHacienda,
@@ -34,6 +35,7 @@ public record FacturaResumenResponse(
     public FacturaResumenResponse(
             UUID id,
             String consecutivo,
+            String tipoComprobante,
             UUID clienteId,
             String clienteNombre,
             String ambienteHacienda,
@@ -42,7 +44,7 @@ public record FacturaResumenResponse(
             String estado,
             String ultimoResultadoConsulta,
             java.time.LocalDateTime fechaEmisionDt) {
-        this(id, consecutivo, clienteId, clienteNombre, ambienteHacienda, moneda, total,
+        this(id, consecutivo, tipoComprobante, clienteId, clienteNombre, ambienteHacienda, moneda, total,
                 estado, ultimoResultadoConsulta,
                 fechaEmisionDt != null ? fechaEmisionDt.toLocalDate() : null);
     }

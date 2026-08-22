@@ -49,7 +49,7 @@ class NotaCreditoDebitoControllerTest {
                 UUID.randomUUID(), UUID.randomUUID(), "Cliente de prueba",
                 BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, List.of(),
                 UUID.randomUUID(), "SANDBOX", "03", "00100001010000000001",
-                "50601010100011010000000001000000001100000000001",
+                "50601010100011010000000001000000001100000000001", UUID.randomUUID(),
                 "GENERADO", LocalDateTime.now(), null, null, BigDecimal.ZERO,
                 List.of(), List.of(), List.of(), null, null, null, null, 0);
     }

@@ -566,6 +566,27 @@ class FacturaControllerTest {
     }
 
     @Test
+    void getFacturasConTipoComprobanteFiltroDevuelveSoloFacturasDeEseTipo() throws Exception {
+        ContextoDePrueba ctx = crearContextoCompleto();
+        crearFactura(ctx);
+
+        mockMvc.perform(get("/facturas")
+                        .param("tipoComprobante", "01")
+                        .header("Authorization", "Bearer " + ctx.accessToken()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items").isArray())
+                .andExpect(jsonPath("$.items.length()").value(1))
+                .andExpect(jsonPath("$.items[0].tipoComprobante").value("01"));
+
+        // Type 03 (Nota de Crédito) never occurs among freshly created facturas -- 0 results.
+        mockMvc.perform(get("/facturas")
+                        .param("tipoComprobante", "03")
+                        .header("Authorization", "Bearer " + ctx.accessToken()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items.length()").value(0));
+    }
+
+    @Test
     void getFacturasConDesdeHastaFiltroDevuelveSoloFacturasEnRango() throws Exception {
         ContextoDePrueba ctx = crearContextoCompleto();
         crearFactura(ctx);

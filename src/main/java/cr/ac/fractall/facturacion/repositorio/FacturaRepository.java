@@ -26,9 +26,8 @@ public interface FacturaRepository extends JpaRepository<Factura, UUID> {
      * empresa_id se pasa explícitamente a través de
      * {@link cr.ac.fractall.tenant.TenantContext#get()} en el servicio que llama a este método.
      *
-     * <p>Proyección: todos los campos deben coincidir con el orden del constructor secundario de
-     * {@link cr.ac.fractall.facturacion.dto.FacturaResumenResponse} que acepta
-     * {@code LocalDateTime} para {@code fechaEmision}.
+     * <p>Proyección: la SELECT list se mapea manualmente en {@code FacturaService#mapearFila} por
+     * índice posicional -- no confiar en el nombre de columna al modificar el orden aquí.
      *
      * <p>Orden: {@code f.id DESC}, no {@code f.create_date DESC} directamente. Como {@code id} es
      * UUIDv7 (ver javadoc de {@code EntidadBase}), su orden coincide con el de creación pero
@@ -37,7 +36,7 @@ public interface FacturaRepository extends JpaRepository<Factura, UUID> {
      * con el ORDER BY.
      */
     @Query(value = """
-            SELECT f.id, ce.consecutivo, f.cliente_id, cl.nombre,
+            SELECT f.id, ce.consecutivo, ce.tipo_comprobante, f.cliente_id, cl.nombre,
                    ce.ambiente_hacienda, f.moneda, f.total,
                    ce.estado, ce.ultimo_resultado_consulta, ce.fecha_emision
             FROM factura f
@@ -48,6 +47,7 @@ public interface FacturaRepository extends JpaRepository<Factura, UUID> {
               AND (CAST(:desde AS date) IS NULL OR CAST(f.create_date AS date) >= CAST(:desde AS date))
               AND (CAST(:hasta AS date) IS NULL OR CAST(f.create_date AS date) <= CAST(:hasta AS date))
               AND (:estado IS NULL OR ce.estado = :estado)
+              AND (:tipoComprobante IS NULL OR ce.tipo_comprobante = :tipoComprobante)
               AND (:cursor IS NULL OR f.id < CAST(:cursor AS uuid))
             ORDER BY f.id DESC
             LIMIT :limit
@@ -59,6 +59,7 @@ public interface FacturaRepository extends JpaRepository<Factura, UUID> {
             @Param("desde") String desde,
             @Param("hasta") String hasta,
             @Param("estado") String estado,
+            @Param("tipoComprobante") String tipoComprobante,
             @Param("limit") int limit);
 
     /**
