@@ -90,6 +90,7 @@ public class NotaCreditoDebitoService {
     private final FacturaMedioPagoRepository facturaMedioPagoRepository;
     private final LineaFacturaEnsamblador lineaFacturaEnsamblador;
     private final ComprobanteEmisionService comprobanteEmisionService;
+    private final CondicionesComercialesService condicionesComercialesService;
 
     public NotaCreditoDebitoService(
             ClienteRepository clienteRepository,
@@ -103,7 +104,8 @@ public class NotaCreditoDebitoService {
             FacturaInformacionReferenciaRepository facturaInformacionReferenciaRepository,
             FacturaMedioPagoRepository facturaMedioPagoRepository,
             LineaFacturaEnsamblador lineaFacturaEnsamblador,
-            ComprobanteEmisionService comprobanteEmisionService) {
+            ComprobanteEmisionService comprobanteEmisionService,
+            CondicionesComercialesService condicionesComercialesService) {
         this.clienteRepository = clienteRepository;
         this.empresaRepository = empresaRepository;
         this.facturaRepository = facturaRepository;
@@ -116,6 +118,7 @@ public class NotaCreditoDebitoService {
         this.facturaMedioPagoRepository = facturaMedioPagoRepository;
         this.lineaFacturaEnsamblador = lineaFacturaEnsamblador;
         this.comprobanteEmisionService = comprobanteEmisionService;
+        this.condicionesComercialesService = condicionesComercialesService;
     }
 
     /** Resultado de resolver y validar la factura origen (reglas 7, 1) — compartido por NC y ND. */
@@ -297,7 +300,7 @@ public class NotaCreditoDebitoService {
         ComprobanteElectronico comprobante = comprobanteEmisionService.registrarComprobante(
                 notaCredito, TipoComprobantePerfil.NOTA_CREDITO, empresa, ahoraUtc);
 
-        persistirMedioPagoUnico(notaCredito.getId(), origen.getMedioPago(), totalNc);
+        condicionesComercialesService.persistirMedioPagoUnico(notaCredito.getId(), origen.getMedioPago(), totalNc);
         persistirInformacionReferenciaDerivada(notaCredito.getId(), origenCe,
                 request.codigoReferencia(), request.codigoReferenciaOtro(), request.razon());
 
@@ -354,7 +357,7 @@ public class NotaCreditoDebitoService {
         ComprobanteElectronico comprobante = comprobanteEmisionService.registrarComprobante(
                 notaDebito, TipoComprobantePerfil.NOTA_DEBITO, empresa, ahoraUtc);
 
-        persistirMedioPagoUnico(notaDebito.getId(), origen.getMedioPago(), totalNd);
+        condicionesComercialesService.persistirMedioPagoUnico(notaDebito.getId(), origen.getMedioPago(), totalNd);
         persistirInformacionReferenciaDerivada(notaDebito.getId(), origenCe,
                 request.codigoReferencia(), request.codigoReferenciaOtro(), request.razon());
 
@@ -434,18 +437,6 @@ public class NotaCreditoDebitoService {
     // =========================================================================
     // Factura-level children compartidos por NC y ND
     // =========================================================================
-
-    /** Un único medio de pago sintetizado por el total del documento -- mismo fallback legacy que
-     * {@code FacturaService#persistirMediosPago} usa cuando el cliente no envía {@code mediosPago}. */
-    private void persistirMedioPagoUnico(UUID facturaId, String tipoMedioPago, BigDecimal total) {
-        FacturaMedioPago medioPago = new FacturaMedioPago();
-        medioPago.setFacturaId(facturaId);
-        medioPago.setOrden((short) 1);
-        medioPago.setTipoMedioPago(tipoMedioPago);
-        medioPago.setMedioPagoOtros(null);
-        medioPago.setTotalMedioPago(total);
-        facturaMedioPagoRepository.save(medioPago);
-    }
 
     /** Regla 4 -- numero/fechaEmisionIr derivados del origen, nunca del cliente HTTP. */
     private void persistirInformacionReferenciaDerivada(

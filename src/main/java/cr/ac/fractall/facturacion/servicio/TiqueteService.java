@@ -54,7 +54,6 @@ import cr.ac.fractall.tenant.TenantContext;
 public class TiqueteService {
 
     private static final String CONDICION_VENTA_DEFECTO = "01";
-    private static final String CONDICION_VENTA_CREDITO = "02";
     private static final String MEDIO_PAGO_DEFECTO = "01";
     private static final String MONEDA_DEFECTO = "CRC";
     private static final BigDecimal TIPO_CAMBIO_DEFECTO = new BigDecimal("1.00000");
@@ -70,6 +69,7 @@ public class TiqueteService {
     private final FacturaMedioPagoRepository facturaMedioPagoRepository;
     private final LineaFacturaEnsamblador lineaFacturaEnsamblador;
     private final ComprobanteEmisionService comprobanteEmisionService;
+    private final CondicionesComercialesService condicionesComercialesService;
 
     public TiqueteService(
             ClienteRepository clienteRepository,
@@ -81,7 +81,8 @@ public class TiqueteService {
             ImpuestoLineaExoneracionRepository impuestoLineaExoneracionRepository,
             FacturaMedioPagoRepository facturaMedioPagoRepository,
             LineaFacturaEnsamblador lineaFacturaEnsamblador,
-            ComprobanteEmisionService comprobanteEmisionService) {
+            ComprobanteEmisionService comprobanteEmisionService,
+            CondicionesComercialesService condicionesComercialesService) {
         this.clienteRepository = clienteRepository;
         this.empresaRepository = empresaRepository;
         this.facturaRepository = facturaRepository;
@@ -92,6 +93,7 @@ public class TiqueteService {
         this.facturaMedioPagoRepository = facturaMedioPagoRepository;
         this.lineaFacturaEnsamblador = lineaFacturaEnsamblador;
         this.comprobanteEmisionService = comprobanteEmisionService;
+        this.condicionesComercialesService = condicionesComercialesService;
     }
 
     @Transactional
@@ -127,7 +129,7 @@ public class TiqueteService {
                 .setScale(ESCALA_MONETARIA, RoundingMode.HALF_UP);
 
         String condicionVenta = request.condicionVenta() != null ? request.condicionVenta() : CONDICION_VENTA_DEFECTO;
-        validarCondicionVenta(condicionVenta, request.plazoCredito());
+        condicionesComercialesService.validarCondicionVenta(condicionVenta, request.plazoCredito());
 
         String medioPago = request.medioPago() != null ? request.medioPago() : MEDIO_PAGO_DEFECTO;
         String moneda = request.moneda() != null ? request.moneda() : MONEDA_DEFECTO;
@@ -155,32 +157,12 @@ public class TiqueteService {
         ComprobanteElectronico comprobante = comprobanteEmisionService.registrarComprobante(
                 tiquete, TipoComprobantePerfil.TIQUETE, empresa, ahoraUtc);
 
-        persistirMedioPagoUnico(tiquete.getId(), medioPago, total);
+        condicionesComercialesService.persistirMedioPagoUnico(tiquete.getId(), medioPago, total);
 
         List<LineaFactura> lineasPersistidas =
                 lineaFacturaRepository.findByFacturaIdOrderByNumeroLinea(tiquete.getId());
         String clienteNombre = cliente != null ? cliente.getNombre() : null;
         return construirRespuesta(tiquete, comprobante, lineasPersistidas, clienteNombre);
-    }
-
-    /** Mismo requisito que el CHECK de {@code factura} en {@code V4__catalogo_y_facturacion.sql}. */
-    private void validarCondicionVenta(String condicionVenta, Integer plazoCredito) {
-        if (CONDICION_VENTA_CREDITO.equals(condicionVenta) && plazoCredito == null) {
-            throw new CondicionVentaInvalidaException(
-                    "plazoCredito es obligatorio cuando condicionVenta = '02' (crédito)");
-        }
-    }
-
-    /** Un único medio de pago sintetizado por el total del documento -- mismo patrón que
-     * {@code NotaCreditoDebitoService#persistirMedioPagoUnico}. */
-    private void persistirMedioPagoUnico(UUID facturaId, String tipoMedioPago, BigDecimal total) {
-        FacturaMedioPago medioPago = new FacturaMedioPago();
-        medioPago.setFacturaId(facturaId);
-        medioPago.setOrden((short) 1);
-        medioPago.setTipoMedioPago(tipoMedioPago);
-        medioPago.setMedioPagoOtros(null);
-        medioPago.setTotalMedioPago(total);
-        facturaMedioPagoRepository.save(medioPago);
     }
 
     private FacturaResponse construirRespuesta(

@@ -78,7 +78,8 @@ class FacturaServiceReenviarTest {
                 facturaMedioPagoRepository,
                 mock(LineaFacturaEnsamblador.class),
                 comprobanteEmisionService,
-                mock(HaciendaApiService.class));
+                mock(HaciendaApiService.class),
+                mock(CondicionesComercialesService.class));
     }
 
     private static ComprobanteElectronico nuevoComprobante(UUID facturaId) {

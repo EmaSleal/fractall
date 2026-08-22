@@ -86,7 +86,6 @@ import cr.ac.fractall.tenant.TenantContext;
 public class FacturaService {
 
     private static final String CONDICION_VENTA_DEFECTO = "01";
-    private static final String CONDICION_VENTA_CREDITO = "02";
     private static final String MEDIO_PAGO_DEFECTO = "01";
     private static final String MONEDA_DEFECTO = "CRC";
     private static final String MONEDA_DOLAR = "USD";
@@ -108,6 +107,7 @@ public class FacturaService {
     private final LineaFacturaEnsamblador lineaFacturaEnsamblador;
     private final ComprobanteEmisionService comprobanteEmisionService;
     private final HaciendaApiService haciendaApiService;
+    private final CondicionesComercialesService condicionesComercialesService;
 
     public FacturaService(
             ClienteRepository clienteRepository,
@@ -123,7 +123,8 @@ public class FacturaService {
             FacturaMedioPagoRepository facturaMedioPagoRepository,
             LineaFacturaEnsamblador lineaFacturaEnsamblador,
             ComprobanteEmisionService comprobanteEmisionService,
-            HaciendaApiService haciendaApiService) {
+            HaciendaApiService haciendaApiService,
+            CondicionesComercialesService condicionesComercialesService) {
         this.clienteRepository = clienteRepository;
         this.empresaRepository = empresaRepository;
         this.facturaRepository = facturaRepository;
@@ -138,6 +139,7 @@ public class FacturaService {
         this.lineaFacturaEnsamblador = lineaFacturaEnsamblador;
         this.comprobanteEmisionService = comprobanteEmisionService;
         this.haciendaApiService = haciendaApiService;
+        this.condicionesComercialesService = condicionesComercialesService;
     }
 
     // =========================================================================
@@ -313,7 +315,7 @@ public class FacturaService {
                 .setScale(ESCALA_MONETARIA, RoundingMode.HALF_UP);
 
         String condicionVenta = request.condicionVenta() != null ? request.condicionVenta() : CONDICION_VENTA_DEFECTO;
-        validarCondicionVenta(condicionVenta, request.plazoCredito());
+        condicionesComercialesService.validarCondicionVenta(condicionVenta, request.plazoCredito());
 
         // Resolve legacy medioPago for backward compat (single string field on factura table)
         String legacyMedioPago = resolverLegacyMedioPago(request);
@@ -433,14 +435,11 @@ public class FacturaService {
                 facturaMedioPagoRepository.save(entidad);
             }
         } else {
-            // Legacy fallback: synthesize single payment from legacy medioPago + total
-            FacturaMedioPago entidad = new FacturaMedioPago();
-            entidad.setFacturaId(facturaId);
-            entidad.setOrden((short) 1);
-            entidad.setTipoMedioPago(legacyMedioPago != null ? legacyMedioPago : MEDIO_PAGO_DEFECTO);
-            entidad.setMedioPagoOtros(null);
-            entidad.setTotalMedioPago(totalFactura);
-            facturaMedioPagoRepository.save(entidad);
+            // Legacy fallback: synthesize single payment from legacy medioPago + total -- misma
+            // síntesis que NotaCreditoDebitoService/TiqueteService, extraída a
+            // CondicionesComercialesService.
+            condicionesComercialesService.persistirMedioPagoUnico(
+                    facturaId, legacyMedioPago != null ? legacyMedioPago : MEDIO_PAGO_DEFECTO, totalFactura);
         }
     }
 
@@ -489,22 +488,6 @@ public class FacturaService {
         return request.medioPago() != null ? request.medioPago() : MEDIO_PAGO_DEFECTO;
     }
 
-    /**
-     * Mismo requisito que ya exige el {@code CHECK} de {@code factura} en
-     * {@code V4__catalogo_y_facturacion.sql} ({@code condicion_venta <> '02' OR plazo_credito
-     * IS NOT NULL}), validado aquí en Java ANTES de {@code saveAndFlush} -- mismo principio ya
-     * aplicado en {@code ClienteService#validarUbicacion}: una violación de ese {@code CHECK} sin
-     * validar antes llegaría como {@code DataIntegrityViolationException}, y
-     * {@code GlobalExceptionHandler} la traduciría a un 409 genérico de "restricción de
-     * unicidad" -- mensaje incorrecto para lo que en realidad es una regla de negocio, no un
-     * duplicado.
-     */
-    private void validarCondicionVenta(String condicionVenta, Integer plazoCredito) {
-        if (CONDICION_VENTA_CREDITO.equals(condicionVenta) && plazoCredito == null) {
-            throw new CondicionVentaInvalidaException(
-                    "plazoCredito es obligatorio cuando condicionVenta = '02' (crédito)");
-        }
-    }
 
     /**
      * Lee el usuario ya autenticado por {@code JwtAuthenticationFilter} -- mismo patrón que
