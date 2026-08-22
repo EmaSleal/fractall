@@ -212,6 +212,31 @@ class FacturaPdfServiceTest {
     }
 
     // -------------------------------------------------------------------------
+    // Test 4b (Release 2 / Fase C): factura.clienteId nulo — Tiquete sin receptor identificado.
+    // Hallazgo real de integración: clienteRepository.findById(factura.getClienteId()) era
+    // incondicional -- con clienteId null, Spring Data lanza InvalidDataAccessApiUsageException
+    // en vez de tratarlo como "sin cliente". Confirmado end-to-end en TiqueteEmisionIT.
+    // -------------------------------------------------------------------------
+    @Test
+    void generarConFacturaClienteIdNuloMuestraConsumidorFinalYNoLanza() {
+        factura.setClienteId(null);
+
+        LineaFactura linea = stubLinea(facturaId, productoAId, 1,
+                new BigDecimal("1000.00000"), BigDecimal.ZERO, null);
+        when(lineaFacturaRepository.findByFacturaIdOrderByNumeroLinea(facturaId))
+                .thenReturn(List.of(linea));
+        when(productoRepository.findById(productoAId))
+                .thenReturn(Optional.of(productoA));
+
+        byte[] pdf = servicio.generarPdf(comprobanteId);
+
+        assertThat(pdf).isNotEmpty();
+        String texto = extractText(pdf);
+        assertThat(texto).contains("Consumidor Final");
+        assertThat(texto).doesNotContain(cliente.getNombre());
+    }
+
+    // -------------------------------------------------------------------------
     // Test 5: 3+ lineas — todas las descripciones de producto en el PDF
     // -------------------------------------------------------------------------
     @Test

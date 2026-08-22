@@ -165,9 +165,18 @@ public class XmlFacturaGeneratorServiceImpl implements XmlFacturaGeneratorServic
         Empresa empresa = empresaRepository.findById(comprobante.getEmpresaId())
                 .orElseThrow(() -> new IllegalStateException("Empresa no encontrada: " + comprobante.getEmpresaId()));
 
-        Cliente cliente = clienteRepository.findById(factura.getClienteId())
-                .orElseThrow(() -> new IllegalStateException(
-                        "Cliente no encontrado para factura " + factura.getId() + ": " + factura.getClienteId()));
+        // Release 2 / Fase C, hallazgo real de integración: factura.getClienteId() puede ser null
+        // (Tiquete sin receptor identificado, ver TipoComprobantePerfil#receptorObligatorio ==
+        // false para TIQUETE) -- el lookup solo corre cuando hay un cliente que resolver. Antes de
+        // este guard, clienteRepository.findById(null) lanzaba InvalidDataAccessApiUsageException
+        // incondicionalmente, sin importar el perfil (ver el guard de perfil.isReceptorObligatorio()
+        // más abajo, que ya anticipaba este caso pero no evitaba el lookup en sí).
+        Cliente cliente = null;
+        if (factura.getClienteId() != null) {
+            cliente = clienteRepository.findById(factura.getClienteId())
+                    .orElseThrow(() -> new IllegalStateException(
+                            "Cliente no encontrado para factura " + factura.getId() + ": " + factura.getClienteId()));
+        }
 
         List<LineaFactura> lineas = lineaFacturaRepository.findByFacturaIdOrderByNumeroLinea(factura.getId());
         List<LineaContexto> contextos = lineas.stream()

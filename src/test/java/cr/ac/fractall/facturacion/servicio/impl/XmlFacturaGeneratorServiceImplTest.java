@@ -663,4 +663,35 @@ class XmlFacturaGeneratorServiceImplTest {
         assertThatCode(() -> xmlFacturaXsdValidator.validar(xml, TipoComprobantePerfil.TIQUETE))
                 .doesNotThrowAnyException();
     }
+
+    /**
+     * Release 2 / Fase C, hallazgo real de integración: {@code factura.clienteId == null} (Tiquete
+     * sin receptor identificado, venta de mostrador) reventaba con
+     * {@code InvalidDataAccessApiUsageException} ("The given id must not be null") en la línea que
+     * resuelve {@code Cliente cliente = clienteRepository.findById(factura.getClienteId())...} --
+     * ese lookup era incondicional, sin importar {@code perfil.isReceptorObligatorio()}. El
+     * comentario histórico junto a {@code agregarReceptor} ya anticipaba el gap ("el gate queda
+     * listo para cuando Fase C permita un ND/NC sin cliente") pero el lookup en sí nunca quedó
+     * condicionado. Fix: {@code cliente} solo se resuelve cuando {@code factura.getClienteId() !=
+     * null}; para {@code TIQUETE} (receptorObligatorio=false) el bloque {@code <Receptor>} se omite
+     * por completo, tal como ya exige el XSD real ({@code minOccurs="0"}).
+     */
+    @Test
+    void generaXmlTiqueteSinReceptorIdentificadoOmiteElementoReceptorYValidaXsd() throws Exception {
+        Producto producto = crearProducto("PROD-TQ-SR-" + UUID.randomUUID(), new BigDecimal("13.00"));
+
+        Factura factura = crearFactura(null, new BigDecimal("1000.00000"), new BigDecimal("130.00000"));
+        LineaFactura linea = crearLinea(factura.getId(), producto, 1, BigDecimal.ONE, new BigDecimal("1000.00000"));
+        lineaFacturaRepository.saveAndFlush(linea);
+        ComprobanteElectronico comprobante = crearComprobante(factura.getId(), "04");
+
+        String xml = xmlFacturaGeneratorService.generarXmlFactura(comprobante.getId());
+
+        Document documento = parsear(xml);
+        assertThat(documento.getDocumentElement().getTagName()).isEqualTo("TiqueteElectronico");
+        assertThat(documento.getElementsByTagName("Receptor").getLength()).isZero();
+
+        assertThatCode(() -> xmlFacturaXsdValidator.validar(xml, TipoComprobantePerfil.TIQUETE))
+                .doesNotThrowAnyException();
+    }
 }

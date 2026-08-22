@@ -115,6 +115,19 @@ class ComprobanteEntregaService {
         // =====================================================================
 
         try {
+            // Release 2 / Fase C: un Tiquete Electrónico puede emitirse sin receptor identificado
+            // (venta de mostrador, ver el javadoc de la clase) -- factura.clienteId queda null en
+            // ese caso. Guard explícito ANTES de clienteRepository.findById: con un id null,
+            // Spring Data lanza InvalidDataAccessApiUsageException (rechaza el argumento en sí,
+            // no un "no encontrado"), lo cual hoy ya quedaría atrapado por el catch genérico de
+            // esta Fase B, pero de forma ruidosa y confusa en los logs. Sin cliente no hay a quién
+            // entregar por correo -- comportamiento esperado y correcto, no un error.
+            if (factura.getClienteId() == null) {
+                log.info("factura.clienteId es nulo (Tiquete sin receptor identificado), omitiendo entrega por correo para comprobante {}",
+                        comprobanteId);
+                return;
+            }
+
             Cliente cliente = clienteRepository.findById(factura.getClienteId())
                     .orElseThrow(() -> new IllegalStateException(
                             "Cliente no encontrado para factura " + factura.getClienteId()));

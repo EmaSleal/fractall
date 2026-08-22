@@ -195,6 +195,14 @@ class LineaFacturaEnsamblador {
      */
     private BigDecimal aplicarExoneracion(UUID exoneracionId, Cliente cliente, LineaFactura linea,
             BigDecimal impuestoLinea, TipoComprobantePerfil perfil) {
+        // Release 2 / Fase C: cliente puede ser null (Tiquete sin receptor identificado, ver el
+        // javadoc de la clase) -- sin cliente no hay contra qué validar pertenencia de la
+        // exoneración, rechazado aquí ANTES del NullPointerException que cliente.getId() (más
+        // abajo) produciría.
+        if (cliente == null) {
+            throw new ExoneracionRequiereClienteException(exoneracionId);
+        }
+
         ClienteExoneracion exoneracion = clienteExoneracionRepository.findById(exoneracionId)
                 .orElseThrow(() -> new ClienteExoneracionNoEncontradaException(exoneracionId));
 
