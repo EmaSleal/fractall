@@ -25,6 +25,7 @@ import cr.ac.fractall.empresa.modelo.EmpresaAmbienteHistorial;
 import cr.ac.fractall.empresa.repositorio.EmpresaAmbienteHistorialRepository;
 import cr.ac.fractall.empresa.dto.ActualizarDatosFiscalesRequest;
 import cr.ac.fractall.empresa.dto.EmpresaResponse;
+import cr.ac.fractall.empresa.dto.EstadoAmbientesResponse;
 import cr.ac.fractall.catalogo.servicio.UbicacionValidator;
 import cr.ac.fractall.secretos.EnvelopeCipher;
 import cr.ac.fractall.secretos.SecretosKvService;
@@ -223,10 +224,8 @@ public class EmpresaService {
         Empresa empresa = obtenerEmpresaActual();
 
         if (ambiente.equals(empresa.getAmbienteHacienda())) {
-            boolean tieneCertificado = certificadoHaciendaRepository
-                    .findByEmpresaIdAndAmbiente(empresa.getId(), empresa.getAmbienteHacienda())
-                    .isPresent();
-            return EmpresaResponse.desde(empresa, tieneCertificado);
+            return EmpresaResponse.desde(
+                    empresa, estadoCertificado(empresa.getId()), estadoCredenciales(empresa.getId()));
         }
 
         if ("PRODUCCION".equals(ambiente)) {
@@ -271,10 +270,8 @@ public class EmpresaService {
     @Transactional(readOnly = true)
     public EmpresaResponse consultar() {
         Empresa empresa = obtenerEmpresaActual();
-        boolean tieneCertificado = certificadoHaciendaRepository
-                .findByEmpresaIdAndAmbiente(empresa.getId(), empresa.getAmbienteHacienda())
-                .isPresent();
-        return EmpresaResponse.desde(empresa, tieneCertificado);
+        return EmpresaResponse.desde(
+                empresa, estadoCertificado(empresa.getId()), estadoCredenciales(empresa.getId()));
     }
 
     private Empresa obtenerEmpresaActual() {
@@ -290,10 +287,20 @@ public class EmpresaService {
         // trigger del lado del servidor -- refresh obligatorio para no devolver valores
         // obsoletos en la respuesta.
         entityManager.refresh(empresa);
-        boolean tieneCertificado = certificadoHaciendaRepository
-                .findByEmpresaIdAndAmbiente(empresa.getId(), empresa.getAmbienteHacienda())
-                .isPresent();
-        return EmpresaResponse.desde(empresa, tieneCertificado);
+        return EmpresaResponse.desde(
+                empresa, estadoCertificado(empresa.getId()), estadoCredenciales(empresa.getId()));
+    }
+
+    private EstadoAmbientesResponse estadoCertificado(UUID empresaId) {
+        return new EstadoAmbientesResponse(
+                certificadoHaciendaRepository.existsByEmpresaIdAndAmbiente(empresaId, "SANDBOX"),
+                certificadoHaciendaRepository.existsByEmpresaIdAndAmbiente(empresaId, "PRODUCCION"));
+    }
+
+    private EstadoAmbientesResponse estadoCredenciales(UUID empresaId) {
+        return new EstadoAmbientesResponse(
+                credencialHaciendaRepository.existsByEmpresaIdAndAmbiente(empresaId, "SANDBOX"),
+                credencialHaciendaRepository.existsByEmpresaIdAndAmbiente(empresaId, "PRODUCCION"));
     }
 
     private static String subrutaHacienda(String ambiente) {
