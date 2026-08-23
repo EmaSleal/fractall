@@ -5,8 +5,10 @@ name: nc-nd-sandbox
 # Débito contra el ambiente SANDBOX de Hacienda (https://api-sandbox.comprobanteselectronicos.go.cr).
 #
 # Deliberadamente SEPARADO del gate de PR (tests.yml, ver el commit 07617bb): nunca se dispara por
-# push ni pull_request. Solo workflow_dispatch manual -- este es un round-trip contra un tercero
-# externo (Hacienda), no una prueba hermética, y no debe bloquear ni ralentizar cada PR.
+# push ni pull_request. Solo workflow_dispatch manual, mas un cron nocturno -- este es un round-trip
+# contra un tercero externo (Hacienda), no una prueba hermetica, y no debe bloquear ni ralentizar
+# cada PR. El cron existe para detectar una regresion real en horas en vez de depender 100% de que
+# alguien lo dispare a mano.
 #
 # Secretos de repo esperados (NINGUNO existe todavía al momento de crear este workflow -- deben
 # aprovisionarse como infraestructura nueva antes del primer disparo manual; ver el javadoc de
@@ -26,6 +28,8 @@ name: nc-nd-sandbox
 
 on:
   workflow_dispatch: {}
+  schedule:
+    - cron: "0 9 * * *"
 
 jobs:
   sandbox-round-trip:
