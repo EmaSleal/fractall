@@ -8,7 +8,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.math.BigDecimal;
-import java.time.LocalDateTime;
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
@@ -50,7 +50,7 @@ class NotaCreditoDebitoControllerTest {
                 BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, List.of(),
                 UUID.randomUUID(), "SANDBOX", "03", "00100001010000000001",
                 "50601010100011010000000001000000001100000000001", UUID.randomUUID(),
-                "GENERADO", LocalDateTime.now(), null, null, BigDecimal.ZERO,
+                "GENERADO", Instant.now(), null, null, BigDecimal.ZERO,
                 List.of(), List.of(), List.of(), null, null, null, null, 0);
     }
 
