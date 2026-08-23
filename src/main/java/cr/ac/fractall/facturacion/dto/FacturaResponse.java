@@ -1,7 +1,9 @@
 package cr.ac.fractall.facturacion.dto;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.UUID;
 
@@ -26,7 +28,7 @@ public record FacturaResponse(
         String claveNumerica,
         UUID facturaReferenciaId,
         String estado,
-        LocalDateTime fechaEmision,
+        Instant fechaEmision,
         String condicionVentaOtros,
         String codigoActividadReceptor,
         BigDecimal totalIvaDevuelto,
@@ -35,7 +37,7 @@ public record FacturaResponse(
         List<MedioPagoResponse> mediosPago,
         String codigoRespuesta,
         String mensajeRespuesta,
-        LocalDateTime fechaRespuesta,
+        Instant fechaRespuesta,
         String ultimoResultadoConsulta,
         Integer intentosEnvio) {
 
@@ -67,7 +69,7 @@ public record FacturaResponse(
                 comprobante.getClaveNumerica(),
                 factura.getFacturaReferenciaId(),
                 comprobante.getEstado(),
-                comprobante.getFechaEmision(),
+                aInstanteUtc(comprobante.getFechaEmision()),
                 factura.getCondicionVentaOtros(),
                 factura.getCodigoActividadReceptor(),
                 factura.getTotalIvaDevuelto(),
@@ -76,8 +78,19 @@ public record FacturaResponse(
                 mediosPagoEntidades.stream().map(MedioPagoResponse::desde).toList(),
                 comprobante.getCodigoRespuesta(),
                 comprobante.getMensajeRespuesta(),
-                comprobante.getFechaRespuesta(),
+                aInstanteUtc(comprobante.getFechaRespuesta()),
                 comprobante.getUltimoResultadoConsulta(),
                 comprobante.getIntentosEnvio());
+    }
+
+    /**
+     * {@code ComprobanteElectronico} guarda {@code fechaEmision}/{@code fechaRespuesta} como
+     * {@code LocalDateTime} que representa un instante UTC (ver {@code FacturaService} y
+     * {@code HaciendaComprobanteApiServiceImpl}), sin ningún indicador de zona. Convertir a
+     * {@code Instant} aquí hace que el JSON de salida lleve el sufijo {@code Z} explícito, para que
+     * el cliente no tenga que adivinar la zona horaria.
+     */
+    private static Instant aInstanteUtc(LocalDateTime fecha) {
+        return fecha != null ? fecha.toInstant(ZoneOffset.UTC) : null;
     }
 }

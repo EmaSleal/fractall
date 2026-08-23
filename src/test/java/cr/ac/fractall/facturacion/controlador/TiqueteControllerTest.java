@@ -8,7 +8,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.math.BigDecimal;
-import java.time.LocalDateTime;
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
@@ -35,7 +35,7 @@ class TiqueteControllerTest {
                 BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, List.of(),
                 UUID.randomUUID(), "SANDBOX", "04", "00100001040000000001",
                 "50601010100011010000000001000000001199999999", null,
-                "GENERADO", LocalDateTime.now(), null, null, BigDecimal.ZERO,
+                "GENERADO", Instant.now(), null, null, BigDecimal.ZERO,
                 List.of(), List.of(), List.of(), null, null, null, null, 0);
     }
 
