@@ -43,6 +43,7 @@ import cr.ac.fractall.facturacion.servicio.FacturaOrigenNoAceptadaException;
 import cr.ac.fractall.facturacion.servicio.LineaOrigenNoPerteneceAFacturaException;
 import cr.ac.fractall.facturacion.servicio.MontoNotaCreditoExcedeOrigenException;
 import cr.ac.fractall.facturacion.servicio.ReferenciaNoEsFacturaElectronicaException;
+import cr.ac.fractall.facturacion.servicio.XmlFacturaFirmaException;
 import cr.ac.fractall.hacienda.servicio.HaciendaApiService;
 import cr.ac.fractall.hacienda.servicio.TipoCambioNoDisponibleException;
 
@@ -192,6 +193,13 @@ class GlobalExceptionHandlerTest {
         public void empresaSinCorreo() {
             throw new EmpresaSinCorreoElectronicoException(UUID.randomUUID());
         }
+
+        @PostMapping("/test/xml-factura-firma")
+        public void xmlFacturaFirma() {
+            throw new XmlFacturaFirmaException(
+                    "La empresa " + UUID.randomUUID() + " no tiene certificado .p12 para el ambiente SANDBOX",
+                    null);
+        }
     }
 
     private MockMvc mockMvcConExcepcionesMigradas() {
@@ -266,6 +274,18 @@ class GlobalExceptionHandlerTest {
     @Test
     void handler_empresaSinCorreo_devuelve503() throws Exception {
         mockMvcConExcepcionesMigradas().perform(post("/test/empresa-sin-correo"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.mensaje").isString());
+    }
+
+    /**
+     * {@code XmlFacturaFirmaException} (empresa sin certificado {@code .p12}/PIN, o fallo del
+     * proceso de firma XAdES-BES) se une al grupo de fallos de infraestructura/configuración de la
+     * empresa -- antes escalaba como 500 crudo porque no tenía handler dedicado.
+     */
+    @Test
+    void handler_xmlFacturaFirma_devuelve503() throws Exception {
+        mockMvcConExcepcionesMigradas().perform(post("/test/xml-factura-firma"))
                 .andExpect(status().isServiceUnavailable())
                 .andExpect(jsonPath("$.mensaje").isString());
     }
