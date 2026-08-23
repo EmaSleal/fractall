@@ -10,4 +10,6 @@ import cr.ac.fractall.empresa.modelo.CertificadoHacienda;
 public interface CertificadoHaciendaRepository extends JpaRepository<CertificadoHacienda, UUID> {
 
     Optional<CertificadoHacienda> findByEmpresaIdAndAmbiente(UUID empresaId, String ambiente);
+
+    boolean existsByEmpresaIdAndAmbiente(UUID empresaId, String ambiente);
 }

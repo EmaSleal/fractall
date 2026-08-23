@@ -9,9 +9,10 @@ import cr.ac.fractall.empresa.modelo.Empresa;
  * {@code status} siempre, para que el llamador observe la máquina de estados de la sección
  * 4.1 progresar tras cada paso, sin tener que consultar un endpoint aparte.
  *
- * <p>{@code tieneCertificado} indica si existe un {@code certificado_hacienda} para el
- * ambiente activo de la empresa (ver sección 4.1). Solo expone el booleano -- nunca la ruta
- * del secreto en Vault.
+ * <p>{@code certificadoPorAmbiente} y {@code credencialesPorAmbiente} indican, para cada uno
+ * de los dos ambientes de Hacienda (SANDBOX/PRODUCCION), si existe un {@code
+ * certificado_hacienda} o una {@code credencial_hacienda} respectivamente -- sin importar cuál
+ * ambiente esté activo. Solo exponen booleanos -- nunca la ruta del secreto en Vault.
  */
 public record EmpresaResponse(
         UUID id,
@@ -29,9 +30,13 @@ public record EmpresaResponse(
         String email,
         String ambienteHacienda,
         String status,
-        boolean tieneCertificado) {
+        EstadoAmbientesResponse certificadoPorAmbiente,
+        EstadoAmbientesResponse credencialesPorAmbiente) {
 
-    public static EmpresaResponse desde(Empresa empresa, boolean tieneCertificado) {
+    public static EmpresaResponse desde(
+            Empresa empresa,
+            EstadoAmbientesResponse certificadoPorAmbiente,
+            EstadoAmbientesResponse credencialesPorAmbiente) {
         return new EmpresaResponse(
                 empresa.getId(),
                 empresa.getRazonSocial(),
@@ -48,6 +53,7 @@ public record EmpresaResponse(
                 empresa.getEmail(),
                 empresa.getAmbienteHacienda(),
                 empresa.getStatus(),
-                tieneCertificado);
+                certificadoPorAmbiente,
+                credencialesPorAmbiente);
     }
 }
