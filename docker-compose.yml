@@ -58,6 +58,7 @@ services:
       - VAULT_ADDR=http://vault:8200
       - VAULT_ROLE_ID
       - VAULT_SECRET_ID
+      - HACIENDA_OAUTH_CLIENT_ID
       - RESEND_API_KEY
       - RESEND_FROM_EMAIL
       - FRONTEND_BASE_URL
