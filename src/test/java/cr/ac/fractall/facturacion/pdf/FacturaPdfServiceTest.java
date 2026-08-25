@@ -27,16 +27,24 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 
 import cr.ac.fractall.catalogo.modelo.Cliente;
+import cr.ac.fractall.catalogo.modelo.ClienteExoneracion;
 import cr.ac.fractall.catalogo.modelo.Producto;
+import cr.ac.fractall.catalogo.repositorio.ClienteExoneracionRepository;
 import cr.ac.fractall.catalogo.repositorio.ClienteRepository;
 import cr.ac.fractall.catalogo.repositorio.ProductoRepository;
 import cr.ac.fractall.empresa.modelo.Empresa;
 import cr.ac.fractall.empresa.repositorio.EmpresaRepository;
 import cr.ac.fractall.facturacion.modelo.ComprobanteElectronico;
 import cr.ac.fractall.facturacion.modelo.Factura;
+import cr.ac.fractall.facturacion.modelo.FacturaInformacionReferencia;
+import cr.ac.fractall.facturacion.modelo.FacturaMedioPago;
+import cr.ac.fractall.facturacion.modelo.ImpuestoLineaExoneracion;
 import cr.ac.fractall.facturacion.modelo.LineaFactura;
 import cr.ac.fractall.facturacion.repositorio.ComprobanteElectronicoRepository;
+import cr.ac.fractall.facturacion.repositorio.FacturaInformacionReferenciaRepository;
+import cr.ac.fractall.facturacion.repositorio.FacturaMedioPagoRepository;
 import cr.ac.fractall.facturacion.repositorio.FacturaRepository;
+import cr.ac.fractall.facturacion.repositorio.ImpuestoLineaExoneracionRepository;
 import cr.ac.fractall.facturacion.repositorio.LineaFacturaRepository;
 
 /**
@@ -70,6 +78,14 @@ class FacturaPdfServiceTest {
     private ProductoRepository productoRepository;
     @Mock
     private EmpresaRepository empresaRepository;
+    @Mock
+    private FacturaMedioPagoRepository facturaMedioPagoRepository;
+    @Mock
+    private FacturaInformacionReferenciaRepository facturaInformacionReferenciaRepository;
+    @Mock
+    private ImpuestoLineaExoneracionRepository impuestoLineaExoneracionRepository;
+    @Mock
+    private ClienteExoneracionRepository clienteExoneracionRepository;
 
     @InjectMocks
     private FacturaPdfService servicio;
@@ -115,6 +131,10 @@ class FacturaPdfServiceTest {
                 .thenReturn(Optional.of(empresa));
         when(clienteRepository.findById(clienteId))
                 .thenReturn(Optional.of(cliente));
+        when(facturaMedioPagoRepository.findByFacturaIdOrderByOrden(facturaId))
+                .thenReturn(List.of());
+        when(facturaInformacionReferenciaRepository.findByFacturaIdOrderByOrden(facturaId))
+                .thenReturn(List.of());
     }
 
     // -------------------------------------------------------------------------
@@ -302,6 +322,189 @@ class FacturaPdfServiceTest {
     }
 
     // -------------------------------------------------------------------------
+    // Test 8: tipo de documento (catálogo Hacienda) impreso en el encabezado y el pie
+    // -------------------------------------------------------------------------
+    @Test
+    void generarIncluyeTipoDeDocumentoEnEncabezadoYPie() {
+        comprobante.setTipoComprobante("03");
+
+        LineaFactura linea = stubLinea(facturaId, productoAId, 1,
+                new BigDecimal("1000.00000"), BigDecimal.ZERO, null);
+        when(lineaFacturaRepository.findByFacturaIdOrderByNumeroLinea(facturaId))
+                .thenReturn(List.of(linea));
+        when(productoRepository.findById(productoAId))
+                .thenReturn(Optional.of(productoA));
+
+        byte[] pdf = servicio.generarPdf(comprobanteId);
+
+        String texto = extractText(pdf);
+        assertThat(texto).contains("Nota de Credito Electronica");
+    }
+
+    // -------------------------------------------------------------------------
+    // Test 9: condicion de venta y moneda en el PDF
+    // -------------------------------------------------------------------------
+    @Test
+    void generarIncluyeCondicionDeVentaYMoneda() {
+        LineaFactura linea = stubLinea(facturaId, productoAId, 1,
+                new BigDecimal("1000.00000"), BigDecimal.ZERO, null);
+        when(lineaFacturaRepository.findByFacturaIdOrderByNumeroLinea(facturaId))
+                .thenReturn(List.of(linea));
+        when(productoRepository.findById(productoAId))
+                .thenReturn(Optional.of(productoA));
+
+        byte[] pdf = servicio.generarPdf(comprobanteId);
+
+        String texto = extractText(pdf);
+        assertThat(texto).contains("Contado");
+        assertThat(texto).contains("CRC");
+    }
+
+    // -------------------------------------------------------------------------
+    // Test 10: sin filas en factura_medio_pago -- fallback al medio_pago escalar legacy
+    // -------------------------------------------------------------------------
+    @Test
+    void generarSinFilasMedioPagoUsaFallbackLegacyDeFactura() {
+        LineaFactura linea = stubLinea(facturaId, productoAId, 1,
+                new BigDecimal("1000.00000"), BigDecimal.ZERO, null);
+        when(lineaFacturaRepository.findByFacturaIdOrderByNumeroLinea(facturaId))
+                .thenReturn(List.of(linea));
+        when(productoRepository.findById(productoAId))
+                .thenReturn(Optional.of(productoA));
+
+        byte[] pdf = servicio.generarPdf(comprobanteId);
+
+        String texto = extractText(pdf);
+        assertThat(texto).contains("Efectivo");
+    }
+
+    // -------------------------------------------------------------------------
+    // Test 11: multiples filas en factura_medio_pago -- todas aparecen
+    // -------------------------------------------------------------------------
+    @Test
+    void generarConMultiplesMediosPagoListaTodos() {
+        FacturaMedioPago mp1 = new FacturaMedioPago();
+        mp1.setFacturaId(facturaId);
+        mp1.setOrden((short) 1);
+        mp1.setTipoMedioPago("02");
+        mp1.setTotalMedioPago(new BigDecimal("2000.00000"));
+
+        FacturaMedioPago mp2 = new FacturaMedioPago();
+        mp2.setFacturaId(facturaId);
+        mp2.setOrden((short) 2);
+        mp2.setTipoMedioPago("06");
+        mp2.setTotalMedioPago(new BigDecimal("1130.00000"));
+
+        when(facturaMedioPagoRepository.findByFacturaIdOrderByOrden(facturaId))
+                .thenReturn(List.of(mp1, mp2));
+
+        LineaFactura linea = stubLinea(facturaId, productoAId, 1,
+                new BigDecimal("1000.00000"), BigDecimal.ZERO, null);
+        when(lineaFacturaRepository.findByFacturaIdOrderByNumeroLinea(facturaId))
+                .thenReturn(List.of(linea));
+        when(productoRepository.findById(productoAId))
+                .thenReturn(Optional.of(productoA));
+
+        byte[] pdf = servicio.generarPdf(comprobanteId);
+
+        String texto = extractText(pdf);
+        assertThat(texto).contains("Tarjeta");
+        assertThat(texto).contains("SINPE Movil");
+    }
+
+    // -------------------------------------------------------------------------
+    // Test 12: informacion de referencia (NC/ND) impresa cuando existe
+    // -------------------------------------------------------------------------
+    @Test
+    void generarConInformacionReferenciaMuestraDocumentoOrigen() {
+        comprobante.setTipoComprobante("03");
+
+        FacturaInformacionReferencia referencia = new FacturaInformacionReferencia();
+        referencia.setFacturaId(facturaId);
+        referencia.setOrden((short) 1);
+        referencia.setTipoDocIr("01");
+        referencia.setNumero("00100001010000000005");
+        referencia.setFechaEmisionIr(LocalDateTime.of(2026, 8, 1, 9, 0, 0));
+        referencia.setCodigo("06");
+        referencia.setRazon("Devolucion de mercaderia dañada");
+
+        when(facturaInformacionReferenciaRepository.findByFacturaIdOrderByOrden(facturaId))
+                .thenReturn(List.of(referencia));
+
+        LineaFactura linea = stubLinea(facturaId, productoAId, 1,
+                new BigDecimal("1000.00000"), BigDecimal.ZERO, null);
+        when(lineaFacturaRepository.findByFacturaIdOrderByNumeroLinea(facturaId))
+                .thenReturn(List.of(linea));
+        when(productoRepository.findById(productoAId))
+                .thenReturn(Optional.of(productoA));
+
+        byte[] pdf = servicio.generarPdf(comprobanteId);
+
+        String texto = extractText(pdf);
+        assertThat(texto).contains("00100001010000000005");
+        assertThat(texto).contains("Devolucion de mercaderia da");
+    }
+
+    // -------------------------------------------------------------------------
+    // Test 13: exoneracion inline (bloque ExoneracionRequest) -- detalle completo por linea
+    // -------------------------------------------------------------------------
+    @Test
+    void generarConExoneracionInlineMuestraInstitucionYMontoPorLinea() {
+        LineaFactura linea = stubLinea(facturaId, productoAId, 1,
+                new BigDecimal("1000.00000"), new BigDecimal("130.00000"), UUID.randomUUID());
+        when(lineaFacturaRepository.findByFacturaIdOrderByNumeroLinea(facturaId))
+                .thenReturn(List.of(linea));
+        when(productoRepository.findById(productoAId))
+                .thenReturn(Optional.of(productoA));
+
+        ImpuestoLineaExoneracion exoneracionInline = new ImpuestoLineaExoneracion();
+        exoneracionInline.setLineaId(linea.getId());
+        exoneracionInline.setTipoDocumentoEx1("01");
+        exoneracionInline.setNumeroDocumento("EX-2026-001");
+        exoneracionInline.setNombreInstitucion("01");
+        exoneracionInline.setFechaEmisionEx(LocalDateTime.of(2026, 1, 10, 0, 0, 0));
+        exoneracionInline.setTarifaExonerada(new BigDecimal("13.00"));
+        exoneracionInline.setMontoExoneracion(new BigDecimal("130.00000"));
+        when(impuestoLineaExoneracionRepository.findByLineaId(linea.getId()))
+                .thenReturn(Optional.of(exoneracionInline));
+
+        byte[] pdf = servicio.generarPdf(comprobanteId);
+
+        String texto = extractText(pdf);
+        assertThat(texto).contains("Ministerio de Hacienda");
+        assertThat(texto).contains("EX-2026-001");
+        assertThat(texto).contains("130.00");
+    }
+
+    // -------------------------------------------------------------------------
+    // Test 14: exoneracion legacy (ClienteExoneracion via exoneracionId) -- detalle por linea
+    // -------------------------------------------------------------------------
+    @Test
+    void generarConExoneracionLegacyMuestraInstitucionDelClienteExonerado() {
+        UUID clienteExoneracionId = UUID.randomUUID();
+        LineaFactura linea = stubLinea(facturaId, productoAId, 1,
+                new BigDecimal("1000.00000"), new BigDecimal("65.00000"), clienteExoneracionId);
+        linea.setPorcentajeExoneracionAplicado(new BigDecimal("50.00"));
+
+        when(lineaFacturaRepository.findByFacturaIdOrderByNumeroLinea(facturaId))
+                .thenReturn(List.of(linea));
+        when(productoRepository.findById(productoAId))
+                .thenReturn(Optional.of(productoA));
+
+        ClienteExoneracion exoneracionCliente = new ClienteExoneracion();
+        exoneracionCliente.setNombreInstitucion("Ministerio de Salud");
+        exoneracionCliente.setNumeroDocumento("DOC-LEGACY-9");
+        when(clienteExoneracionRepository.findById(clienteExoneracionId))
+                .thenReturn(Optional.of(exoneracionCliente));
+
+        byte[] pdf = servicio.generarPdf(comprobanteId);
+
+        String texto = extractText(pdf);
+        assertThat(texto).contains("Ministerio de Salud");
+        assertThat(texto).contains("DOC-LEGACY-9");
+    }
+
+    // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
 
@@ -323,6 +526,7 @@ class FacturaPdfServiceTest {
         c.setEstado("ACEPTADO");
         c.setConsecutivo("00100001010000000099");
         c.setClaveNumerica("50601011500310310001000000001411234567890123456789012");
+        c.setTipoComprobante("01");
         return c;
     }
 

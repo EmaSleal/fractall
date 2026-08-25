@@ -24,13 +24,17 @@ import lombok.Getter;
 public enum TipoComprobantePerfil {
 
     FACTURA_ELECTRONICA("01", "FacturaElectronica", "facturaElectronica",
-            "xsd/FacturaElectronica_V4.4.xsd", true, true, true, true, 0),
+            "xsd/FacturaElectronica_V4.4.xsd", true, true, true, true, 0,
+            "Factura Electrónica", "Factura Electrónica Autorizada"),
     NOTA_DEBITO("02", "NotaDebitoElectronica", "notaDebitoElectronica",
-            "xsd/NotaDebitoElectronica_V4.4.xsd", true, false, true, true, 1),
+            "xsd/NotaDebitoElectronica_V4.4.xsd", true, false, true, true, 1,
+            "Nota de Débito Electrónica", "Nota de Débito Electrónica Autorizada"),
     NOTA_CREDITO("03", "NotaCreditoElectronica", "notaCreditoElectronica",
-            "xsd/NotaCreditoElectronica_V4.4.xsd", true, false, true, true, 1),
+            "xsd/NotaCreditoElectronica_V4.4.xsd", true, false, true, true, 1,
+            "Nota de Crédito Electrónica", "Nota de Crédito Electrónica Autorizada"),
     TIQUETE("04", "TiqueteElectronico", "tiqueteElectronico",
-            "xsd/TiqueteElectronico_V4.4.xsd", false, true, false, false, 0);
+            "xsd/TiqueteElectronico_V4.4.xsd", false, true, false, false, 0,
+            "Tiquete Electrónico", "Tiquete Electrónico Autorizado");
 
     private static final String NAMESPACE_BASE =
             "https://cdn.comprobanteselectronicos.go.cr/xml-schemas/v4.4/";
@@ -45,11 +49,13 @@ public enum TipoComprobantePerfil {
     private final boolean codigoActividadReceptorSoportado;
     private final boolean tipoTransaccionSoportado;
     private final int referenciasMinimas;
+    private final String nombreDocumento;
+    private final String tituloAutorizado;
 
     TipoComprobantePerfil(String codigo, String elementoRaiz, String sufijoNamespace, String xsdClasspath,
             boolean receptorObligatorio, boolean codigoActividadEmisorObligatorio,
             boolean codigoActividadReceptorSoportado, boolean tipoTransaccionSoportado,
-            int referenciasMinimas) {
+            int referenciasMinimas, String nombreDocumento, String tituloAutorizado) {
         this.codigo = codigo;
         this.elementoRaiz = elementoRaiz;
         this.sufijoNamespace = sufijoNamespace;
@@ -59,6 +65,8 @@ public enum TipoComprobantePerfil {
         this.codigoActividadReceptorSoportado = codigoActividadReceptorSoportado;
         this.tipoTransaccionSoportado = tipoTransaccionSoportado;
         this.referenciasMinimas = referenciasMinimas;
+        this.nombreDocumento = nombreDocumento;
+        this.tituloAutorizado = tituloAutorizado;
     }
 
     public String namespace() {
