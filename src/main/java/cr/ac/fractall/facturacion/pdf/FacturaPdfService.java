@@ -6,6 +6,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 import org.apache.pdfbox.pdmodel.PDDocument;
@@ -17,17 +18,31 @@ import org.apache.pdfbox.pdmodel.font.Standard14Fonts;
 import org.springframework.stereotype.Service;
 
 import cr.ac.fractall.catalogo.modelo.Cliente;
+import cr.ac.fractall.catalogo.modelo.ClienteExoneracion;
 import cr.ac.fractall.catalogo.modelo.Producto;
+import cr.ac.fractall.catalogo.repositorio.ClienteExoneracionRepository;
 import cr.ac.fractall.catalogo.repositorio.ClienteRepository;
 import cr.ac.fractall.catalogo.repositorio.ProductoRepository;
 import cr.ac.fractall.empresa.modelo.Empresa;
 import cr.ac.fractall.empresa.repositorio.EmpresaRepository;
+import cr.ac.fractall.facturacion.fe.CodigoReferencia;
+import cr.ac.fractall.facturacion.fe.CondicionVenta;
+import cr.ac.fractall.facturacion.fe.NombreInstitucionExoneracion;
+import cr.ac.fractall.facturacion.fe.TipoComprobantePerfil;
+import cr.ac.fractall.facturacion.fe.TipoDocumentoIR;
+import cr.ac.fractall.facturacion.fe.TipoMedioPago;
 import cr.ac.fractall.facturacion.modelo.ComprobanteElectronico;
 import cr.ac.fractall.facturacion.modelo.Factura;
+import cr.ac.fractall.facturacion.modelo.FacturaInformacionReferencia;
+import cr.ac.fractall.facturacion.modelo.FacturaMedioPago;
+import cr.ac.fractall.facturacion.modelo.ImpuestoLineaExoneracion;
 import cr.ac.fractall.facturacion.modelo.LineaFactura;
 import cr.ac.fractall.facturacion.repositorio.ComprobanteElectronicoRepository;
 import cr.ac.fractall.facturacion.dto.DocumentoDescargable;
+import cr.ac.fractall.facturacion.repositorio.FacturaInformacionReferenciaRepository;
+import cr.ac.fractall.facturacion.repositorio.FacturaMedioPagoRepository;
 import cr.ac.fractall.facturacion.repositorio.FacturaRepository;
+import cr.ac.fractall.facturacion.repositorio.ImpuestoLineaExoneracionRepository;
 import cr.ac.fractall.facturacion.repositorio.LineaFacturaRepository;
 import cr.ac.fractall.facturacion.servicio.ComprobanteElectronicoNoEncontradoException;
 import cr.ac.fractall.facturacion.servicio.FacturaNoEncontradaException;
@@ -65,6 +80,10 @@ public class FacturaPdfService {
     private final ClienteRepository clienteRepository;
     private final ProductoRepository productoRepository;
     private final EmpresaRepository empresaRepository;
+    private final FacturaMedioPagoRepository facturaMedioPagoRepository;
+    private final FacturaInformacionReferenciaRepository facturaInformacionReferenciaRepository;
+    private final ImpuestoLineaExoneracionRepository impuestoLineaExoneracionRepository;
+    private final ClienteExoneracionRepository clienteExoneracionRepository;
 
     public FacturaPdfService(
             ComprobanteElectronicoRepository comprobanteElectronicoRepository,
@@ -72,13 +91,21 @@ public class FacturaPdfService {
             LineaFacturaRepository lineaFacturaRepository,
             ClienteRepository clienteRepository,
             ProductoRepository productoRepository,
-            EmpresaRepository empresaRepository) {
+            EmpresaRepository empresaRepository,
+            FacturaMedioPagoRepository facturaMedioPagoRepository,
+            FacturaInformacionReferenciaRepository facturaInformacionReferenciaRepository,
+            ImpuestoLineaExoneracionRepository impuestoLineaExoneracionRepository,
+            ClienteExoneracionRepository clienteExoneracionRepository) {
         this.comprobanteElectronicoRepository = comprobanteElectronicoRepository;
         this.facturaRepository = facturaRepository;
         this.lineaFacturaRepository = lineaFacturaRepository;
         this.clienteRepository = clienteRepository;
         this.productoRepository = productoRepository;
         this.empresaRepository = empresaRepository;
+        this.facturaMedioPagoRepository = facturaMedioPagoRepository;
+        this.facturaInformacionReferenciaRepository = facturaInformacionReferenciaRepository;
+        this.impuestoLineaExoneracionRepository = impuestoLineaExoneracionRepository;
+        this.clienteExoneracionRepository = clienteExoneracionRepository;
     }
 
     /**
@@ -141,9 +168,13 @@ public class FacturaPdfService {
 
         List<LineaFactura> lineas =
                 lineaFacturaRepository.findByFacturaIdOrderByNumeroLinea(factura.getId());
+        List<FacturaMedioPago> mediosPago =
+                facturaMedioPagoRepository.findByFacturaIdOrderByOrden(factura.getId());
+        List<FacturaInformacionReferencia> referencias =
+                facturaInformacionReferenciaRepository.findByFacturaIdOrderByOrden(factura.getId());
 
         try {
-            return construirPdf(comprobante, factura, empresa, cliente, lineas);
+            return construirPdf(comprobante, factura, empresa, cliente, lineas, mediosPago, referencias);
         } catch (IOException e) {
             throw new IllegalStateException(
                     "Error generando PDF para comprobante " + comprobanteId, e);
@@ -159,7 +190,9 @@ public class FacturaPdfService {
             Factura factura,
             Empresa empresa,
             Cliente cliente,
-            List<LineaFactura> lineas) throws IOException {
+            List<LineaFactura> lineas,
+            List<FacturaMedioPago> mediosPago,
+            List<FacturaInformacionReferencia> referencias) throws IOException {
 
         PDType1Font fuenteBold =
                 new PDType1Font(Standard14Fonts.FontName.HELVETICA_BOLD);
@@ -178,9 +211,12 @@ public class FacturaPdfService {
                 Cursor cursor = new Cursor(altoReal - 50f);
 
                 agregarEncabezado(cs, cursor, empresa, comprobante, fuenteBold, fuenteNormal);
+                agregarInformacionReferencia(cs, cursor, referencias, fuenteBold, fuenteNormal);
+                agregarCondicionesComerciales(cs, cursor, factura, fuenteBold, fuenteNormal);
                 agregarBloqueCliente(cs, cursor, cliente, fuenteBold, fuenteNormal);
                 agregarTablaLineas(cs, cursor, lineas, fuenteBold, fuenteNormal, anchoReal);
-                agregarPie(cs, cursor, factura, fuenteBold, fuenteNormal);
+                agregarMediosPago(cs, cursor, factura, mediosPago, fuenteBold, fuenteNormal);
+                agregarPie(cs, cursor, comprobante, factura, fuenteBold, fuenteNormal);
             }
 
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
@@ -222,6 +258,13 @@ public class FacturaPdfService {
         // Separador
         cursor.y -= 6f;
 
+        // Tipo de documento (catalogo Hacienda v4.4)
+        String nombreDocumento = TipoComprobantePerfil.fromCodigo(comprobante.getTipoComprobante())
+                .getNombreDocumento();
+        escribirLinea(cs, cursor,
+                "Tipo de documento: " + nombreDocumento,
+                bold, FUENTE_NORMAL);
+
         // Datos del comprobante
         escribirLinea(cs, cursor,
                 "Clave: " + comprobante.getClaveNumerica(),
@@ -236,6 +279,105 @@ public class FacturaPdfService {
         }
 
         cursor.y -= 6f;
+    }
+
+    private void agregarInformacionReferencia(
+            PDPageContentStream cs,
+            Cursor cursor,
+            List<FacturaInformacionReferencia> referencias,
+            PDType1Font bold,
+            PDType1Font normal) throws IOException {
+
+        if (referencias.isEmpty()) {
+            return;
+        }
+
+        escribirLinea(cs, cursor, "Referencia:", bold, FUENTE_NORMAL);
+
+        for (FacturaInformacionReferencia referencia : referencias) {
+            String tipoDoc = TipoDocumentoIR.fromCodigo(referencia.getTipoDocIr()).getDescripcion();
+            StringBuilder linea = new StringBuilder(tipoDoc);
+            if (referencia.getNumero() != null && !referencia.getNumero().isBlank()) {
+                linea.append(" ").append(referencia.getNumero());
+            }
+            if (referencia.getFechaEmisionIr() != null) {
+                linea.append(" (").append(referencia.getFechaEmisionIr().format(FECHA_FORMATTER)).append(")");
+            }
+            if (referencia.getCodigo() != null) {
+                linea.append(" - ")
+                        .append(CodigoReferencia.fromCodigo(referencia.getCodigo()).getDescripcion());
+            }
+            escribirLinea(cs, cursor, linea.toString(), normal, FUENTE_PEQUENA);
+
+            if (referencia.getRazon() != null && !referencia.getRazon().isBlank()) {
+                escribirLinea(cs, cursor, referencia.getRazon(), normal, FUENTE_PEQUENA);
+            }
+        }
+
+        cursor.y -= 4f;
+    }
+
+    private void agregarCondicionesComerciales(
+            PDPageContentStream cs,
+            Cursor cursor,
+            Factura factura,
+            PDType1Font bold,
+            PDType1Font normal) throws IOException {
+
+        String condicionVenta = "99".equals(factura.getCondicionVenta())
+                && factura.getCondicionVentaOtros() != null
+                && !factura.getCondicionVentaOtros().isBlank()
+                ? factura.getCondicionVentaOtros()
+                : CondicionVenta.fromCodigo(factura.getCondicionVenta()).getDescripcion();
+        escribirLinea(cs, cursor, "Condicion de venta: " + condicionVenta, normal, FUENTE_PEQUENA);
+
+        if ("02".equals(factura.getCondicionVenta()) && factura.getPlazoCredito() != null) {
+            escribirLinea(cs, cursor,
+                    "Plazo de credito: " + factura.getPlazoCredito() + " dias",
+                    normal, FUENTE_PEQUENA);
+        }
+
+        String moneda = nvl(factura.getMoneda());
+        if (!"CRC".equals(moneda) && factura.getTipoCambio() != null) {
+            escribirLinea(cs, cursor,
+                    "Moneda: " + moneda + " (Tipo de cambio: " + fmt(factura.getTipoCambio()) + ")",
+                    normal, FUENTE_PEQUENA);
+        } else {
+            escribirLinea(cs, cursor, "Moneda: " + moneda, normal, FUENTE_PEQUENA);
+        }
+
+        cursor.y -= 4f;
+    }
+
+    private void agregarMediosPago(
+            PDPageContentStream cs,
+            Cursor cursor,
+            Factura factura,
+            List<FacturaMedioPago> mediosPago,
+            PDType1Font bold,
+            PDType1Font normal) throws IOException {
+
+        escribirLinea(cs, cursor, "Medio de pago:", bold, FUENTE_NORMAL);
+
+        if (!mediosPago.isEmpty()) {
+            for (FacturaMedioPago medioPago : mediosPago) {
+                String descripcion = "99".equals(medioPago.getTipoMedioPago())
+                        && medioPago.getMedioPagoOtros() != null
+                        && !medioPago.getMedioPagoOtros().isBlank()
+                        ? medioPago.getMedioPagoOtros()
+                        : TipoMedioPago.fromCodigo(medioPago.getTipoMedioPago()).getDescripcion();
+                escribirLinea(cs, cursor,
+                        descripcion + ": " + fmt(medioPago.getTotalMedioPago()),
+                        normal, FUENTE_PEQUENA);
+            }
+        } else {
+            String codigo = factura.getMedioPago() != null ? factura.getMedioPago() : "01";
+            escribirLinea(cs, cursor,
+                    TipoMedioPago.fromCodigo(codigo).getDescripcion(),
+                    normal, FUENTE_PEQUENA);
+        }
+
+        cursor.y -= 4f;
     }
 
     private void agregarBloqueCliente(
@@ -279,8 +421,9 @@ public class FacturaPdfService {
         escribirLinea(cs, cursor,
                 "#  Descripción                        Cant    P.Unit     Subtotal  %Imp   Imp.     Total",
                 bold, FUENTE_PEQUENA);
-        linea(cs, cursor.y, anchoReal);
-        cursor.y -= 4f;
+        float baselineEncabezado = cursor.y + INTERLINEA;
+        linea(cs, baselineEncabezado - 4f, anchoReal);
+        cursor.y -= 6f;
 
         for (LineaFactura linea : lineas) {
             Producto producto = productoRepository.findById(linea.getProductoId())
@@ -319,14 +462,57 @@ public class FacturaPdfService {
                     totalLinea.floatValue());
 
             escribirLinea(cs, cursor, fila, normal, FUENTE_PEQUENA);
+            agregarDetalleExoneracionLinea(cs, cursor, linea, normal);
         }
 
         cursor.y -= 6f;
     }
 
+    /**
+     * El bloque inline de exoneración ({@code ImpuestoLineaExoneracion}, vía
+     * {@code factura_id -> linea_id}) es la única fuente de institución/documento/tarifa; el path
+     * legado de {@code LineaFactura.exoneracionId} apunta a {@code ClienteExoneracion} en vez de
+     * crear esa fila -- ver {@code LineaFacturaEnsamblador#persistirExoneracionInline}.
+     */
+    private void agregarDetalleExoneracionLinea(
+            PDPageContentStream cs,
+            Cursor cursor,
+            LineaFactura linea,
+            PDType1Font normal) throws IOException {
+
+        Optional<ImpuestoLineaExoneracion> exoneracionInline =
+                impuestoLineaExoneracionRepository.findByLineaId(linea.getId());
+
+        if (exoneracionInline.isPresent()) {
+            ImpuestoLineaExoneracion ex = exoneracionInline.get();
+            String institucion = "99".equals(ex.getNombreInstitucion())
+                    && ex.getNombreInstitucionOtros() != null
+                    && !ex.getNombreInstitucionOtros().isBlank()
+                    ? ex.getNombreInstitucionOtros()
+                    : NombreInstitucionExoneracion.fromCodigo(ex.getNombreInstitucion()).getDescripcion();
+            escribirLinea(cs, cursor,
+                    "    Exonerado: " + institucion + " - Doc. " + nvl(ex.getNumeroDocumento())
+                            + " - Tarifa exonerada: " + fmt(ex.getTarifaExonerada()) + "%"
+                            + " - Monto exonerado: " + fmt(ex.getMontoExoneracion()),
+                    normal, FUENTE_PEQUENA);
+        } else if (linea.getExoneracionId() != null && linea.getMontoExoneracionAplicado() != null) {
+            ClienteExoneracion exoneracionCliente = clienteExoneracionRepository
+                    .findById(linea.getExoneracionId())
+                    .orElse(null);
+            String institucion = exoneracionCliente != null ? nvl(exoneracionCliente.getNombreInstitucion()) : "";
+            String documento = exoneracionCliente != null ? nvl(exoneracionCliente.getNumeroDocumento()) : "";
+            escribirLinea(cs, cursor,
+                    "    Exonerado: " + institucion + " - Doc. " + documento
+                            + " - Tarifa exonerada: " + fmt(linea.getPorcentajeExoneracionAplicado()) + "%"
+                            + " - Monto exonerado: " + fmt(linea.getMontoExoneracionAplicado()),
+                    normal, FUENTE_PEQUENA);
+        }
+    }
+
     private void agregarPie(
             PDPageContentStream cs,
             Cursor cursor,
+            ComprobanteElectronico comprobante,
             Factura factura,
             PDType1Font bold,
             PDType1Font normal) throws IOException {
@@ -346,9 +532,9 @@ public class FacturaPdfService {
         escribirLinea(cs, cursor,
                 "Documento generado electrónicamente. Consulte en: https://www.hacienda.go.cr",
                 normal, FUENTE_PEQUENA);
-        escribirLinea(cs, cursor,
-                "Factura Electrónica Autorizada",
-                bold, FUENTE_PEQUENA);
+        String tituloAutorizado = TipoComprobantePerfil.fromCodigo(comprobante.getTipoComprobante())
+                .getTituloAutorizado();
+        escribirLinea(cs, cursor, tituloAutorizado, bold, FUENTE_PEQUENA);
     }
 
     // -------------------------------------------------------------------------
