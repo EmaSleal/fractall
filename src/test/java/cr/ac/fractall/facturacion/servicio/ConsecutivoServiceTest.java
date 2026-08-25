@@ -1,6 +1,7 @@
 package cr.ac.fractall.facturacion.servicio;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -252,6 +253,94 @@ class ConsecutivoServiceTest {
         } finally {
             executor.shutdown();
         }
+    }
+
+    @Test
+    void fijarValorConNuevoValorMayorAlActualLoActualizaYLoDevuelve() {
+        UUID empresaId = empresa.getId();
+
+        long valorFijado = consecutivoService.fijarValor(empresaId, "SANDBOX", "01", 5L);
+
+        assertThat(valorFijado).isEqualTo(5L);
+        ContadorConsecutivo contador = contadorConsecutivoRepository
+                .findById(new ContadorConsecutivoId(empresaId, "SANDBOX", "01"))
+                .orElseThrow();
+        assertThat(contador.getValorActual()).isEqualTo(5L);
+    }
+
+    @Test
+    void fijarValorConNuevoValorIgualAlActualLanzaConsecutivoInvalidoException() {
+        UUID empresaId = empresa.getId();
+        consecutivoService.fijarValor(empresaId, "SANDBOX", "01", 5L);
+
+        assertThatThrownBy(() -> consecutivoService.fijarValor(empresaId, "SANDBOX", "01", 5L))
+                .isInstanceOf(ConsecutivoInvalidoException.class)
+                .hasMessageContaining("5");
+
+        ContadorConsecutivo contador = contadorConsecutivoRepository
+                .findById(new ContadorConsecutivoId(empresaId, "SANDBOX", "01"))
+                .orElseThrow();
+        assertThat(contador.getValorActual()).isEqualTo(5L);
+    }
+
+    @Test
+    void fijarValorConNuevoValorMenorAlActualLanzaConsecutivoInvalidoException() {
+        UUID empresaId = empresa.getId();
+        consecutivoService.fijarValor(empresaId, "SANDBOX", "01", 10L);
+
+        assertThatThrownBy(() -> consecutivoService.fijarValor(empresaId, "SANDBOX", "01", 3L))
+                .isInstanceOf(ConsecutivoInvalidoException.class)
+                .hasMessageContaining("10");
+
+        ContadorConsecutivo contador = contadorConsecutivoRepository
+                .findById(new ContadorConsecutivoId(empresaId, "SANDBOX", "01"))
+                .orElseThrow();
+        assertThat(contador.getValorActual()).isEqualTo(10L);
+    }
+
+    /**
+     * Igual que {@code primeraLlamadaSinFilaPreexistenteLaCreaYReclamaElValor1} pero para
+     * {@code fijarValor}: sin fila previa, el get-or-create perezoso también debe dispararse
+     * antes de aplicar la validación de "solo puede subir".
+     */
+    @Test
+    void fijarValorSinFilaPreviaLaCreaYLuegoLaFija() {
+        Empresa empresaSinSeed = crearEmpresaSinFilaDeConsecutivo("Empresa Fijar Sin Seed S.A.");
+        TenantContext.set(empresaSinSeed.getId());
+
+        long valorFijado = consecutivoService.fijarValor(empresaSinSeed.getId(), "SANDBOX", "02", 7L);
+
+        assertThat(valorFijado).isEqualTo(7L);
+        ContadorConsecutivo contador = contadorConsecutivoRepository
+                .findById(new ContadorConsecutivoId(empresaSinSeed.getId(), "SANDBOX", "02"))
+                .orElseThrow();
+        assertThat(contador.getValorActual()).isEqualTo(7L);
+    }
+
+    @Test
+    void consultarValoresSinFilasDevuelveListaVaciaYNoCreaFilas() {
+        Empresa empresaSinSeed = crearEmpresaSinFilaDeConsecutivo("Empresa Consultar Sin Seed S.A.");
+        TenantContext.set(empresaSinSeed.getId());
+
+        assertThat(consecutivoService.consultarValores(empresaSinSeed.getId())).isEmpty();
+        assertThat(contadorConsecutivoRepository.findAll()).isEmpty();
+    }
+
+    @Test
+    void consultarValoresDevuelveSoloLasFilasExistentesDeLaEmpresaActual() {
+        UUID empresaId = empresa.getId();
+        // La fila SANDBOX/01 ya la siembra @BeforeEach; se agrega una segunda combinación.
+        consecutivoService.fijarValor(empresaId, "PRODUCCION", "03", 2L);
+
+        List<ContadorConsecutivo> valores = consecutivoService.consultarValores(empresaId);
+
+        assertThat(valores).hasSize(2);
+        assertThat(valores)
+                .extracting(ContadorConsecutivo::getAmbiente, ContadorConsecutivo::getTipoComprobante,
+                        ContadorConsecutivo::getValorActual)
+                .containsExactlyInAnyOrder(
+                        org.assertj.core.groups.Tuple.tuple("SANDBOX", "01", 0L),
+                        org.assertj.core.groups.Tuple.tuple("PRODUCCION", "03", 2L));
     }
 
     private Empresa crearEmpresaSinFilaDeConsecutivo(String razonSocial) {

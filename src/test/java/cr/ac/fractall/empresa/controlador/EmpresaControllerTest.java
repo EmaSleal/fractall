@@ -1,9 +1,11 @@
 package cr.ac.fractall.empresa.controlador;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.io.File;
@@ -34,6 +36,7 @@ import cr.ac.fractall.empresa.modelo.Empresa;
 import cr.ac.fractall.empresa.repositorio.EmpresaRepository;
 import cr.ac.fractall.empresa.dto.ActualizarDatosFiscalesRequest;
 import cr.ac.fractall.empresa.dto.ConfigurarCredencialHaciendaRequest;
+import cr.ac.fractall.empresa.dto.FijarConsecutivoRequest;
 import cr.ac.fractall.seguridad.modelo.Usuario;
 import cr.ac.fractall.seguridad.repositorio.UsuarioRepository;
 import cr.ac.fractall.seguridad.servicio.JwtService;
@@ -320,5 +323,100 @@ class EmpresaControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"ambiente\": \"SANDBOX\"}"))
                 .andExpect(status().isOk());
+    }
+
+    @Test
+    void getConsecutivosSinNadaEmitidoDevuelveCerosParaTodosLosTiposYAmbientes() throws Exception {
+        String accessToken = crearUsuarioEmpresaYToken();
+
+        mockMvc.perform(get("/empresa/consecutivos")
+                        .header("Authorization", "Bearer " + accessToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.sandbox.facturaElectronica").value(0))
+                .andExpect(jsonPath("$.sandbox.notaDebito").value(0))
+                .andExpect(jsonPath("$.sandbox.notaCredito").value(0))
+                .andExpect(jsonPath("$.sandbox.tiquete").value(0))
+                .andExpect(jsonPath("$.produccion.facturaElectronica").value(0))
+                .andExpect(jsonPath("$.produccion.notaDebito").value(0))
+                .andExpect(jsonPath("$.produccion.notaCredito").value(0))
+                .andExpect(jsonPath("$.produccion.tiquete").value(0));
+    }
+
+    @Test
+    void patchConsecutivosConValorMayorRetorna200YElGetPosteriorReflejaElNuevoValor() throws Exception {
+        String accessToken = crearUsuarioEmpresaYToken();
+        FijarConsecutivoRequest request = new FijarConsecutivoRequest("PRODUCCION", "01", 20L);
+
+        mockMvc.perform(patch("/empresa/consecutivos")
+                        .header("Authorization", "Bearer " + accessToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.produccion.facturaElectronica").value(20))
+                .andExpect(jsonPath("$.sandbox.facturaElectronica").value(0));
+
+        mockMvc.perform(get("/empresa/consecutivos")
+                        .header("Authorization", "Bearer " + accessToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.produccion.facturaElectronica").value(20));
+    }
+
+    @Test
+    void patchConsecutivosConValorIgualAlActualRetorna400() throws Exception {
+        String accessToken = crearUsuarioEmpresaYToken();
+        FijarConsecutivoRequest primerAjuste = new FijarConsecutivoRequest("SANDBOX", "02", 5L);
+        mockMvc.perform(patch("/empresa/consecutivos")
+                        .header("Authorization", "Bearer " + accessToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(primerAjuste)))
+                .andExpect(status().isOk());
+
+        FijarConsecutivoRequest mismoValor = new FijarConsecutivoRequest("SANDBOX", "02", 5L);
+        mockMvc.perform(patch("/empresa/consecutivos")
+                        .header("Authorization", "Bearer " + accessToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(mismoValor)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.mensaje").value(org.hamcrest.Matchers.containsString("5")));
+    }
+
+    @Test
+    void patchConsecutivosConValorMenorAlActualRetorna400() throws Exception {
+        String accessToken = crearUsuarioEmpresaYToken();
+        FijarConsecutivoRequest primerAjuste = new FijarConsecutivoRequest("SANDBOX", "03", 10L);
+        mockMvc.perform(patch("/empresa/consecutivos")
+                        .header("Authorization", "Bearer " + accessToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(primerAjuste)))
+                .andExpect(status().isOk());
+
+        FijarConsecutivoRequest valorMenor = new FijarConsecutivoRequest("SANDBOX", "03", 3L);
+        mockMvc.perform(patch("/empresa/consecutivos")
+                        .header("Authorization", "Bearer " + accessToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(valorMenor)))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void patchConsecutivosConTipoComprobanteInvalidoRetorna400() throws Exception {
+        String accessToken = crearUsuarioEmpresaYToken();
+
+        mockMvc.perform(patch("/empresa/consecutivos")
+                        .header("Authorization", "Bearer " + accessToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"ambiente\": \"SANDBOX\", \"tipoComprobante\": \"99\", \"nuevoValor\": 1}"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void patchConsecutivosConAmbienteInvalidoRetorna400() throws Exception {
+        String accessToken = crearUsuarioEmpresaYToken();
+
+        mockMvc.perform(patch("/empresa/consecutivos")
+                        .header("Authorization", "Bearer " + accessToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"ambiente\": \"INVALIDO\", \"tipoComprobante\": \"01\", \"nuevoValor\": 1}"))
+                .andExpect(status().isBadRequest());
     }
 }

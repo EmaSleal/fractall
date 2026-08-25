@@ -1,5 +1,6 @@
 package cr.ac.fractall.facturacion.servicio;
 
+import java.util.List;
 import java.util.UUID;
 
 import org.springframework.dao.DataIntegrityViolationException;
@@ -77,5 +78,48 @@ public class ConsecutivoService {
         contadorConsecutivoRepository.saveAndFlush(contador);
 
         return siguienteValor;
+    }
+
+    /**
+     * Corrección manual del contador (configuración de consecutivos, no emisión) -- mismo
+     * patrón get-or-create + lock pesimista que {@link #siguienteConsecutivo}, ver su javadoc.
+     * Reusar ese lock aquí también evita que una corrección pise una reclamación concurrente de
+     * {@code siguienteConsecutivo} (o viceversa): ambos toman el mismo {@code FOR UPDATE} sobre
+     * la misma fila.
+     */
+    @Transactional
+    public long fijarValor(UUID empresaId, String ambiente, String tipoComprobante, long nuevoValor) {
+        ContadorConsecutivoId id = new ContadorConsecutivoId(empresaId, ambiente, tipoComprobante);
+
+        ContadorConsecutivo contador = contadorConsecutivoRepository.findById(id).orElse(null);
+        if (contador == null) {
+            try {
+                contadorConsecutivoInicializador.crearSiNoExiste(empresaId, ambiente, tipoComprobante);
+            } catch (DataIntegrityViolationException otraPeticionYaLaCreo) {
+                // idéntico manejo que siguienteConsecutivo(): otra petición concurrente ya creó la fila.
+            }
+            contador = contadorConsecutivoRepository.findById(id)
+                    .orElseThrow(() -> new ContadorConsecutivoNoEncontradoException(empresaId, ambiente, tipoComprobante));
+        }
+
+        if (nuevoValor <= contador.getValorActual()) {
+            throw new ConsecutivoInvalidoException(contador.getValorActual(), nuevoValor);
+        }
+
+        contador.setValorActual(nuevoValor);
+        contadorConsecutivoRepository.saveAndFlush(contador);
+        return nuevoValor;
+    }
+
+    /**
+     * Solo las filas que ya existen -- sin alta perezosa, a diferencia de
+     * {@link #siguienteConsecutivo} y {@link #fijarValor}. El filtro {@code @TenantId} de
+     * {@link ContadorConsecutivo} ya restringe el resultado a {@code empresaId}, así que el
+     * parámetro no participa en la consulta misma; se mantiene explícito por simetría con el
+     * resto de métodos de esta clase.
+     */
+    @Transactional(readOnly = true)
+    public List<ContadorConsecutivo> consultarValores(UUID empresaId) {
+        return contadorConsecutivoRepository.findAll();
     }
 }
