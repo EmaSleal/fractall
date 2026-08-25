@@ -24,11 +24,14 @@ import cr.ac.fractall.empresa.dto.ActualizarDatosFiscalesRequest;
 import cr.ac.fractall.empresa.dto.CambiarAmbienteRequest;
 import cr.ac.fractall.empresa.dto.CargarCertificadoRequest;
 import cr.ac.fractall.empresa.dto.ConfigurarCredencialHaciendaRequest;
+import cr.ac.fractall.empresa.dto.ConsecutivosResponse;
 import cr.ac.fractall.empresa.dto.EmpresaResponse;
+import cr.ac.fractall.empresa.dto.FijarConsecutivoRequest;
 import cr.ac.fractall.catalogo.servicio.UbicacionInvalidaException;
 import cr.ac.fractall.empresa.servicio.AmbienteNoDisponibleException;
 import cr.ac.fractall.empresa.servicio.CertificadoInvalidoException;
 import cr.ac.fractall.empresa.servicio.EmpresaService;
+import cr.ac.fractall.facturacion.servicio.ConsecutivoInvalidoException;
 import cr.ac.fractall.seguridad.dto.MensajeResponse;
 import jakarta.validation.Valid;
 
@@ -123,6 +126,24 @@ public class EmpresaController {
             return ResponseEntity.ok(respuesta);
         } catch (AmbienteNoDisponibleException e) {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(new MensajeResponse(e.getMessage()));
+        }
+    }
+
+    @Operation(summary = "Consultar los consecutivos actuales por ambiente y tipo de comprobante")
+    @SecurityRequirement(name = "bearerAuth")
+    @GetMapping("/consecutivos")
+    public ResponseEntity<ConsecutivosResponse> consultarConsecutivos() {
+        return ResponseEntity.ok(empresaService.consultarConsecutivos());
+    }
+
+    @Operation(summary = "Fijar el consecutivo de un tipo de comprobante en un ambiente")
+    @SecurityRequirement(name = "bearerAuth")
+    @PatchMapping("/consecutivos")
+    public ResponseEntity<?> fijarConsecutivo(@Valid @RequestBody FijarConsecutivoRequest request) {
+        try {
+            return ResponseEntity.ok(empresaService.fijarConsecutivo(request));
+        } catch (ConsecutivoInvalidoException excepcion) {
+            return ResponseEntity.badRequest().body(new MensajeResponse(excepcion.getMessage()));
         }
     }
 
