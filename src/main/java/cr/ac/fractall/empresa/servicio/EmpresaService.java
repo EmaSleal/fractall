@@ -5,9 +5,12 @@ import java.security.GeneralSecurityException;
 import java.security.KeyStore;
 import java.time.LocalDateTime;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.UUID;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
@@ -24,9 +27,15 @@ import cr.ac.fractall.empresa.repositorio.EmpresaRepository;
 import cr.ac.fractall.empresa.modelo.EmpresaAmbienteHistorial;
 import cr.ac.fractall.empresa.repositorio.EmpresaAmbienteHistorialRepository;
 import cr.ac.fractall.empresa.dto.ActualizarDatosFiscalesRequest;
+import cr.ac.fractall.empresa.dto.ConsecutivosAmbienteResponse;
+import cr.ac.fractall.empresa.dto.ConsecutivosResponse;
 import cr.ac.fractall.empresa.dto.EmpresaResponse;
 import cr.ac.fractall.empresa.dto.EstadoAmbientesResponse;
+import cr.ac.fractall.empresa.dto.FijarConsecutivoRequest;
 import cr.ac.fractall.catalogo.servicio.UbicacionValidator;
+import cr.ac.fractall.facturacion.fe.TipoComprobantePerfil;
+import cr.ac.fractall.facturacion.modelo.ContadorConsecutivo;
+import cr.ac.fractall.facturacion.servicio.ConsecutivoService;
 import cr.ac.fractall.secretos.EnvelopeCipher;
 import cr.ac.fractall.secretos.SecretosKvService;
 import cr.ac.fractall.secretos.TransitService;
@@ -69,6 +78,7 @@ public class EmpresaService {
     private final SecretosKvService secretosKvService;
     private final TransitService transitService;
     private final UbicacionValidator ubicacionValidator;
+    private final ConsecutivoService consecutivoService;
 
     @PersistenceContext
     private EntityManager entityManager;
@@ -80,7 +90,8 @@ public class EmpresaService {
             EmpresaAmbienteHistorialRepository empresaAmbienteHistorialRepository,
             SecretosKvService secretosKvService,
             TransitService transitService,
-            UbicacionValidator ubicacionValidator) {
+            UbicacionValidator ubicacionValidator,
+            ConsecutivoService consecutivoService) {
         this.empresaRepository = empresaRepository;
         this.certificadoHaciendaRepository = certificadoHaciendaRepository;
         this.credencialHaciendaRepository = credencialHaciendaRepository;
@@ -88,6 +99,7 @@ public class EmpresaService {
         this.secretosKvService = secretosKvService;
         this.transitService = transitService;
         this.ubicacionValidator = ubicacionValidator;
+        this.consecutivoService = consecutivoService;
     }
 
     /**
@@ -255,6 +267,52 @@ public class EmpresaService {
         empresa.setUpdateDate(LocalDateTime.now());
 
         return guardarYReleer(empresa);
+    }
+
+    /**
+     * Sin creación perezosa de fila (a diferencia de {@link ConsecutivoService#fijarValor}): una
+     * combinación {@code (ambiente, tipoComprobante)} sin nada emitido todavía simplemente
+     * devuelve {@code 0}, ver la nota de {@link ConsecutivoService#consultarValores}.
+     */
+    @Transactional(readOnly = true)
+    public ConsecutivosResponse consultarConsecutivos() {
+        UUID empresaId = TenantContext.get();
+        return construirConsecutivosResponse(consecutivoService.consultarValores(empresaId));
+    }
+
+    /**
+     * {@code tipoComprobante} ya viene validado por {@code @Pattern} en
+     * {@link FijarConsecutivoRequest}, pero se revalida aquí contra
+     * {@link TipoComprobantePerfil#fromCodigo} -- fuente única de verdad de los códigos válidos,
+     * para no mantener la misma lista duplicada en dos lugares si se agrega un 5to tipo.
+     */
+    @Transactional
+    public ConsecutivosResponse fijarConsecutivo(FijarConsecutivoRequest request) {
+        TipoComprobantePerfil.fromCodigo(request.tipoComprobante());
+
+        UUID empresaId = TenantContext.get();
+        consecutivoService.fijarValor(
+                empresaId, request.ambiente(), request.tipoComprobante(), request.nuevoValor());
+
+        return construirConsecutivosResponse(consecutivoService.consultarValores(empresaId));
+    }
+
+    private ConsecutivosResponse construirConsecutivosResponse(List<ContadorConsecutivo> valores) {
+        Map<String, Long> porAmbienteYTipo = valores.stream()
+                .collect(Collectors.toMap(
+                        contador -> contador.getAmbiente() + ":" + contador.getTipoComprobante(),
+                        ContadorConsecutivo::getValorActual));
+        return new ConsecutivosResponse(
+                consecutivosAmbiente(porAmbienteYTipo, "SANDBOX"),
+                consecutivosAmbiente(porAmbienteYTipo, "PRODUCCION"));
+    }
+
+    private ConsecutivosAmbienteResponse consecutivosAmbiente(Map<String, Long> porAmbienteYTipo, String ambiente) {
+        return new ConsecutivosAmbienteResponse(
+                porAmbienteYTipo.getOrDefault(ambiente + ":" + TipoComprobantePerfil.FACTURA_ELECTRONICA.getCodigo(), 0L),
+                porAmbienteYTipo.getOrDefault(ambiente + ":" + TipoComprobantePerfil.NOTA_DEBITO.getCodigo(), 0L),
+                porAmbienteYTipo.getOrDefault(ambiente + ":" + TipoComprobantePerfil.NOTA_CREDITO.getCodigo(), 0L),
+                porAmbienteYTipo.getOrDefault(ambiente + ":" + TipoComprobantePerfil.TIQUETE.getCodigo(), 0L));
     }
 
     private void validarPin(byte[] certificadoP12, String pin) {

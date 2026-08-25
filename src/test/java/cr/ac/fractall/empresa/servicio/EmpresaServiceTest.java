@@ -3,12 +3,14 @@ package cr.ac.fractall.empresa.servicio;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.lang.reflect.Field;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -22,12 +24,18 @@ import cr.ac.fractall.catalogo.repositorio.DistritoRepository;
 import cr.ac.fractall.catalogo.servicio.UbicacionInvalidaException;
 import cr.ac.fractall.catalogo.servicio.UbicacionValidator;
 import cr.ac.fractall.empresa.dto.ActualizarDatosFiscalesRequest;
+import cr.ac.fractall.empresa.dto.ConsecutivosAmbienteResponse;
+import cr.ac.fractall.empresa.dto.ConsecutivosResponse;
 import cr.ac.fractall.empresa.dto.EmpresaResponse;
+import cr.ac.fractall.empresa.dto.FijarConsecutivoRequest;
 import cr.ac.fractall.empresa.modelo.Empresa;
 import cr.ac.fractall.empresa.repositorio.CertificadoHaciendaRepository;
 import cr.ac.fractall.empresa.repositorio.CredencialHaciendaRepository;
 import cr.ac.fractall.empresa.repositorio.EmpresaAmbienteHistorialRepository;
 import cr.ac.fractall.empresa.repositorio.EmpresaRepository;
+import cr.ac.fractall.facturacion.modelo.ContadorConsecutivo;
+import cr.ac.fractall.facturacion.servicio.ConsecutivoInvalidoException;
+import cr.ac.fractall.facturacion.servicio.ConsecutivoService;
 import cr.ac.fractall.secretos.SecretosKvService;
 import cr.ac.fractall.secretos.TransitService;
 import cr.ac.fractall.shared.EntidadBase;
@@ -48,6 +56,7 @@ class EmpresaServiceTest {
 
     private EmpresaRepository empresaRepository;
     private DistritoRepository distritoRepository;
+    private ConsecutivoService consecutivoService;
     private EmpresaService empresaService;
     private Empresa empresa;
     private UUID empresaId;
@@ -64,6 +73,7 @@ class EmpresaServiceTest {
         distritoRepository = mock(DistritoRepository.class);
         when(distritoRepository.existsByIdProvinciaCodigoAndIdCantonCodigoAndIdCodigo(any(), any(), any()))
                 .thenReturn(true);
+        consecutivoService = mock(ConsecutivoService.class);
 
         empresaService = new EmpresaService(
                 empresaRepository,
@@ -72,7 +82,8 @@ class EmpresaServiceTest {
                 empresaAmbienteHistorialRepository,
                 secretosKvService,
                 transitService,
-                new UbicacionValidator(distritoRepository));
+                new UbicacionValidator(distritoRepository),
+                consecutivoService);
 
         Field campoEntityManager = EmpresaService.class.getDeclaredField("entityManager");
         campoEntityManager.setAccessible(true);
@@ -147,5 +158,60 @@ class EmpresaServiceTest {
 
         assertThat(respuesta.razonSocial()).isEqualTo("Nueva razón social");
         verify(empresaRepository).saveAndFlush(any());
+    }
+
+    @Test
+    void consultarConsecutivosSinFilasDevuelveCerosParaAmbosAmbientes() {
+        when(consecutivoService.consultarValores(empresaId)).thenReturn(List.of());
+
+        ConsecutivosResponse respuesta = empresaService.consultarConsecutivos();
+
+        assertThat(respuesta.sandbox()).isEqualTo(new ConsecutivosAmbienteResponse(0, 0, 0, 0));
+        assertThat(respuesta.produccion()).isEqualTo(new ConsecutivosAmbienteResponse(0, 0, 0, 0));
+    }
+
+    @Test
+    void consultarConsecutivosConFilasParcialesCombinaValoresYCerosPorDefecto() {
+        when(consecutivoService.consultarValores(empresaId)).thenReturn(List.of(
+                new ContadorConsecutivo(empresaId, "SANDBOX", "01", 12L),
+                new ContadorConsecutivo(empresaId, "SANDBOX", "03", 3L),
+                new ContadorConsecutivo(empresaId, "PRODUCCION", "01", 5L)));
+
+        ConsecutivosResponse respuesta = empresaService.consultarConsecutivos();
+
+        assertThat(respuesta.sandbox()).isEqualTo(new ConsecutivosAmbienteResponse(12, 0, 3, 0));
+        assertThat(respuesta.produccion()).isEqualTo(new ConsecutivosAmbienteResponse(5, 0, 0, 0));
+    }
+
+    @Test
+    void fijarConsecutivoDelegaEnConsecutivoServiceYDevuelveConsecutivosActualizados() {
+        FijarConsecutivoRequest request = new FijarConsecutivoRequest("PRODUCCION", "01", 20L);
+        when(consecutivoService.fijarValor(empresaId, "PRODUCCION", "01", 20L)).thenReturn(20L);
+        when(consecutivoService.consultarValores(empresaId)).thenReturn(List.of(
+                new ContadorConsecutivo(empresaId, "PRODUCCION", "01", 20L)));
+
+        ConsecutivosResponse respuesta = empresaService.fijarConsecutivo(request);
+
+        assertThat(respuesta.produccion().facturaElectronica()).isEqualTo(20L);
+        verify(consecutivoService).fijarValor(empresaId, "PRODUCCION", "01", 20L);
+    }
+
+    @Test
+    void fijarConsecutivoConTipoComprobanteInvalidoLanzaIllegalArgumentExceptionSinLlamarAlServicio() {
+        FijarConsecutivoRequest request = new FijarConsecutivoRequest("PRODUCCION", "99", 20L);
+
+        assertThatThrownBy(() -> empresaService.fijarConsecutivo(request))
+                .isInstanceOf(IllegalArgumentException.class);
+        verify(consecutivoService, never()).fijarValor(any(), any(), any(), anyLong());
+    }
+
+    @Test
+    void fijarConsecutivoPropagaConsecutivoInvalidoExceptionDelServicio() {
+        FijarConsecutivoRequest request = new FijarConsecutivoRequest("SANDBOX", "01", 1L);
+        when(consecutivoService.fijarValor(empresaId, "SANDBOX", "01", 1L))
+                .thenThrow(new ConsecutivoInvalidoException(5L, 1L));
+
+        assertThatThrownBy(() -> empresaService.fijarConsecutivo(request))
+                .isInstanceOf(ConsecutivoInvalidoException.class);
     }
 }
