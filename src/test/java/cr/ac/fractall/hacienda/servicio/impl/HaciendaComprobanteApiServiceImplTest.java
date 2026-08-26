@@ -37,6 +37,8 @@ import cr.ac.fractall.hacienda.dto.MensajeHacienda;
 import cr.ac.fractall.hacienda.dto.MensajeHaciendaDTO;
 import cr.ac.fractall.hacienda.dto.RespuestaHaciendaDTO;
 import cr.ac.fractall.hacienda.dto.TokenHaciendaDTO;
+import cr.ac.fractall.hacienda.servicio.HaciendaComunicacionException;
+import cr.ac.fractall.hacienda.servicio.HaciendaConfiguracionException;
 import cr.ac.fractall.secretos.SecretosKvService;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.json.JsonMapper;
@@ -146,7 +148,7 @@ class HaciendaComprobanteApiServiceImplTest {
         when(credencialHaciendaRepository.findById(credencialId)).thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> servicio.autenticar(credencialId))
-                .isInstanceOf(IllegalArgumentException.class)
+                .isInstanceOf(HaciendaConfiguracionException.class)
                 .hasMessageContaining(credencialId.toString());
     }
 
@@ -160,7 +162,7 @@ class HaciendaComprobanteApiServiceImplTest {
                 .thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> servicio.autenticar(credencialId))
-                .isInstanceOf(IllegalStateException.class);
+                .isInstanceOf(HaciendaConfiguracionException.class);
         servidorMock.verify();
     }
 
@@ -390,6 +392,163 @@ class HaciendaComprobanteApiServiceImplTest {
         RespuestaHaciendaDTO respuesta = servicio.consultarComprobante("clave-test", credencialId);
 
         assertThat(respuesta.getCodigoMensaje()).isEqualTo(MensajeHacienda.PROCESANDO);
+        servidorMock.verify();
+    }
+
+    // ========== consultarComprobante — clasificación de causa de falla (PR3) ==========
+
+    @Test
+    void consultarComprobanteConUnauthorizedPersistenteTrasFalloDeRenovacionLanzaHaciendaConfiguracionException() {
+        UUID credencialId = UUID.randomUUID();
+        UUID empresaId = UUID.randomUUID();
+        when(credencialHaciendaRepository.findById(credencialId))
+                .thenReturn(Optional.of(credencialSandbox(credencialId, empresaId)));
+        when(secretosKvService.leerSecreto(empresaId, "hacienda/sandbox/password"))
+                .thenReturn(Optional.of("clave-secreta"));
+
+        // 1) Autenticación inicial (dentro de consultarComprobante) — exitosa.
+        servidorMock.expect(requestTo(SANDBOX_TOKEN_URL))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(content().string(Matchers.containsString("grant_type=password")))
+                .andRespond(withSuccess(
+                        """
+                        {"access_token":"AT-viejo","refresh_token":"RT-viejo","expires_in":300,"token_type":"Bearer"}
+                        """,
+                        MediaType.APPLICATION_JSON));
+        // 2) Consulta con el token inicial — Hacienda responde 401.
+        servidorMock.expect(requestTo(SANDBOX_API_URL + "/recepcion/v1/recepcion/clave-test"))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(withStatus(HttpStatus.UNAUTHORIZED));
+        // 3) Intento de renovación vía refresh_token — falla (Hacienda caído).
+        servidorMock.expect(requestTo(SANDBOX_TOKEN_URL))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(content().string(Matchers.containsString("grant_type=refresh_token")))
+                .andRespond(withServerError());
+        // 4) Fallback a autenticación completa — Hacienda también la rechaza con 401
+        //    (credencial inválida): esto es lo que debe clasificarse como configuración.
+        servidorMock.expect(requestTo(SANDBOX_TOKEN_URL))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(content().string(Matchers.containsString("grant_type=password")))
+                .andRespond(withStatus(HttpStatus.UNAUTHORIZED));
+
+        assertThatThrownBy(() -> servicio.consultarComprobante("clave-test", credencialId))
+                .isInstanceOf(HaciendaConfiguracionException.class);
+        servidorMock.verify();
+    }
+
+    @Test
+    void consultarComprobanteConError5xxDeHaciendaLanzaHaciendaComunicacionException() {
+        UUID credencialId = UUID.randomUUID();
+        UUID empresaId = UUID.randomUUID();
+        when(credencialHaciendaRepository.findById(credencialId))
+                .thenReturn(Optional.of(credencialSandbox(credencialId, empresaId)));
+        when(secretosKvService.leerSecreto(empresaId, "hacienda/sandbox/password"))
+                .thenReturn(Optional.of("clave-secreta"));
+
+        servidorMock.expect(requestTo(SANDBOX_TOKEN_URL))
+                .andRespond(withSuccess(
+                        """
+                        {"access_token":"AT","refresh_token":"RT","expires_in":3600,"token_type":"Bearer"}
+                        """,
+                        MediaType.APPLICATION_JSON));
+        servidorMock.expect(requestTo(SANDBOX_API_URL + "/recepcion/v1/recepcion/clave-500"))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(withServerError());
+
+        assertThatThrownBy(() -> servicio.consultarComprobante("clave-500", credencialId))
+                .isInstanceOf(HaciendaComunicacionException.class);
+        servidorMock.verify();
+    }
+
+    @Test
+    void consultarComprobanteConError403DeHaciendaLanzaHaciendaConfiguracionException() {
+        UUID credencialId = UUID.randomUUID();
+        UUID empresaId = UUID.randomUUID();
+        when(credencialHaciendaRepository.findById(credencialId))
+                .thenReturn(Optional.of(credencialSandbox(credencialId, empresaId)));
+        when(secretosKvService.leerSecreto(empresaId, "hacienda/sandbox/password"))
+                .thenReturn(Optional.of("clave-secreta"));
+
+        servidorMock.expect(requestTo(SANDBOX_TOKEN_URL))
+                .andRespond(withSuccess(
+                        """
+                        {"access_token":"AT","refresh_token":"RT","expires_in":3600,"token_type":"Bearer"}
+                        """,
+                        MediaType.APPLICATION_JSON));
+        servidorMock.expect(requestTo(SANDBOX_API_URL + "/recepcion/v1/recepcion/clave-403"))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(withStatus(HttpStatus.FORBIDDEN));
+
+        assertThatThrownBy(() -> servicio.consultarComprobante("clave-403", credencialId))
+                .isInstanceOf(HaciendaConfiguracionException.class);
+        servidorMock.verify();
+    }
+
+    @Test
+    void consultarComprobanteConTimeoutDeRedLanzaHaciendaComunicacionException() {
+        UUID credencialId = UUID.randomUUID();
+        UUID empresaId = UUID.randomUUID();
+        when(credencialHaciendaRepository.findById(credencialId))
+                .thenReturn(Optional.of(credencialSandbox(credencialId, empresaId)));
+        when(secretosKvService.leerSecreto(empresaId, "hacienda/sandbox/password"))
+                .thenReturn(Optional.of("clave-secreta"));
+
+        servidorMock.expect(requestTo(SANDBOX_TOKEN_URL))
+                .andRespond(withSuccess(
+                        """
+                        {"access_token":"AT","refresh_token":"RT","expires_in":3600,"token_type":"Bearer"}
+                        """,
+                        MediaType.APPLICATION_JSON));
+        servidorMock.expect(requestTo(SANDBOX_API_URL + "/recepcion/v1/recepcion/clave-timeout"))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(request -> {
+                    throw new java.net.SocketTimeoutException("timeout simulado consultando Hacienda");
+                });
+
+        assertThatThrownBy(() -> servicio.consultarComprobante("clave-timeout", credencialId))
+                .isInstanceOf(HaciendaComunicacionException.class);
+        servidorMock.verify();
+    }
+
+    @Test
+    void consultarComprobanteConUnauthorizedPersistenteTrasRenovacionExitosaLanzaHaciendaConfiguracionException() {
+        UUID credencialId = UUID.randomUUID();
+        UUID empresaId = UUID.randomUUID();
+        when(credencialHaciendaRepository.findById(credencialId))
+                .thenReturn(Optional.of(credencialSandbox(credencialId, empresaId)));
+        when(secretosKvService.leerSecreto(empresaId, "hacienda/sandbox/password"))
+                .thenReturn(Optional.of("clave-secreta"));
+
+        // 1) Autenticación inicial — exitosa.
+        servidorMock.expect(requestTo(SANDBOX_TOKEN_URL))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(content().string(Matchers.containsString("grant_type=password")))
+                .andRespond(withSuccess(
+                        """
+                        {"access_token":"AT-viejo","refresh_token":"RT-viejo","expires_in":300,"token_type":"Bearer"}
+                        """,
+                        MediaType.APPLICATION_JSON));
+        // 2) Consulta con el token inicial — Hacienda responde 401.
+        servidorMock.expect(requestTo(SANDBOX_API_URL + "/recepcion/v1/recepcion/clave-test"))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(withStatus(HttpStatus.UNAUTHORIZED));
+        // 3) Renovación vía refresh_token — esta vez EXITOSA.
+        servidorMock.expect(requestTo(SANDBOX_TOKEN_URL))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(content().string(Matchers.containsString("grant_type=refresh_token")))
+                .andRespond(withSuccess(
+                        """
+                        {"access_token":"AT-nuevo","refresh_token":"RT-nuevo","expires_in":3600,"token_type":"Bearer"}
+                        """,
+                        MediaType.APPLICATION_JSON));
+        // 4) Reintento de consulta con el token nuevo — Hacienda IGUAL responde 401
+        //    (esta es la llamada "sin envolver" de consultarComprobante — debe clasificarse también).
+        servidorMock.expect(requestTo(SANDBOX_API_URL + "/recepcion/v1/recepcion/clave-test"))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(withStatus(HttpStatus.UNAUTHORIZED));
+
+        assertThatThrownBy(() -> servicio.consultarComprobante("clave-test", credencialId))
+                .isInstanceOf(HaciendaConfiguracionException.class);
         servidorMock.verify();
     }
 
