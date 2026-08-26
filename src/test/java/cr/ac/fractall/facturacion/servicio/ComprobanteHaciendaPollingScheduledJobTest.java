@@ -3,17 +3,20 @@ package cr.ac.fractall.facturacion.servicio;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.UUID;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -38,6 +41,7 @@ import cr.ac.fractall.facturacion.repositorio.FacturaRepository;
 import cr.ac.fractall.hacienda.dto.MensajeHacienda;
 import cr.ac.fractall.hacienda.dto.RespuestaHaciendaDTO;
 import cr.ac.fractall.hacienda.servicio.HaciendaComprobanteApiService;
+import cr.ac.fractall.notificaciones.servicio.EmailNotificacionService;
 import cr.ac.fractall.seguridad.modelo.Usuario;
 import cr.ac.fractall.seguridad.repositorio.UsuarioRepository;
 import cr.ac.fractall.tenant.TenantContext;
@@ -172,6 +176,14 @@ class ComprobanteHaciendaPollingScheduledJobTest {
     @MockitoBean
     private HaciendaComprobanteApiService haciendaComprobanteApiService;
 
+    // PR6: el job ahora envía un correo digest por empresa cuando escala comprobantes en un ciclo
+    // (ver ComprobanteHaciendaPollingScheduledJobTest#variosComprobantesEscaladosEnUnCicloEnvianUnSoloDigest
+    // y sucesivas). Mockeado a nivel de clase -- sin esto, CUALQUIER prueba que fuerce una
+    // escalación (p. ej. procesarEmpresa_incrementaIntentosConsulta_enRutaFallida) intentaría un
+    // envío real vía Resend e insertaría una fila en cola_reintento_email.
+    @MockitoBean
+    private EmailNotificacionService emailNotificacionService;
+
     private Empresa empresaA;
     private Empresa empresaB;
     private CredencialHacienda credencialA;
@@ -217,6 +229,10 @@ class ComprobanteHaciendaPollingScheduledJobTest {
         empresa.setRazonSocial(razonSocial);
         empresa.setAmbienteHacienda("SANDBOX");
         empresa.setStatus("REGISTRADA");
+        // PR6: destinatario por defecto del digest de notificación -- las pruebas que necesitan
+        // ejercitar el guard de email null/vacío construyen su propia Empresa sin este setter en
+        // vez de reusar este helper.
+        empresa.setEmail("digest-" + UUID.randomUUID() + "@fractall.test");
         empresa.setCreadoPor(creadoPor);
         empresa.setCreateDate(LocalDateTime.now());
         empresa.setUpdateDate(LocalDateTime.now());
@@ -429,6 +445,65 @@ class ComprobanteHaciendaPollingScheduledJobTest {
         assertThat(recargado.getFechaUltimaConsultaHacienda()).isNotNull();
     }
 
+    /**
+     * PR6: corte por credencial dentro de un mismo ciclo. Tres comprobantes pendientes de la MISMA
+     * empresa+ambiente comparten una credencial rota (en este caso, un 401 persistente simulado
+     * lanzando {@code HaciendaConfiguracionException} directamente desde el mock de la API, para
+     * probar el corte cuando SÍ se llega a golpear a Hacienda -- a diferencia de la credencial
+     * ausente, que nunca llega a la API). Solo el PRIMER comprobante debe disparar una llamada real
+     * a Hacienda; los otros dos deben escalarse a {@code ERROR}/{@code ERROR_CONFIGURACION} sin
+     * volver a invocar {@code consultarComprobante}.
+     */
+    @Test
+    void variosComprobantesDeLaMismaCredencialRotaSoloConsultanHaciendaUnaVez() {
+        TenantContext.set(empresaA.getId());
+        ComprobanteElectronico comprobante1 = nuevoComprobanteEnviado(
+                empresaA.getId(), empresaA.getCreadoPor(), "CLAVECORTE1", 0, null);
+        ComprobanteElectronico comprobante2 = nuevoComprobanteEnviado(
+                empresaA.getId(), empresaA.getCreadoPor(), "CLAVECORTE2", 0, null);
+        ComprobanteElectronico comprobante3 = nuevoComprobanteEnviado(
+                empresaA.getId(), empresaA.getCreadoPor(), "CLAVECORTE3", 0, null);
+
+        when(haciendaComprobanteApiService.consultarComprobante(any(), any()))
+                .thenThrow(new cr.ac.fractall.hacienda.servicio.HaciendaConfiguracionException(
+                        "401 persistente de prueba"));
+
+        TenantContext.clear();
+        job.consultarPendientes();
+
+        verify(haciendaComprobanteApiService, times(1)).consultarComprobante(any(), any());
+
+        TenantContext.set(empresaA.getId());
+        for (ComprobanteElectronico original : List.of(comprobante1, comprobante2, comprobante3)) {
+            ComprobanteElectronico recargado = comprobanteElectronicoRepository.findById(original.getId())
+                    .orElseThrow();
+            assertThat(recargado.getEstado()).isEqualTo(ComprobanteHaciendaPollingScheduledJob.ESTADO_ERROR);
+            assertThat(recargado.getUltimoResultadoConsulta())
+                    .isEqualTo(ComprobanteHaciendaEnvioService.RESULTADO_ERROR_CONFIGURACION);
+        }
+    }
+
+    /**
+     * Contraparte de la prueba anterior: fallas de COMUNICACIÓN NO activan el corte por credencial
+     * -- cada comprobante de la misma empresa+ambiente se sigue consultando de forma independiente.
+     */
+    @Test
+    void variosComprobantesFallandoPorComunicacionSeConsultanCadaUnoIndependientemente() {
+        TenantContext.set(empresaA.getId());
+        nuevoComprobanteEnviado(empresaA.getId(), empresaA.getCreadoPor(), "CLAVECOMU1", 0, null);
+        nuevoComprobanteEnviado(empresaA.getId(), empresaA.getCreadoPor(), "CLAVECOMU2", 0, null);
+        nuevoComprobanteEnviado(empresaA.getId(), empresaA.getCreadoPor(), "CLAVECOMU3", 0, null);
+
+        when(haciendaComprobanteApiService.consultarComprobante(any(), any()))
+                .thenThrow(new cr.ac.fractall.hacienda.servicio.HaciendaComunicacionException(
+                        "timeout de prueba"));
+
+        TenantContext.clear();
+        job.consultarPendientes();
+
+        verify(haciendaComprobanteApiService, times(3)).consultarComprobante(any(), any());
+    }
+
     @Test
     void comprobanteDentroDeLaVentanaDeBackoffNoSeConsultaTodavia() {
         TenantContext.set(empresaA.getId());
@@ -488,5 +563,150 @@ class ComprobanteHaciendaPollingScheduledJobTest {
         ComprobanteElectronico recargado = comprobanteElectronicoRepository
                 .findById(comprobante.getId()).orElseThrow();
         assertThat(recargado.getIntentosConsulta()).isEqualTo(intentosConsultaAntes + 1);
+    }
+
+    // ========== PR6: digest de notificación por empresa ==========
+
+    /**
+     * Un ciclo que escala más de un comprobante (causas mixtas: comunicación agotando sus 10
+     * intentos, configuración en un solo intento) para la MISMA empresa debe disparar EXACTAMENTE
+     * un correo digest resumiendo todos los escalados de ese ciclo, no uno por comprobante.
+     */
+    @Test
+    void variosComprobantesEscaladosEnUnCicloEnvianUnSoloDigest() {
+        TenantContext.set(empresaA.getId());
+        ComprobanteElectronico comprobanteComunicacion = nuevoComprobanteEnviado(
+                empresaA.getId(), empresaA.getCreadoPor(), "CLAVEDIGCOMU",
+                ComprobanteHaciendaPollingScheduledJob.MAX_INTENTOS - 1,
+                LocalDateTime.now().minusHours(3));
+        ComprobanteElectronico comprobanteConfiguracion = nuevoComprobanteEnviado(
+                empresaA.getId(), empresaA.getCreadoPor(), "CLAVEDIGCONF", 0, null);
+
+        when(haciendaComprobanteApiService.consultarComprobante(
+                eq(comprobanteComunicacion.getClaveNumerica()), any()))
+                .thenThrow(new cr.ac.fractall.hacienda.servicio.HaciendaComunicacionException(
+                        "timeout de prueba"));
+        when(haciendaComprobanteApiService.consultarComprobante(
+                eq(comprobanteConfiguracion.getClaveNumerica()), any()))
+                .thenThrow(new cr.ac.fractall.hacienda.servicio.HaciendaConfiguracionException(
+                        "401 persistente de prueba"));
+
+        TenantContext.clear();
+        job.consultarPendientes();
+
+        TenantContext.set(empresaA.getId());
+        assertThat(comprobanteElectronicoRepository.findById(comprobanteComunicacion.getId()).orElseThrow()
+                .getEstado()).isEqualTo(ComprobanteHaciendaPollingScheduledJob.ESTADO_ERROR);
+        assertThat(comprobanteElectronicoRepository.findById(comprobanteConfiguracion.getId()).orElseThrow()
+                .getEstado()).isEqualTo(ComprobanteHaciendaPollingScheduledJob.ESTADO_ERROR);
+
+        ArgumentCaptor<String> asuntoCaptor = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<String> cuerpoCaptor = ArgumentCaptor.forClass(String.class);
+        verify(emailNotificacionService, times(1)).enviarConReintento(
+                eq(empresaA.getEmail()), asuntoCaptor.capture(), cuerpoCaptor.capture());
+
+        assertThat(asuntoCaptor.getValue()).contains("2");
+        assertThat(cuerpoCaptor.getValue()).contains(comprobanteComunicacion.getClaveNumerica());
+        assertThat(cuerpoCaptor.getValue()).contains(comprobanteConfiguracion.getClaveNumerica());
+    }
+
+    /**
+     * Un ciclo sin escalaciones NUEVAS (la única consulta del ciclo termina en éxito) no debe
+     * disparar ningún correo digest.
+     */
+    @Test
+    void sinEscaladosNuevosEnElCicloNoSeEnviaDigest() {
+        TenantContext.set(empresaA.getId());
+        nuevoComprobanteEnviado(
+                empresaA.getId(), empresaA.getCreadoPor(), "CLAVEDIGOK", 0, LocalDateTime.now().minusHours(1));
+
+        when(haciendaComprobanteApiService.consultarComprobante(any(), any()))
+                .thenReturn(respuesta(MensajeHacienda.ACEPTADO, true, false));
+
+        TenantContext.clear();
+        job.consultarPendientes();
+
+        verifyNoInteractions(emailNotificacionService);
+    }
+
+    /**
+     * Comprobantes escalados de DOS empresas distintas en el mismo ciclo del scheduler no deben
+     * mezclarse en un único digest -- cada empresa recibe su propio correo, dirigido a su propio
+     * {@code Empresa.email}, listando solo sus propios comprobantes.
+     */
+    @Test
+    void comprobantesDeDistintasEmpresasNoSeMezclanEnElMismoDigest() {
+        TenantContext.set(empresaA.getId());
+        ComprobanteElectronico comprobanteA = nuevoComprobanteEnviado(
+                empresaA.getId(), empresaA.getCreadoPor(), "CLAVEDIGA", 0, null);
+        credencialHaciendaRepository.delete(credencialA);
+
+        TenantContext.set(empresaB.getId());
+        ComprobanteElectronico comprobanteB = nuevoComprobanteEnviado(
+                empresaB.getId(), empresaB.getCreadoPor(), "CLAVEDIGB",
+                ComprobanteHaciendaPollingScheduledJob.MAX_INTENTOS - 1,
+                LocalDateTime.now().minusHours(3));
+        when(haciendaComprobanteApiService.consultarComprobante(
+                eq(comprobanteB.getClaveNumerica()), any()))
+                .thenThrow(new cr.ac.fractall.hacienda.servicio.HaciendaComunicacionException(
+                        "timeout de prueba"));
+
+        TenantContext.clear();
+        job.consultarPendientes();
+
+        ArgumentCaptor<String> destinatarioCaptor = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<String> cuerpoCaptor = ArgumentCaptor.forClass(String.class);
+        verify(emailNotificacionService, times(2)).enviarConReintento(
+                destinatarioCaptor.capture(), any(), cuerpoCaptor.capture());
+
+        assertThat(destinatarioCaptor.getAllValues()).containsExactlyInAnyOrder(
+                empresaA.getEmail(), empresaB.getEmail());
+
+        int indiceA = destinatarioCaptor.getAllValues().indexOf(empresaA.getEmail());
+        int indiceB = destinatarioCaptor.getAllValues().indexOf(empresaB.getEmail());
+        assertThat(cuerpoCaptor.getAllValues().get(indiceA))
+                .contains(comprobanteA.getClaveNumerica())
+                .doesNotContain(comprobanteB.getClaveNumerica());
+        assertThat(cuerpoCaptor.getAllValues().get(indiceB))
+                .contains(comprobanteB.getClaveNumerica())
+                .doesNotContain(comprobanteA.getClaveNumerica());
+    }
+
+    /**
+     * Guard: si {@code Empresa.email} es null/vacío, el job NO debe intentar enviar el digest (ni
+     * lanzar una excepción por ello) -- solo loguear un WARN. La escalación en sí (el efecto
+     * principal del ciclo) debe seguir ocurriendo con normalidad.
+     */
+    @Test
+    void empresaSinEmailNoIntentaEnviarDigest() {
+        TenantContext.set(UUID.randomUUID());
+        Usuario usuario = usuarioRepository.findAll().get(0);
+        Empresa empresaSinEmail = new Empresa();
+        empresaSinEmail.setRazonSocial("Empresa Sondeo Sin Email S.A.");
+        empresaSinEmail.setAmbienteHacienda("SANDBOX");
+        empresaSinEmail.setStatus("REGISTRADA");
+        empresaSinEmail.setCreadoPor(usuario.getId());
+        empresaSinEmail.setCreateDate(LocalDateTime.now());
+        empresaSinEmail.setUpdateDate(LocalDateTime.now());
+        empresaSinEmail = empresaRepository.save(empresaSinEmail);
+        CredencialHacienda credencialSinEmail = nuevaCredencial(empresaSinEmail.getId(), usuario.getId());
+        credencialHaciendaRepository.save(credencialSinEmail);
+
+        TenantContext.set(empresaSinEmail.getId());
+        ComprobanteElectronico comprobante = nuevoComprobanteEnviado(
+                empresaSinEmail.getId(), usuario.getId(), "CLAVEDIGSINMAIL", 0, null);
+        credencialHaciendaRepository.delete(credencialSinEmail);
+
+        TenantContext.clear();
+        job.consultarPendientes();
+
+        TenantContext.set(empresaSinEmail.getId());
+        ComprobanteElectronico recargado = comprobanteElectronicoRepository.findById(comprobante.getId())
+                .orElseThrow();
+        assertThat(recargado.getEstado()).isEqualTo(ComprobanteHaciendaPollingScheduledJob.ESTADO_ERROR);
+        assertThat(recargado.getUltimoResultadoConsulta())
+                .isEqualTo(ComprobanteHaciendaEnvioService.RESULTADO_ERROR_CONFIGURACION);
+
+        verifyNoInteractions(emailNotificacionService);
     }
 }
