@@ -43,6 +43,7 @@ import cr.ac.fractall.hacienda.servicio.HaciendaComprobanteApiService;
 import cr.ac.fractall.hacienda.servicio.HaciendaComunicacionException;
 import cr.ac.fractall.hacienda.servicio.HaciendaConfiguracionException;
 import cr.ac.fractall.secretos.SecretosKvService;
+import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import io.github.resilience4j.retry.annotation.Retry;
 import lombok.extern.slf4j.Slf4j;
@@ -635,11 +636,21 @@ public class HaciendaComprobanteApiServiceImpl implements HaciendaComprobanteApi
 
     /**
      * Método fallback para consultarComprobante cuando el Circuit Breaker se abre.
+     *
+     * <p>Tercer parámetro deliberadamente {@link CallNotPermittedException} (no {@code Throwable})
+     * -- Resilience4j hace matching de {@code FallbackMethod} por el TIPO DECLARADO de este
+     * parámetro, así que un {@code Throwable} aquí interceptaría CUALQUIER excepción lanzada por
+     * {@link #consultarComprobante}, no solo la del circuito abierto (ver el hallazgo bloqueante
+     * del design de {@code reintentos-hacienda-causa-fallo}): eso absorbería silenciosamente
+     * {@link HaciendaConfiguracionException}/{@link HaciendaComunicacionException} (PR3) antes de
+     * que lleguen al job de sondeo, dejando sin efecto la clasificación por causa. Con esta firma
+     * más específica, Resilience4j solo invoca este fallback cuando el circuito realmente está
+     * abierto; cualquier otra excepción se propaga normalmente al llamador.
      */
     private RespuestaHaciendaDTO consultarComprobanteFallback(
             String claveNumerica,
             UUID credencialId,
-            Throwable e) {
+            CallNotPermittedException e) {
 
         log.error("Circuit Breaker ABIERTO - Fallback activado para consultarComprobante: {}", e.getMessage());
 
