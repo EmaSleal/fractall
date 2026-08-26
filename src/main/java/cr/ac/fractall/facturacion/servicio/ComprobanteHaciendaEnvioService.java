@@ -43,12 +43,23 @@ import lombok.extern.slf4j.Slf4j;
  * </ul>
  *
  * <p>En los tres casos se actualizan {@code codigoRespuesta}, {@code mensajeRespuesta},
- * {@code fechaRespuesta} y se incrementa {@code intentosEnvio} -- este último es el mismo contador
- * que {@code ComprobanteHaciendaPollingScheduledJob} usa para su tope de reintentos, se incremente
- * aquí (envío inicial) o allá (sondeo). Si la respuesta trae {@code xmlRespuesta} (el XML de
- * respuesta de Hacienda, en Base64), se decodifica, se cifra y se sube a Object Storage vía
+ * {@code fechaRespuesta}, {@code ultimoResultadoConsulta} y {@code fechaUltimaConsultaHacienda}, y
+ * se incrementa {@code intentosEnvio} -- este último es el mismo contador que
+ * {@code ComprobanteHaciendaPollingScheduledJob} usa para su tope de reintentos, se incremente aquí
+ * (envío inicial) o allá (sondeo). Si la respuesta trae {@code xmlRespuesta} (el XML de respuesta
+ * de Hacienda, en Base64), se decodifica, se cifra y se sube a Object Storage vía
  * {@link ComprobanteXmlCifradoUploader} (misma DEK-por-operación que el XML firmado, ver su
  * javadoc) y se persiste su referencia en {@code xmlRespuestaReferencia}.
+ *
+ * <p><b>Consulta que nunca llega a Hacienda:</b> si {@link #consultarYActualizar} lanza ANTES de
+ * llegar a {@code aplicarRespuesta} (p. ej. {@link CredencialHaciendaNoEncontradaException}),
+ * ninguno de los campos de arriba se toca aquí -- es
+ * {@code ComprobanteHaciendaPollingScheduledJob#registrarIntentoFallidoYGuardar} quien, en su
+ * propio {@code catch}, deja igualmente {@code ultimoResultadoConsulta} en
+ * {@value #RESULTADO_ERROR_COMUNICACION} y {@code fechaUltimaConsultaHacienda} en el instante del
+ * intento fallido, para que ambos campos nunca queden {@code null} indefinidamente en un
+ * comprobante que jamás logra hablar con Hacienda (bug corregido en esta misma sub-tarea; ver su
+ * javadoc para el detalle completo).
  *
  * <p>Deliberadamente SIN {@code @Transactional} a nivel de clase/método: ambos métodos públicos
  * hacen una llamada de red real (a Hacienda, y opcionalmente a Vault Transit/Object Storage) antes
@@ -67,6 +78,17 @@ public class ComprobanteHaciendaEnvioService {
     static final String ESTADO_ACEPTADO = "ACEPTADO";
     static final String ESTADO_ENVIADO = "ENVIADO";
     static final String ESTADO_RECHAZADO = "RECHAZADO";
+
+    // Valores de ultimo_resultado_consulta (CHECK ampliado en V21) para las ramas de fallo que no
+    // llegan a obtener una respuesta clasificable de Hacienda. RESULTADO_ERROR_COMUNICACION es el
+    // valor genérico usado hoy tanto por mapearResultadoConsulta como por
+    // ComprobanteHaciendaPollingScheduledJob#registrarIntentoFallidoYGuardar.
+    // RESULTADO_ERROR_CONFIGURACION todavía no se escribe en ningún lado -- lo consume recién la
+    // clasificación por causa de una sub-tarea posterior, que distingue "Hacienda no respondió" de
+    // "esta empresa no tiene credencial/certificado configurado" -- se declara ya para que ambos
+    // valores del CHECK vivan documentados juntos en un solo lugar.
+    static final String RESULTADO_ERROR_COMUNICACION = "ERROR_COMUNICACION";
+    static final String RESULTADO_ERROR_CONFIGURACION = "ERROR_CONFIGURACION";
 
     private static final int LONGITUD_MAXIMA_MENSAJE_RESPUESTA = 500;
 
@@ -184,13 +206,13 @@ public class ComprobanteHaciendaEnvioService {
      */
     private static String mapearResultadoConsulta(MensajeHacienda codigoMensaje) {
         if (codigoMensaje == null) {
-            return "ERROR_COMUNICACION";
+            return RESULTADO_ERROR_COMUNICACION;
         }
         return switch (codigoMensaje) {
             case ACEPTADO -> "ACEPTADO";
             case PROCESANDO -> "PENDIENTE";
             case RECHAZADO, RECHAZADO_PARCIAL -> "RECHAZADO";
-            default -> "ERROR_COMUNICACION";
+            default -> RESULTADO_ERROR_COMUNICACION;
         };
     }
 

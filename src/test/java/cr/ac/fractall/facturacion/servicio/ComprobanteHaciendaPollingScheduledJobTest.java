@@ -369,6 +369,13 @@ class ComprobanteHaciendaPollingScheduledJobTest {
      * esperaba en {@code ENVIADO}), el intento fallido debe contar igual para el tope de
      * {@code MAX_INTENTOS} -- si no, el comprobante queda reintentando para siempre sin escalar
      * nunca a {@code ERROR}.
+     *
+     * <p>Además -- bug corregido en esta misma sub-tarea -- {@code ultimoResultadoConsulta} y
+     * {@code fechaUltimaConsultaHacienda} deben quedar actualizados también en esta rama de
+     * excepción, igual que en la ruta exitosa de {@code aplicarRespuesta}. Antes del fix,
+     * {@code registrarIntentoFallidoYGuardar} solo tocaba {@code intentosEnvio}/{@code
+     * fechaRespuesta}, dejando esos dos campos {@code null} para siempre en un comprobante que
+     * nunca logra hablar con Hacienda.
      */
     @Test
     void comprobanteQueFallaPorCredencialFaltanteCuentaComoIntentoYEscalaAError() {
@@ -387,6 +394,9 @@ class ComprobanteHaciendaPollingScheduledJobTest {
                 .orElseThrow();
         assertThat(recargado.getEstado()).isEqualTo(ComprobanteHaciendaPollingScheduledJob.ESTADO_ERROR);
         assertThat(recargado.getIntentosEnvio()).isEqualTo(ComprobanteHaciendaPollingScheduledJob.MAX_INTENTOS);
+        assertThat(recargado.getUltimoResultadoConsulta())
+                .isEqualTo(ComprobanteHaciendaEnvioService.RESULTADO_ERROR_COMUNICACION);
+        assertThat(recargado.getFechaUltimaConsultaHacienda()).isNotNull();
         verifyNoInteractions(haciendaComprobanteApiService);
     }
 
