@@ -3,6 +3,7 @@ package cr.ac.fractall.facturacion.servicio;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -240,11 +241,23 @@ class ComprobanteHaciendaPollingScheduledJobTest {
     }
 
     private static CredencialHacienda nuevaCredencial(UUID empresaId, UUID configuradaPor) {
+        return nuevaCredencial(empresaId, configuradaPor, "SANDBOX");
+    }
+
+    /**
+     * Variante con ambiente parametrizable -- necesaria para
+     * {@link #comprobantesDeAmbientesDistintosDeLaMismaEmpresaSeConsultanIndependientemente()}, que
+     * necesita una credencial PRODUCCION para la MISMA empresa además de la credencial SANDBOX que
+     * ya provee {@code credencialA} ({@link CredencialHaciendaRepository#findByEmpresaIdAndAmbiente}
+     * exige una fila por cada combinación empresa+ambiente).
+     */
+    private static CredencialHacienda nuevaCredencial(UUID empresaId, UUID configuradaPor, String ambiente) {
         CredencialHacienda credencial = new CredencialHacienda();
         credencial.setEmpresaId(empresaId);
-        credencial.setAmbiente("SANDBOX");
-        credencial.setUsuarioHacienda("usuario-" + empresaId + "@hacienda.test");
-        credencial.setCredencialReferencia("secret/data/empresas/" + empresaId + "/hacienda/sandbox/password");
+        credencial.setAmbiente(ambiente);
+        credencial.setUsuarioHacienda("usuario-" + empresaId + "-" + ambiente + "@hacienda.test");
+        credencial.setCredencialReferencia(
+                "secret/data/empresas/" + empresaId + "/hacienda/" + ambiente.toLowerCase() + "/password");
         credencial.setConfiguradaEn(LocalDateTime.now());
         credencial.setConfiguradaPor(configuradaPor);
         return credencial;
@@ -257,6 +270,18 @@ class ComprobanteHaciendaPollingScheduledJobTest {
      */
     private ComprobanteElectronico nuevoComprobanteEnviado(
             UUID empresaId, UUID usuarioId, String sufijoClave, int intentosEnvio, LocalDateTime fechaRespuesta) {
+        return nuevoComprobanteEnviado(empresaId, usuarioId, sufijoClave, intentosEnvio, fechaRespuesta, "SANDBOX");
+    }
+
+    /**
+     * Variante con {@code ambienteHacienda} parametrizable -- necesaria para
+     * {@link #comprobantesDeAmbientesDistintosDeLaMismaEmpresaSeConsultanIndependientemente()}, que
+     * exige comprobantes PRODUCCION además de los SANDBOX que todo el resto de esta clase asume por
+     * defecto.
+     */
+    private ComprobanteElectronico nuevoComprobanteEnviado(
+            UUID empresaId, UUID usuarioId, String sufijoClave, int intentosEnvio, LocalDateTime fechaRespuesta,
+            String ambienteHacienda) {
         Cliente cliente = new Cliente();
         cliente.setNombre("Cliente sondeo " + sufijoClave);
         cliente.setTipoIdentificacion("02");
@@ -286,7 +311,7 @@ class ComprobanteHaciendaPollingScheduledJobTest {
 
         ComprobanteElectronico comprobante = new ComprobanteElectronico();
         comprobante.setFacturaId(factura.getId());
-        comprobante.setAmbienteHacienda("SANDBOX");
+        comprobante.setAmbienteHacienda(ambienteHacienda);
         comprobante.setTipoComprobante("01");
         comprobante.setConsecutivo(consecutivo);
         comprobante.setClaveNumerica(claveNumerica);
@@ -502,6 +527,72 @@ class ComprobanteHaciendaPollingScheduledJobTest {
         job.consultarPendientes();
 
         verify(haciendaComprobanteApiService, times(3)).consultarComprobante(any(), any());
+    }
+
+    /**
+     * Cierra el WARNING 2 de sdd-verify (id de sesión previa): el corte por credencial rota
+     * ({@code ambientesConFalloConfiguracion} dentro de {@code procesarEmpresa}) está keyed por
+     * {@code ambienteHacienda}, no por empresa entera. Todos los demás fixtures de esta clase
+     * hardcodean SANDBOX, así que ninguna prueba anterior ejercitaba dos ambientes distintos de la
+     * MISMA empresa en el mismo ciclo -- esta prueba fuerza el fallo de configuración SOLO en
+     * SANDBOX y comprueba que (a) el comprobante PRODUCCION de la misma empresa recibe su llamada
+     * normal a Hacienda (no se corta) y (b) un segundo comprobante SANDBOX SÍ se corta sin volver a
+     * llamar a Hacienda -- confirmando que el Set es independiente por ambiente y no se comparte
+     * entre ambientes de la misma empresa.
+     */
+    @Test
+    void comprobantesDeAmbientesDistintosDeLaMismaEmpresaSeConsultanIndependientemente() {
+        TenantContext.set(empresaA.getId());
+        CredencialHacienda credencialProduccionA = credencialHaciendaRepository.save(
+                nuevaCredencial(empresaA.getId(), empresaA.getCreadoPor(), "PRODUCCION"));
+
+        ComprobanteElectronico comprobanteSandbox1 = nuevoComprobanteEnviado(
+                empresaA.getId(), empresaA.getCreadoPor(), "CLAVEAMB1", 0, null, "SANDBOX");
+        ComprobanteElectronico comprobanteSandbox2 = nuevoComprobanteEnviado(
+                empresaA.getId(), empresaA.getCreadoPor(), "CLAVEAMB2", 0, null, "SANDBOX");
+        ComprobanteElectronico comprobanteProduccion = nuevoComprobanteEnviado(
+                empresaA.getId(), empresaA.getCreadoPor(), "CLAVEAMB3", 0, null, "PRODUCCION");
+
+        when(haciendaComprobanteApiService.consultarComprobante(
+                eq(comprobanteSandbox1.getClaveNumerica()), eq(credencialA.getId())))
+                .thenThrow(new cr.ac.fractall.hacienda.servicio.HaciendaConfiguracionException(
+                        "401 persistente de prueba en SANDBOX"));
+        when(haciendaComprobanteApiService.consultarComprobante(
+                eq(comprobanteProduccion.getClaveNumerica()), eq(credencialProduccionA.getId())))
+                .thenReturn(respuesta(MensajeHacienda.ACEPTADO, true, false));
+
+        TenantContext.clear();
+        job.consultarPendientes();
+
+        // El comprobante PRODUCCION SÍ recibe su llamada normal -- el fallo de configuración de
+        // SANDBOX no lo corta.
+        verify(haciendaComprobanteApiService, times(1)).consultarComprobante(
+                comprobanteProduccion.getClaveNumerica(), credencialProduccionA.getId());
+        // Solo el PRIMER comprobante SANDBOX golpea Hacienda...
+        verify(haciendaComprobanteApiService, times(1))
+                .consultarComprobante(comprobanteSandbox1.getClaveNumerica(), credencialA.getId());
+        // ...el segundo SANDBOX se corta sin volver a llamar a Hacienda.
+        verify(haciendaComprobanteApiService, never())
+                .consultarComprobante(eq(comprobanteSandbox2.getClaveNumerica()), any());
+        // Total: exactamente 2 llamadas reales (1 SANDBOX + 1 PRODUCCION), nunca 3.
+        verify(haciendaComprobanteApiService, times(2)).consultarComprobante(any(), any());
+
+        TenantContext.set(empresaA.getId());
+        ComprobanteElectronico recargadoSandbox1 = comprobanteElectronicoRepository
+                .findById(comprobanteSandbox1.getId()).orElseThrow();
+        assertThat(recargadoSandbox1.getEstado()).isEqualTo(ComprobanteHaciendaPollingScheduledJob.ESTADO_ERROR);
+        assertThat(recargadoSandbox1.getUltimoResultadoConsulta())
+                .isEqualTo(ComprobanteHaciendaEnvioService.RESULTADO_ERROR_CONFIGURACION);
+
+        ComprobanteElectronico recargadoSandbox2 = comprobanteElectronicoRepository
+                .findById(comprobanteSandbox2.getId()).orElseThrow();
+        assertThat(recargadoSandbox2.getEstado()).isEqualTo(ComprobanteHaciendaPollingScheduledJob.ESTADO_ERROR);
+        assertThat(recargadoSandbox2.getUltimoResultadoConsulta())
+                .isEqualTo(ComprobanteHaciendaEnvioService.RESULTADO_ERROR_CONFIGURACION);
+
+        ComprobanteElectronico recargadoProduccion = comprobanteElectronicoRepository
+                .findById(comprobanteProduccion.getId()).orElseThrow();
+        assertThat(recargadoProduccion.getEstado()).isEqualTo("ACEPTADO");
     }
 
     @Test
