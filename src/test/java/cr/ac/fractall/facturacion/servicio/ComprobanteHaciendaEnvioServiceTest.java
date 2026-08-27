@@ -32,6 +32,7 @@ import cr.ac.fractall.facturacion.repositorio.ComprobanteElectronicoRepository;
 import cr.ac.fractall.hacienda.dto.MensajeHacienda;
 import cr.ac.fractall.hacienda.dto.RespuestaHaciendaDTO;
 import cr.ac.fractall.hacienda.servicio.HaciendaComprobanteApiService;
+import cr.ac.fractall.hacienda.servicio.HaciendaConfiguracionException;
 
 /**
  * Prueba unitaria (sin contexto de Spring, mismo enfoque que
@@ -223,7 +224,8 @@ class ComprobanteHaciendaEnvioServiceTest {
                 .thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> servicio.enviarComprobante("<xml-firmado/>", comprobante))
-                .isInstanceOf(CredencialHaciendaNoEncontradaException.class);
+                .isInstanceOf(CredencialHaciendaNoEncontradaException.class)
+                .isInstanceOf(HaciendaConfiguracionException.class);
 
         verifyNoInteractions(haciendaComprobanteApiService);
         verifyNoInteractions(comprobanteElectronicoRepository);
@@ -278,7 +280,8 @@ class ComprobanteHaciendaEnvioServiceTest {
                 .thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> servicio.consultarYActualizar(comprobante))
-                .isInstanceOf(CredencialHaciendaNoEncontradaException.class);
+                .isInstanceOf(CredencialHaciendaNoEncontradaException.class)
+                .isInstanceOf(HaciendaConfiguracionException.class);
 
         verifyNoInteractions(haciendaComprobanteApiService);
     }
