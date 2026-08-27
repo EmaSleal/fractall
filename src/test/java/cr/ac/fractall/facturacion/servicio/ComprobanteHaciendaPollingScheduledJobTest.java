@@ -364,27 +364,57 @@ class ComprobanteHaciendaPollingScheduledJobTest {
     }
 
     /**
-     * Hallazgo de revisión: si {@code consultarYActualizar} lanza ANTES de tocar
-     * {@code intentosEnvio} (p. ej. la credencial de Hacienda fue borrada mientras el comprobante
-     * esperaba en {@code ENVIADO}), el intento fallido debe contar igual para el tope de
-     * {@code MAX_INTENTOS} -- si no, el comprobante queda reintentando para siempre sin escalar
-     * nunca a {@code ERROR}.
+     * Hallazgo de revisión (PR3): {@code CredencialHaciendaNoEncontradaException} ahora extiende
+     * {@link cr.ac.fractall.hacienda.servicio.HaciendaConfiguracionException} -- una credencial
+     * ausente es, por definición, una falla de configuración que ningún reintento automático puede
+     * resolver. Por eso ya NO comparte el presupuesto de {@code MAX_INTENTOS} de las fallas de
+     * comunicación: el job debe escalar a {@code ERROR} en el PRIMER intento, sin llegar a llamar a
+     * Hacienda para los intentos restantes.
      *
-     * <p>Además -- bug corregido en esta misma sub-tarea -- {@code ultimoResultadoConsulta} y
-     * {@code fechaUltimaConsultaHacienda} deben quedar actualizados también en esta rama de
-     * excepción, igual que en la ruta exitosa de {@code aplicarRespuesta}. Antes del fix,
-     * {@code registrarIntentoFallidoYGuardar} solo tocaba {@code intentosEnvio}/{@code
-     * fechaRespuesta}, dejando esos dos campos {@code null} para siempre en un comprobante que
-     * nunca logra hablar con Hacienda.
+     * <p>Reemplaza a la prueba anterior
+     * ({@code comprobanteQueFallaPorCredencialFaltanteCuentaComoIntentoYEscalaAError}), que asumía
+     * el tope indiferenciado de 10 intentos y esperaba {@code ultimoResultadoConsulta =
+     * ERROR_COMUNICACION} -- ambas expectativas ya no reflejan el comportamiento correcto una vez
+     * que el job distingue por causa.
      */
     @Test
-    void comprobanteQueFallaPorCredencialFaltanteCuentaComoIntentoYEscalaAError() {
+    void comprobanteQueFallaPorCredencialFaltanteEscalaAErrorEnUnSoloIntento() {
         TenantContext.set(empresaA.getId());
         ComprobanteElectronico comprobante = nuevoComprobanteEnviado(
-                empresaA.getId(), empresaA.getCreadoPor(), "CLAVENOCRED",
+                empresaA.getId(), empresaA.getCreadoPor(), "CLAVENOCRED", 0, null);
+        credencialHaciendaRepository.delete(credencialA);
+
+        TenantContext.clear();
+        job.consultarPendientes();
+
+        TenantContext.set(empresaA.getId());
+        ComprobanteElectronico recargado = comprobanteElectronicoRepository.findById(comprobante.getId())
+                .orElseThrow();
+        assertThat(recargado.getEstado()).isEqualTo(ComprobanteHaciendaPollingScheduledJob.ESTADO_ERROR);
+        assertThat(recargado.getUltimoResultadoConsulta())
+                .isEqualTo(ComprobanteHaciendaEnvioService.RESULTADO_ERROR_CONFIGURACION);
+        assertThat(recargado.getIntentosEnvio()).isEqualTo(1);
+        assertThat(recargado.getFechaUltimaConsultaHacienda()).isNotNull();
+        verifyNoInteractions(haciendaComprobanteApiService);
+    }
+
+    /**
+     * Contraparte de la prueba anterior: una falla de COMUNICACIÓN (p. ej. cualquier otra
+     * {@link RuntimeException} no clasificada como configuración) debe seguir consumiendo el
+     * presupuesto de {@code MAX_INTENTOS} con el backoff existente, exactamente igual que antes de
+     * distinguir por causa -- esta prueba fija ese comportamiento como el "camino no tocado" de la
+     * rama de comunicación.
+     */
+    @Test
+    void comprobanteQueFallaPorComunicacionSigueAgotandoLosDiezIntentosConBackoff() {
+        TenantContext.set(empresaA.getId());
+        ComprobanteElectronico comprobante = nuevoComprobanteEnviado(
+                empresaA.getId(), empresaA.getCreadoPor(), "CLAVECOMU",
                 ComprobanteHaciendaPollingScheduledJob.MAX_INTENTOS - 1,
                 LocalDateTime.now().minusHours(3));
-        credencialHaciendaRepository.delete(credencialA);
+
+        when(haciendaComprobanteApiService.consultarComprobante(any(), any()))
+                .thenThrow(new cr.ac.fractall.hacienda.servicio.HaciendaComunicacionException("timeout de prueba"));
 
         TenantContext.clear();
         job.consultarPendientes();
@@ -397,7 +427,6 @@ class ComprobanteHaciendaPollingScheduledJobTest {
         assertThat(recargado.getUltimoResultadoConsulta())
                 .isEqualTo(ComprobanteHaciendaEnvioService.RESULTADO_ERROR_COMUNICACION);
         assertThat(recargado.getFechaUltimaConsultaHacienda()).isNotNull();
-        verifyNoInteractions(haciendaComprobanteApiService);
     }
 
     @Test

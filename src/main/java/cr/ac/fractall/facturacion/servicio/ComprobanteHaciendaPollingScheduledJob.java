@@ -12,6 +12,7 @@ import org.springframework.stereotype.Component;
 
 import cr.ac.fractall.facturacion.modelo.ComprobanteElectronico;
 import cr.ac.fractall.facturacion.repositorio.ComprobanteElectronicoRepository;
+import cr.ac.fractall.hacienda.servicio.HaciendaConfiguracionException;
 import cr.ac.fractall.tenant.TenantContext;
 import cr.ac.fractall.tenant.TenantContextDescartable;
 
@@ -120,15 +121,24 @@ public class ComprobanteHaciendaPollingScheduledJob {
                 comprobante.setIntentosConsulta(comprobante.getIntentosConsulta() + 1);
                 comprobanteHaciendaEnvioService.consultarYActualizar(comprobante);
                 escalarSiAgotoIntentos(comprobante);
+            } catch (HaciendaConfiguracionException excepcion) {
+                // Causa CONFIGURACIÓN (credencial/certificado/password ausente, 401 persistente):
+                // ningún reintento automático puede resolverla, así que se escala de inmediato en
+                // el primer intento en vez de consumir el presupuesto de MAX_INTENTOS reservado
+                // para fallas transitorias de comunicación. intentosConsulta ya fue incrementado
+                // antes de la llamada en el try.
+                log.error("Falla de configuración consultando el comprobante {} (empresa {}) en Hacienda: {}",
+                        comprobante.getId(), empresaId, excepcion.getMessage(), excepcion);
+                escalarPorConfiguracion(comprobante);
             } catch (RuntimeException excepcion) {
-                // consultarYActualizar puede lanzar ANTES de tocar intentosEnvio/guardar (p. ej.
-                // CredencialHaciendaNoEncontradaException, si la credencial se borró mientras el
-                // comprobante esperaba). Si este intento fallido no se contara igual que uno que sí
-                // llegó a Hacienda, el comprobante quedaría reintentando para siempre sin escalar
-                // nunca a ESTADO_ERROR -- por eso esta rama también incrementa/guarda, a diferencia
-                // de simplemente loguear y seguir.
+                // Causa COMUNICACIÓN (timeout, 5xx, u otra excepción no clasificada -- fail-safe:
+                // una falla desconocida conserva el presupuesto de 10 intentos en vez de escalar
+                // instantáneamente). consultarYActualizar puede lanzar ANTES de tocar
+                // intentosEnvio/guardar, así que este intento fallido debe contar igual que uno
+                // que sí llegó a Hacienda -- si no, el comprobante quedaría reintentando para
+                // siempre sin escalar nunca a ESTADO_ERROR.
                 // intentosConsulta ya fue incrementado antes de la llamada en el try.
-                log.error("Error consultando el comprobante {} (empresa {}) en Hacienda: {}",
+                log.error("Error de comunicación consultando el comprobante {} (empresa {}) en Hacienda: {}",
                         comprobante.getId(), empresaId, excepcion.getMessage(), excepcion);
                 registrarIntentoFallidoYGuardar(comprobante);
             }
@@ -144,6 +154,11 @@ public class ComprobanteHaciendaPollingScheduledJob {
         }
     }
 
+    /**
+     * Causa COMUNICACIÓN: cuenta contra el presupuesto de {@value #MAX_INTENTOS} intentos con el
+     * backoff exponencial existente ({@link #listoParaReintentar}/{@link #calcularBackoffMinutos}),
+     * igual que antes de distinguir por causa.
+     */
     private void registrarIntentoFallidoYGuardar(ComprobanteElectronico comprobante) {
         LocalDateTime ahora = LocalDateTime.now();
         comprobante.setIntentosEnvio(comprobante.getIntentosEnvio() + 1);
@@ -152,9 +167,6 @@ public class ComprobanteHaciendaPollingScheduledJob {
         // aplicarRespuesta (ver su javadoc), así que ultimoResultadoConsulta/
         // fechaUltimaConsultaHacienda nunca se tocaron para este intento -- sin esto quedarían
         // null para siempre en un comprobante que jamás logra hablar con Hacienda.
-        // ERROR_COMUNICACION es el valor transicional genérico para esta rama: distinguir esto de
-        // un problema de configuración (credencial/certificado faltante) es tarea de una
-        // sub-tarea posterior que clasifica por causa antes de llegar aquí.
         comprobante.setUltimoResultadoConsulta(ComprobanteHaciendaEnvioService.RESULTADO_ERROR_COMUNICACION);
         comprobante.setFechaUltimaConsultaHacienda(ahora);
         if (comprobante.getIntentosEnvio() >= MAX_INTENTOS) {
@@ -162,6 +174,26 @@ public class ComprobanteHaciendaPollingScheduledJob {
             log.warn("Comprobante {} agotó sus {} intentos de confirmación con Hacienda; se marca {}.",
                     comprobante.getId(), MAX_INTENTOS, ESTADO_ERROR);
         }
+        comprobanteElectronicoRepository.save(comprobante);
+    }
+
+    /**
+     * Causa CONFIGURACIÓN: techo de 1 intento -- escala a {@value #ESTADO_ERROR} de inmediato, sin
+     * incrementar ni depender de {@code intentosEnvio}/{@value #MAX_INTENTOS}, porque ningún
+     * reintento automático puede resolver una credencial/certificado/password ausente o un 401
+     * persistente. {@code intentosEnvio} sí se incrementa en 1 (de 0 a 1, dado que ninguna otra
+     * rama lo toca para este intento) para que quede un registro consistente de que se intentó una
+     * vez, igual que las demás ramas de {@code procesarEmpresa}.
+     */
+    private void escalarPorConfiguracion(ComprobanteElectronico comprobante) {
+        LocalDateTime ahora = LocalDateTime.now();
+        comprobante.setIntentosEnvio(comprobante.getIntentosEnvio() + 1);
+        comprobante.setFechaRespuesta(ahora);
+        comprobante.setUltimoResultadoConsulta(ComprobanteHaciendaEnvioService.RESULTADO_ERROR_CONFIGURACION);
+        comprobante.setFechaUltimaConsultaHacienda(ahora);
+        comprobante.setEstado(ESTADO_ERROR);
+        log.warn("Comprobante {} tiene una falla de configuración con Hacienda; se marca {} tras un solo intento.",
+                comprobante.getId(), ESTADO_ERROR);
         comprobanteElectronicoRepository.save(comprobante);
     }
 
