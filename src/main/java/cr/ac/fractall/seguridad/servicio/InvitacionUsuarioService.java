@@ -37,8 +37,12 @@ public class InvitacionUsuarioService {
     private static final long EXPIRACION_DIAS = 7;
 
     private static final String ESTADO_PENDIENTE = "PENDIENTE";
+    private static final String ESTADO_ACEPTADA = "ACEPTADA";
+    private static final String ESTADO_EXPIRADA = "EXPIRADA";
+    private static final String ESTADO_ACTIVO = "ACTIVO";
     private static final String ESTADO_INVITACION_PENDIENTE = "INVITACION_PENDIENTE";
     private static final String PERMISO_INVITAR = "usuario.invitar";
+    private static final String ROL_ADMIN_EMPRESA = "ADMIN_EMPRESA";
 
     private final PermisoGuard permisoGuard;
     private final InvitacionUsuarioRepository invitacionUsuarioRepository;
@@ -128,7 +132,88 @@ public class InvitacionUsuarioService {
         return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
     }
 
+    /**
+     * Aceptación de una invitación por un invitado que YA tiene cuenta ({@code usuario}): activa
+     * la membresía {@code usuario_empresa} sembrada como {@code INVITACION_PENDIENTE} por
+     * {@link #emitir}, marca la invitación {@code ACEPTADA} y aplica el hook de MFA cuando el
+     * rol aceptado es {@code ADMIN_EMPRESA} (decisión D del design.md, corregida por la decisión
+     * E: aquí SÍ aplica el token-continuation vía {@code SesionService.seleccionarTenant}, a
+     * diferencia de {@code PATCH /usuarios/{id}/rol}).
+     *
+     * <p>{@code usuarioId} es el llamador autenticado (el propio invitado, resuelto por el
+     * controlador vía {@code usuarioIdAutenticado()}) -- no se re-deriva del correo de la
+     * invitación: la fila {@code usuario_empresa(INVITACION_PENDIENTE)} ya quedó anclada a un
+     * {@code usuario_id} concreto en {@link #emitir}, y si el llamador autenticado no es ese
+     * usuario, no existe una membresía pendiente que activar para él -- se rechaza con el mismo
+     * {@link InvitacionInvalidaException} genérico, sin distinguir el motivo (anti-enumeración).
+     *
+     * <p>{@code noRollbackFor}: la escritura perezosa de {@code estado='EXPIRADA'} hecha por
+     * {@link #resolverInvitacionValida} DEBE sobrevivir aunque el método termine lanzando esta
+     * misma excepción -- sin esta anotación, el rollback por defecto de Spring ante cualquier
+     * {@code RuntimeException} deshace ese UPDATE junto con todo lo demás, y la fila quedaría
+     * {@code PENDIENTE} para siempre pese a estar vencida (decisión F de design.md: expiración
+     * perezosa, sin job programado). Ningún otro write ocurre antes de esta excepción -- se
+     * lanza siempre como primer paso del método, antes de tocar la membresía -- así que no hay
+     * riesgo de dejar estado parcial de la aceptación en sí.
+     */
+    @Transactional(noRollbackFor = InvitacionInvalidaException.class)
+    public AceptacionResultado aceptar(String tokenCrudo, UUID usuarioId) {
+        InvitacionUsuario invitacion = resolverInvitacionValida(tokenCrudo);
+
+        UsuarioEmpresa membresia = usuarioEmpresaRepository
+                .findByUsuarioIdAndEmpresaIdAndEstado(usuarioId, invitacion.getEmpresaId(), ESTADO_INVITACION_PENDIENTE)
+                .orElseThrow(InvitacionInvalidaException::new);
+
+        membresia.setEstado(ESTADO_ACTIVO);
+        usuarioEmpresaRepository.save(membresia);
+
+        invitacion.setEstado(ESTADO_ACEPTADA);
+        invitacionUsuarioRepository.save(invitacion);
+
+        Rol rol = rolRepository.findById(invitacion.getRolId())
+                .orElseThrow(() -> new IllegalStateException(
+                        "invitacion_usuario referencia un rol_id inexistente: " + invitacion.getRolId()));
+
+        if (ROL_ADMIN_EMPRESA.equals(rol.getCodigo())) {
+            Usuario usuario = usuarioRepository.findById(usuarioId)
+                    .orElseThrow(() -> new IllegalStateException(
+                            "usuario_empresa referencia un usuario_id inexistente: " + usuarioId));
+            usuario.setMfaRequerido(true);
+            usuarioRepository.save(usuario);
+        }
+
+        return new AceptacionResultado(invitacion.getEmpresaId(), rol.getCodigo());
+    }
+
+    /**
+     * Valida el token contra las 4 causas de rechazo de design.md (inexistente, no
+     * {@code PENDIENTE} -- ya {@code ACEPTADA} o {@code REVOCADA} --, o vencido) con un solo
+     * mensaje ({@link InvitacionInvalidaException}, sin distinguir el motivo). La expiración es
+     * perezosa (decisión F): se detecta en esta lectura y la fila se marca {@code EXPIRADA} antes
+     * de fallar, en vez de depender de un job programado.
+     */
+    private InvitacionUsuario resolverInvitacionValida(String tokenCrudo) {
+        InvitacionUsuario invitacion = invitacionUsuarioRepository.findByTokenHash(TokenHasher.sha256Hex(tokenCrudo))
+                .orElseThrow(InvitacionInvalidaException::new);
+
+        if (!ESTADO_PENDIENTE.equals(invitacion.getEstado())) {
+            throw new InvitacionInvalidaException();
+        }
+
+        if (invitacion.getExpiraEn().isBefore(LocalDateTime.now())) {
+            invitacion.setEstado(ESTADO_EXPIRADA);
+            invitacionUsuarioRepository.save(invitacion);
+            throw new InvitacionInvalidaException();
+        }
+
+        return invitacion;
+    }
+
     /** {@code tokenCrudo} es de un solo uso por el llamador: enviarlo por correo y descartarlo. */
     public record InvitacionEmitida(String email, String tokenCrudo) {
+    }
+
+    /** Resultado de {@link #aceptar}: la empresa y el rol resueltos, para encadenar {@code SesionService.seleccionarTenant}. */
+    public record AceptacionResultado(UUID empresaId, String rolCodigo) {
     }
 }

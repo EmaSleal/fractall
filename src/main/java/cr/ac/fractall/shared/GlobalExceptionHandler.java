@@ -30,6 +30,7 @@ import cr.ac.fractall.facturacion.servicio.ReferenciaNoEsFacturaElectronicaExcep
 import cr.ac.fractall.facturacion.servicio.XmlFacturaFirmaException;
 import cr.ac.fractall.hacienda.servicio.TipoCambioNoDisponibleException;
 import cr.ac.fractall.seguridad.dto.MensajeResponse;
+import cr.ac.fractall.seguridad.servicio.InvitacionInvalidaException;
 import cr.ac.fractall.seguridad.servicio.PermisoDenegadoException;
 import cr.ac.fractall.seguridad.servicio.RolInvitacionInvalidoException;
 import jakarta.validation.ConstraintViolationException;
@@ -145,13 +146,20 @@ public class GlobalExceptionHandler {
      * usuarios): {@code rolCodigo} en {@code POST /usuarios/invitar} es un valor de negocio
      * elegido por el llamador, no un id de recurso, mismo criterio que las excepciones de
      * exoneración/condición de venta de este grupo -- ver su javadoc.
+     *
+     * <p>{@code InvitacionInvalidaException} también se une (Fase B, PR3b -- aceptar
+     * invitación): un token de invitación vencido/usado/revocado/inexistente es un dato de
+     * entrada del llamador inválido para la operación solicitada, no un id de recurso ni un
+     * conflicto de estado sobre un recurso ya identificado -- el token nunca llegó a
+     * identificar nada persistente desde el punto de vista del llamador.
      */
     @ExceptionHandler({ExoneracionNoPerteneceAlClienteException.class,
             ExoneracionNoAplicableAFacturaElectronicaException.class,
             ExoneracionNoVigenteException.class,
             ExoneracionRequiereClienteException.class,
             CondicionVentaInvalidaException.class,
-            RolInvitacionInvalidoException.class})
+            RolInvitacionInvalidoException.class,
+            InvitacionInvalidaException.class})
     public ResponseEntity<MensajeResponse> manejarReglaDeNegocioInvalida(RuntimeException excepcion) {
         return ResponseEntity.badRequest().body(new MensajeResponse(excepcion.getMessage()));
     }
