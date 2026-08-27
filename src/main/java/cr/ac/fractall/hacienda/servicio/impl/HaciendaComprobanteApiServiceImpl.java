@@ -19,6 +19,7 @@ import org.springframework.cache.CacheManager;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.core.ParameterizedTypeReference;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
@@ -39,7 +40,10 @@ import cr.ac.fractall.hacienda.dto.MensajeHaciendaDTO;
 import cr.ac.fractall.hacienda.dto.RespuestaHaciendaDTO;
 import cr.ac.fractall.hacienda.dto.TokenHaciendaDTO;
 import cr.ac.fractall.hacienda.servicio.HaciendaComprobanteApiService;
+import cr.ac.fractall.hacienda.servicio.HaciendaComunicacionException;
+import cr.ac.fractall.hacienda.servicio.HaciendaConfiguracionException;
 import cr.ac.fractall.secretos.SecretosKvService;
+import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import io.github.resilience4j.retry.annotation.Retry;
 import lombok.extern.slf4j.Slf4j;
@@ -225,8 +229,15 @@ public class HaciendaComprobanteApiServiceImpl implements HaciendaComprobanteApi
 
             return construirTokenDesdeRespuesta(respuesta);
 
+        } catch (HaciendaConfiguracionException | HaciendaComunicacionException e) {
+            // Ya clasificada por obtenerPassword (llamado dentro del try) — no volver a envolver.
+            throw e;
         } catch (HttpStatusCodeException e) {
             log.error("Error HTTP al autenticar: {} - {}", e.getStatusCode(), e.getResponseBodyAsString());
+            if (e.getStatusCode() == HttpStatus.UNAUTHORIZED) {
+                throw new HaciendaConfiguracionException(
+                        "Hacienda rechazó las credenciales (401) al autenticar: " + e.getMessage(), e);
+            }
             throw new IllegalStateException("Error de autenticación con Hacienda: " + e.getMessage(), e);
         } catch (Exception e) {
             log.error("Error al autenticar con Hacienda: {}", e.getMessage(), e);
@@ -358,7 +369,12 @@ public class HaciendaComprobanteApiServiceImpl implements HaciendaComprobanteApi
         } catch (HttpClientErrorException.Unauthorized e) {
             log.warn("Token expirado consultando comprobante {} — renovando y reintentando inline", claveNumerica);
             TokenHaciendaDTO tokenNuevo = renovarYActualizarCache(credencialId, token.refreshToken());
-            return llamarApiConsulta(urlConsulta, claveNumerica, tokenNuevo.accessToken());
+            try {
+                return llamarApiConsulta(urlConsulta, claveNumerica, tokenNuevo.accessToken());
+            } catch (HttpClientErrorException.Unauthorized e2) {
+                throw new HaciendaConfiguracionException(
+                        "Hacienda sigue rechazando el token (401) tras renovarlo para " + claveNumerica, e2);
+            }
         }
     }
 
@@ -391,11 +407,18 @@ public class HaciendaComprobanteApiServiceImpl implements HaciendaComprobanteApi
 
         } catch (HttpStatusCodeException e) {
             log.error("Error HTTP al consultar: {} - {}", e.getStatusCode(), e.getResponseBodyAsString());
-            throw new IllegalStateException("Error consultando comprobante", e);
+            if (e.getStatusCode().is5xxServerError()) {
+                throw new HaciendaComunicacionException(
+                        "Error de Hacienda (" + e.getStatusCode() + ") consultando comprobante", e);
+            }
+            throw new HaciendaConfiguracionException(
+                    "Hacienda rechazó la consulta (" + e.getStatusCode()
+                            + "), posible credencial o certificado inválido",
+                    e);
 
         } catch (Exception e) {
             log.error("Error al consultar comprobante: {}", e.getMessage(), e);
-            throw new IllegalStateException("Error en consulta: " + e.getMessage(), e);
+            throw new HaciendaComunicacionException("Error de comunicación en consulta: " + e.getMessage(), e);
         }
     }
 
@@ -448,7 +471,7 @@ public class HaciendaComprobanteApiServiceImpl implements HaciendaComprobanteApi
 
     private CredencialHacienda obtenerCredencial(UUID credencialId) {
         return credencialHaciendaRepository.findById(credencialId)
-                .orElseThrow(() -> new IllegalArgumentException(
+                .orElseThrow(() -> new HaciendaConfiguracionException(
                         "Credencial de Hacienda no encontrada: " + credencialId));
     }
 
@@ -468,7 +491,7 @@ public class HaciendaComprobanteApiServiceImpl implements HaciendaComprobanteApi
     private String obtenerPassword(CredencialHacienda credencial) {
         String subruta = "hacienda/" + credencial.getAmbiente().toLowerCase(Locale.ROOT) + SUBRUTA_PASSWORD_SUFIJO;
         return secretosKvService.leerSecreto(credencial.getEmpresaId(), subruta)
-                .orElseThrow(() -> new IllegalStateException(
+                .orElseThrow(() -> new HaciendaConfiguracionException(
                         "No hay contraseña de Hacienda en Vault para la credencial " + credencial.getId()));
     }
 
@@ -613,11 +636,21 @@ public class HaciendaComprobanteApiServiceImpl implements HaciendaComprobanteApi
 
     /**
      * Método fallback para consultarComprobante cuando el Circuit Breaker se abre.
+     *
+     * <p>Tercer parámetro deliberadamente {@link CallNotPermittedException} (no {@code Throwable})
+     * -- Resilience4j hace matching de {@code FallbackMethod} por el TIPO DECLARADO de este
+     * parámetro, así que un {@code Throwable} aquí interceptaría CUALQUIER excepción lanzada por
+     * {@link #consultarComprobante}, no solo la del circuito abierto (ver el hallazgo bloqueante
+     * del design de {@code reintentos-hacienda-causa-fallo}): eso absorbería silenciosamente
+     * {@link HaciendaConfiguracionException}/{@link HaciendaComunicacionException} (PR3) antes de
+     * que lleguen al job de sondeo, dejando sin efecto la clasificación por causa. Con esta firma
+     * más específica, Resilience4j solo invoca este fallback cuando el circuito realmente está
+     * abierto; cualquier otra excepción se propaga normalmente al llamador.
      */
     private RespuestaHaciendaDTO consultarComprobanteFallback(
             String claveNumerica,
             UUID credencialId,
-            Throwable e) {
+            CallNotPermittedException e) {
 
         log.error("Circuit Breaker ABIERTO - Fallback activado para consultarComprobante: {}", e.getMessage());
 
