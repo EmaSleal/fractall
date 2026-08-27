@@ -145,8 +145,18 @@ public class ComprobanteHaciendaPollingScheduledJob {
     }
 
     private void registrarIntentoFallidoYGuardar(ComprobanteElectronico comprobante) {
+        LocalDateTime ahora = LocalDateTime.now();
         comprobante.setIntentosEnvio(comprobante.getIntentosEnvio() + 1);
-        comprobante.setFechaRespuesta(LocalDateTime.now());
+        comprobante.setFechaRespuesta(ahora);
+        // ComprobanteHaciendaEnvioService#consultarYActualizar lanzó ANTES de llegar a
+        // aplicarRespuesta (ver su javadoc), así que ultimoResultadoConsulta/
+        // fechaUltimaConsultaHacienda nunca se tocaron para este intento -- sin esto quedarían
+        // null para siempre en un comprobante que jamás logra hablar con Hacienda.
+        // ERROR_COMUNICACION es el valor transicional genérico para esta rama: distinguir esto de
+        // un problema de configuración (credencial/certificado faltante) es tarea de una
+        // sub-tarea posterior que clasifica por causa antes de llegar aquí.
+        comprobante.setUltimoResultadoConsulta(ComprobanteHaciendaEnvioService.RESULTADO_ERROR_COMUNICACION);
+        comprobante.setFechaUltimaConsultaHacienda(ahora);
         if (comprobante.getIntentosEnvio() >= MAX_INTENTOS) {
             comprobante.setEstado(ESTADO_ERROR);
             log.warn("Comprobante {} agotó sus {} intentos de confirmación con Hacienda; se marca {}.",
