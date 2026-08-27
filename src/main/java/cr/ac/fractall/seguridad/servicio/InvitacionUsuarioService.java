@@ -88,7 +88,7 @@ public class InvitacionUsuarioService {
         }
 
         Rol rol = rolRepository.findByCodigo(rolCodigo)
-                .orElseThrow(() -> new IllegalStateException("Rol " + rolCodigo + " no encontrado"));
+                .orElseThrow(() -> new RolInvitacionInvalidoException(rolCodigo));
 
         LocalDateTime ahora = LocalDateTime.now();
         String tokenCrudo = generarTokenCrudo();

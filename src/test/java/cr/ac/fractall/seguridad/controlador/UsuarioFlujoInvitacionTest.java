@@ -389,4 +389,23 @@ class UsuarioFlujoInvitacionTest {
         Rol rolConsulta = TenantContextDescartable.ejecutar(() -> rolRepository.findByCodigo(ROL_CONSULTA).orElseThrow());
         assertThat(membresia.getRolId()).isEqualTo(rolConsulta.getId());
     }
+
+    @Test
+    void emitirConRolCodigoInexistenteEsRechazadaConBadRequestSinCrearInvitacion() throws Exception {
+        EmpresaConActor semilla = crearEmpresaConActor("rol-inexistente", ROL_ADMIN_EMPRESA);
+        UUID empresaId = semilla.empresaId();
+        String tokenActor = tokenPara(semilla.actorId(), empresaId);
+        String email = emailUnico("invitado-rol-invalido");
+
+        mockMvc.perform(post("/usuarios/invitar")
+                        .header("Authorization", "Bearer " + tokenActor)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new InvitarUsuarioRequest(email, "ROL_QUE_NO_EXISTE"))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.mensaje").isNotEmpty());
+
+        Optional<InvitacionUsuario> invitacion = TenantContextDescartable.ejecutar(
+                () -> invitacionUsuarioRepository.findByEmpresaIdAndEmailAndEstado(empresaId, email, ESTADO_PENDIENTE));
+        assertThat(invitacion).as("un rolCodigo inexistente nunca debe crear la fila de invitación").isEmpty();
+    }
 }
