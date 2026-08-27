@@ -46,6 +46,7 @@ import cr.ac.fractall.facturacion.servicio.ReferenciaNoEsFacturaElectronicaExcep
 import cr.ac.fractall.facturacion.servicio.XmlFacturaFirmaException;
 import cr.ac.fractall.hacienda.servicio.HaciendaApiService;
 import cr.ac.fractall.hacienda.servicio.TipoCambioNoDisponibleException;
+import cr.ac.fractall.seguridad.servicio.PermisoDenegadoException;
 
 /**
  * Prueba unitaria (sin contexto de Spring completo, {@code standaloneSetup}) de
@@ -412,5 +413,32 @@ class GlobalExceptionHandlerTest {
         assertThatThrownBy(() -> mockMvcConNotaCreditoDebito()
                         .perform(post("/test/sql-no-categorizado-otro-sqlstate")))
                 .hasCauseInstanceOf(UncategorizedSQLException.class);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Fase B / PR2: PermisoGuard -- primer 403 global de la aplicación, lanzado cuando la
+    // membresía del actor no está ACTIVA en la empresa objetivo o el permiso solicitado no
+    // está en permisos_efectivos (ver diseño, decisión B).
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /** Controlador mínimo para disparar PermisoDenegadoException desde el advice. */
+    @RestController
+    static class ControladorDePermisoDenegadoStub {
+
+        @PostMapping("/test/permiso-denegado")
+        public void accionProtegida() {
+            throw new PermisoDenegadoException();
+        }
+    }
+
+    @Test
+    void handler_permisoDenegado_devuelve403ConMensajeFijo() throws Exception {
+        MockMvc mockMvc = MockMvcBuilders.standaloneSetup(new ControladorDePermisoDenegadoStub())
+                .setControllerAdvice(new GlobalExceptionHandler())
+                .build();
+
+        mockMvc.perform(post("/test/permiso-denegado"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.mensaje").value("No tienes permiso para realizar esta acción."));
     }
 }
