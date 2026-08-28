@@ -31,6 +31,7 @@ import cr.ac.fractall.facturacion.servicio.XmlFacturaFirmaException;
 import cr.ac.fractall.hacienda.servicio.TipoCambioNoDisponibleException;
 import cr.ac.fractall.seguridad.dto.MensajeResponse;
 import cr.ac.fractall.seguridad.servicio.PermisoDenegadoException;
+import cr.ac.fractall.seguridad.servicio.RolInvitacionInvalidoException;
 import jakarta.validation.ConstraintViolationException;
 
 /**
@@ -139,12 +140,18 @@ public class GlobalExceptionHandler {
     /**
      * Regla de negocio inválida detectada ANTES de persistir (Fase B, migrado desde
      * {@code FacturaController#crear} -- ver el javadoc de la clase).
+     *
+     * <p>{@code RolInvitacionInvalidoException} se une a este grupo (Fase B, invitación de
+     * usuarios): {@code rolCodigo} en {@code POST /usuarios/invitar} es un valor de negocio
+     * elegido por el llamador, no un id de recurso, mismo criterio que las excepciones de
+     * exoneración/condición de venta de este grupo -- ver su javadoc.
      */
     @ExceptionHandler({ExoneracionNoPerteneceAlClienteException.class,
             ExoneracionNoAplicableAFacturaElectronicaException.class,
             ExoneracionNoVigenteException.class,
             ExoneracionRequiereClienteException.class,
-            CondicionVentaInvalidaException.class})
+            CondicionVentaInvalidaException.class,
+            RolInvitacionInvalidoException.class})
     public ResponseEntity<MensajeResponse> manejarReglaDeNegocioInvalida(RuntimeException excepcion) {
         return ResponseEntity.badRequest().body(new MensajeResponse(excepcion.getMessage()));
     }
