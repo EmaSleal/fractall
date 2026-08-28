@@ -1,5 +1,6 @@
 package cr.ac.fractall.seguridad.controlador;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -10,6 +11,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -21,7 +23,9 @@ import cr.ac.fractall.seguridad.dto.AccessTokenResponse;
 import cr.ac.fractall.seguridad.dto.InvitarUsuarioRequest;
 import cr.ac.fractall.seguridad.dto.MensajeResponse;
 import cr.ac.fractall.seguridad.dto.MfaPendienteResponse;
+import cr.ac.fractall.seguridad.dto.MiembroResponse;
 import cr.ac.fractall.seguridad.servicio.InvitacionUsuarioService;
+import cr.ac.fractall.seguridad.servicio.MembresiaAdminService;
 import cr.ac.fractall.seguridad.servicio.SesionResultado;
 import cr.ac.fractall.seguridad.servicio.SesionService;
 import cr.ac.fractall.seguridad.servicio.TokensAcceso;
@@ -50,14 +54,17 @@ public class UsuarioController {
     private final InvitacionUsuarioService invitacionUsuarioService;
     private final EmailNotificacionService emailNotificacionService;
     private final SesionService sesionService;
+    private final MembresiaAdminService membresiaAdminService;
 
     public UsuarioController(
             InvitacionUsuarioService invitacionUsuarioService,
             EmailNotificacionService emailNotificacionService,
-            SesionService sesionService) {
+            SesionService sesionService,
+            MembresiaAdminService membresiaAdminService) {
         this.invitacionUsuarioService = invitacionUsuarioService;
         this.emailNotificacionService = emailNotificacionService;
         this.sesionService = sesionService;
+        this.membresiaAdminService = membresiaAdminService;
     }
 
     @Operation(summary = "Invitar a una persona a la empresa activa")
@@ -113,6 +120,25 @@ public class UsuarioController {
             return ResponseEntity.ok(new MfaPendienteResponse(sesion.tokenMfaPendiente(), sesion.mfaRequiereEnrolamiento()));
         }
         return ResponseEntity.ok(aRespuesta(sesion.tokens()));
+    }
+
+    /**
+     * Listado de miembros (activos y pendientes) de la empresa activa del caller (Fase B,
+     * PR5a -- ver design.md, sección {@code MembresiaAdminService}). Guardado por
+     * {@code usuario.ver} dentro del servicio, nunca solo por autenticación.
+     */
+    @Operation(summary = "Listar miembros de la empresa activa")
+    @SecurityRequirement(name = "bearerAuth")
+    @GetMapping
+    public ResponseEntity<?> listar() {
+        Optional<UUID> actorId = usuarioIdAutenticado();
+        if (actorId.isEmpty()) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(MENSAJE_SIN_AUTENTICAR);
+        }
+
+        UUID empresaId = TenantContext.get();
+        List<MiembroResponse> miembros = membresiaAdminService.listar(actorId.get(), empresaId);
+        return ResponseEntity.ok(miembros);
     }
 
     private AccessTokenResponse aRespuesta(TokensAcceso tokens) {
