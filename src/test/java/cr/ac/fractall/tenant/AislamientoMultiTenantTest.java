@@ -8,18 +8,27 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.http.MediaType;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.web.servlet.MockMvc;
 import org.testcontainers.containers.Container.ExecResult;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.vault.VaultContainer;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import cr.ac.fractall.catalogo.modelo.Cliente;
 import cr.ac.fractall.catalogo.modelo.Producto;
@@ -35,8 +44,14 @@ import cr.ac.fractall.facturacion.repositorio.ComprobanteElectronicoRepository;
 import cr.ac.fractall.facturacion.repositorio.FacturaInformacionReferenciaRepository;
 import cr.ac.fractall.facturacion.repositorio.FacturaRepository;
 import cr.ac.fractall.facturacion.repositorio.LineaFacturaRepository;
+import cr.ac.fractall.seguridad.dto.SeleccionEmpresaRequest;
+import cr.ac.fractall.seguridad.modelo.Rol;
 import cr.ac.fractall.seguridad.modelo.Usuario;
+import cr.ac.fractall.seguridad.modelo.UsuarioEmpresa;
+import cr.ac.fractall.seguridad.repositorio.RolRepository;
+import cr.ac.fractall.seguridad.repositorio.UsuarioEmpresaRepository;
 import cr.ac.fractall.seguridad.repositorio.UsuarioRepository;
+import cr.ac.fractall.seguridad.servicio.JwtService;
 import cr.ac.fractall.shared.TenantNoResueltoException;
 
 /**
@@ -51,6 +66,7 @@ import cr.ac.fractall.shared.TenantNoResueltoException;
  */
 @Testcontainers
 @SpringBootTest
+@AutoConfigureMockMvc
 class AislamientoMultiTenantTest {
 
     private static final String ROOT_TOKEN = "test-root-token";
@@ -162,8 +178,28 @@ class AislamientoMultiTenantTest {
     @Autowired
     private FacturaInformacionReferenciaRepository facturaInformacionReferenciaRepository;
 
+    @Autowired
+    private MockMvc mockMvc;
+
+    @Autowired
+    private JwtService jwtService;
+
+    @Autowired
+    private RolRepository rolRepository;
+
+    @Autowired
+    private UsuarioEmpresaRepository usuarioEmpresaRepository;
+
+    private final ObjectMapper objectMapper = new ObjectMapper();
+
     private Empresa empresaA;
     private Empresa empresaB;
+
+    /** El actor de PR6: membresía ADMIN_EMPRESA ACTIVO en AMBAS empresas (sección "AislamientoMultiTenantTest -- forma concreta" de design.md). */
+    private Usuario usuario;
+
+    /** El "dato que no debe filtrarse": miembro CONSULTA ACTIVO exclusivo de {@code empresaA}. */
+    private Usuario miembroExclusivoDeA;
 
     @BeforeEach
     void setUp() {
@@ -176,7 +212,7 @@ class AislamientoMultiTenantTest {
         // tienen columna @TenantId, así que un UUID de descarte es seguro aquí.
         TenantContext.set(UUID.randomUUID());
 
-        Usuario usuario = new Usuario();
+        usuario = new Usuario();
         usuario.setNombre("Usuario de prueba");
         usuario.setEmail("usuario-" + UUID.randomUUID() + "@fractall.test");
         usuario.setPasswordHash("hash-no-relevante");
@@ -192,6 +228,41 @@ class AislamientoMultiTenantTest {
         empresaB = nuevaEmpresa("Empresa B S.A.", usuario.getId());
         empresaA = empresaRepository.save(empresaA);
         empresaB = empresaRepository.save(empresaB);
+
+        // PR6 (Fase B, Release 3): membresías ADMIN_EMPRESA ACTIVO de `usuario` en AMBAS
+        // empresas -- necesarias para que jwtService.generarToken(usuario.getId(), empresaX)
+        // acuñe un token que PermisoGuard acepte contra usuario.ver/usuario.suspender (ambos
+        // exclusivos de ADMIN_EMPRESA por V20). UsuarioEmpresa NO es @TenantId (ver el
+        // comentario de arriba), así que el TenantContext de descarte no afecta estos inserts.
+        Rol rolAdmin = rolRepository.findByCodigo("ADMIN_EMPRESA").orElseThrow();
+        usuarioEmpresaRepository.save(nuevaMembresia(usuario.getId(), empresaA.getId(), rolAdmin.getId()));
+        usuarioEmpresaRepository.save(nuevaMembresia(usuario.getId(), empresaB.getId(), rolAdmin.getId()));
+
+        // El "dato que no debe filtrarse": un segundo usuario, miembro CONSULTA ACTIVO SOLO de
+        // empresaA -- su email nunca debe aparecer en un GET /usuarios resuelto contra empresaB.
+        Rol rolConsulta = rolRepository.findByCodigo("CONSULTA").orElseThrow();
+        miembroExclusivoDeA = new Usuario();
+        miembroExclusivoDeA.setNombre("Miembro exclusivo de A");
+        miembroExclusivoDeA.setEmail("miembro-exclusivo-a-" + UUID.randomUUID() + "@fractall.test");
+        miembroExclusivoDeA.setPasswordHash("hash-no-relevante");
+        miembroExclusivoDeA.setEmailVerificado(true);
+        miembroExclusivoDeA.setEstado("ACTIVA");
+        miembroExclusivoDeA.setMfaHabilitado(false);
+        miembroExclusivoDeA.setIntentosFallidos(0);
+        miembroExclusivoDeA.setCreateDate(LocalDateTime.now());
+        miembroExclusivoDeA.setUpdateDate(LocalDateTime.now());
+        miembroExclusivoDeA = usuarioRepository.save(miembroExclusivoDeA);
+        usuarioEmpresaRepository.save(nuevaMembresia(miembroExclusivoDeA.getId(), empresaA.getId(), rolConsulta.getId()));
+    }
+
+    private static UsuarioEmpresa nuevaMembresia(UUID usuarioId, UUID empresaId, UUID rolId) {
+        UsuarioEmpresa membresia = new UsuarioEmpresa();
+        membresia.setUsuarioId(usuarioId);
+        membresia.setEmpresaId(empresaId);
+        membresia.setRolId(rolId);
+        membresia.setEstado("ACTIVO");
+        membresia.setFechaIngreso(LocalDateTime.now());
+        return membresia;
     }
 
     @AfterEach
@@ -679,5 +750,78 @@ class AislamientoMultiTenantTest {
                 facturaInformacionReferenciaRepository.saveAndFlush(referencia);
 
         assertThat(guardada.getId()).isNotNull();
+    }
+
+    /**
+     * Fase B (PR6, Release 3 -- ver design.md, sección "AislamientoMultiTenantTest -- forma
+     * concreta"): cobertura de aislamiento multi-tenant a través del filtro real
+     * ({@code JwtTenantFilter} → {@code TenantContext}), no del estilo crudo de arriba. El
+     * caller usa un token acuñado con {@code jwtService.generarToken(usuarioId, empresaId)}
+     * sobre membresías {@code ADMIN_EMPRESA} sembradas por repositorio (ver {@link #setUp()}) --
+     * sin registro, sin correo, sin MFA.
+     */
+    @Test
+    void tokenDeUnaEmpresaNoListaMiembrosDeLaOtra() throws Exception {
+        String tokenEmpresaB = jwtService.generarToken(usuario.getId(), empresaB.getId());
+
+        String cuerpo = mockMvc.perform(get("/usuarios")
+                        .header("Authorization", "Bearer " + tokenEmpresaB))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+
+        assertThat(cuerpo)
+                .as("un token acuñado para empresa B nunca debe listar al miembro exclusivo de empresa A")
+                .doesNotContain(miembroExclusivoDeA.getEmail());
+    }
+
+    /**
+     * Caso pedido explícitamente por el proposal (design.md, sección "Data Flow" y "forma
+     * concreta"): la fuga real ocurre DESPUÉS de {@code POST /auth/cambiar-tenant}, no solo con
+     * dos tokens acuñados por separado. {@code cambiarTenant} no evalúa {@code mfaRequerido}
+     * ({@code SesionService}), así que devuelve {@code AccessTokenResponse} directo.
+     */
+    @Test
+    void sesionQueCambiaDeTenantNoLeeDatosDeLaEmpresaAnterior() throws Exception {
+        String tokenEmpresaA = jwtService.generarToken(usuario.getId(), empresaA.getId());
+
+        String cuerpoAntesDelCambio = mockMvc.perform(get("/usuarios")
+                        .header("Authorization", "Bearer " + tokenEmpresaA))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        assertThat(cuerpoAntesDelCambio)
+                .as("con el token de empresa A, el miembro exclusivo de A sí debe aparecer")
+                .contains(miembroExclusivoDeA.getEmail());
+
+        String cuerpoCambioTenant = mockMvc.perform(post("/auth/cambiar-tenant")
+                        .header("Authorization", "Bearer " + tokenEmpresaA)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new SeleccionEmpresaRequest(empresaB.getId()))))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        String tokenNuevo = objectMapper.readTree(cuerpoCambioTenant).get("accessToken").asText();
+
+        String cuerpoDespuesDelCambio = mockMvc.perform(get("/usuarios")
+                        .header("Authorization", "Bearer " + tokenNuevo))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+
+        assertThat(cuerpoDespuesDelCambio)
+                .as("tras cambiar-tenant a empresa B, el nuevo token no debe filtrar datos de la empresa anterior")
+                .doesNotContain(miembroExclusivoDeA.getEmail());
+    }
+
+    /**
+     * Ejercita el endpoint de PR5c ({@code POST /usuarios/{id}/suspender}) con un objetivo que
+     * pertenece a una empresa distinta a la del token del caller: debe resolver a 404
+     * ({@code MiembroNoEncontradoException}), nunca 200 ni 500, porque el objetivo se busca por
+     * el par (usuarioId, empresaId) del token -- no por usuarioId suelto.
+     */
+    @Test
+    void suspenderAMiembroDeOtraEmpresaDevuelve404() throws Exception {
+        String tokenEmpresaB = jwtService.generarToken(usuario.getId(), empresaB.getId());
+
+        mockMvc.perform(post("/usuarios/{usuarioId}/suspender", miembroExclusivoDeA.getId())
+                        .header("Authorization", "Bearer " + tokenEmpresaB))
+                .andExpect(status().isNotFound());
     }
 }
