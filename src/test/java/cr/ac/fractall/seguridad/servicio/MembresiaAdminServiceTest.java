@@ -117,4 +117,55 @@ class MembresiaAdminServiceTest {
         assertThat(objetivo.getRolId()).isEqualTo(consulta.getId());
         assertThat(respuesta.rolCodigo()).isEqualTo(ROL_CONSULTA);
     }
+
+    /**
+     * Fase B, PR5c ({@code suspender}) -- mismo motivo estructural que
+     * {@code cambiarRolDelUnicoAdministradorActivoEsRechazadoConUltimoAdministrador}: solo
+     * {@code ADMIN_EMPRESA} tiene {@code usuario.suspender} (V20), así que un caller real que
+     * supera {@code PermisoGuard} contra un objetivo distinto ya es un segundo administrador
+     * activo. {@code exigirNoUltimoAdministrador} se invoca aquí con {@code rolNuevoId = null}
+     * (la membresía se suspende, no cambia de rol) -- reutiliza la MISMA guarda de PR5b, sin
+     * duplicar lógica.
+     */
+    @Test
+    void suspenderAlUnicoAdministradorActivoEsRechazadoConUltimoAdministrador() {
+        UUID empresaId = UUID.randomUUID();
+        UUID actorId = UUID.randomUUID();
+        UUID objetivoId = UUID.randomUUID();
+        Rol admin = rol(ROL_ADMIN_EMPRESA);
+        UsuarioEmpresa objetivo = membresia(objetivoId, empresaId, admin.getId());
+
+        when(usuarioEmpresaRepository.findByUsuarioIdAndEmpresaId(objetivoId, empresaId))
+                .thenReturn(Optional.of(objetivo));
+        when(rolRepository.findByCodigo(ROL_ADMIN_EMPRESA)).thenReturn(Optional.of(admin));
+        when(usuarioEmpresaRepository.contarAdministradoresActivos(empresaId)).thenReturn(1L);
+
+        assertThatThrownBy(() -> service.suspender(actorId, empresaId, objetivoId))
+                .isInstanceOf(UltimoAdministradorException.class);
+
+        assertThat(objetivo.getEstado())
+                .as("el estado no debe mutar cuando la guarda del último administrador rechaza")
+                .isEqualTo(ESTADO_ACTIVO);
+    }
+
+    @Test
+    void suspenderConDosAdministradoresActivosPermiteSuspenderAlPenultimo() {
+        UUID empresaId = UUID.randomUUID();
+        UUID actorId = UUID.randomUUID();
+        UUID objetivoId = UUID.randomUUID();
+        Rol admin = rol(ROL_ADMIN_EMPRESA);
+        UsuarioEmpresa objetivo = membresia(objetivoId, empresaId, admin.getId());
+
+        when(usuarioEmpresaRepository.findByUsuarioIdAndEmpresaId(objetivoId, empresaId))
+                .thenReturn(Optional.of(objetivo));
+        when(rolRepository.findByCodigo(ROL_ADMIN_EMPRESA)).thenReturn(Optional.of(admin));
+        when(usuarioEmpresaRepository.contarAdministradoresActivos(empresaId)).thenReturn(2L);
+        when(usuarioRepository.findById(objetivoId)).thenReturn(Optional.of(usuario(objetivoId)));
+        when(rolRepository.findById(admin.getId())).thenReturn(Optional.of(admin));
+
+        MiembroResponse respuesta = service.suspender(actorId, empresaId, objetivoId);
+
+        assertThat(objetivo.getEstado()).isEqualTo("SUSPENDIDO");
+        assertThat(respuesta.estado()).isEqualTo("SUSPENDIDO");
+    }
 }

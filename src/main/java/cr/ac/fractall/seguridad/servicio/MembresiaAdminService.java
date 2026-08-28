@@ -26,8 +26,10 @@ public class MembresiaAdminService {
 
     private static final String PERMISO_VER = "usuario.ver";
     private static final String PERMISO_EDITAR_ROL = "usuario.editar_rol";
+    private static final String PERMISO_SUSPENDER = "usuario.suspender";
     private static final String ROL_ADMIN_EMPRESA = "ADMIN_EMPRESA";
     private static final String ESTADO_ACTIVO = "ACTIVO";
+    private static final String ESTADO_SUSPENDIDO = "SUSPENDIDO";
 
     private final PermisoGuard permisoGuard;
     private final UsuarioEmpresaRepository usuarioEmpresaRepository;
@@ -88,6 +90,31 @@ public class MembresiaAdminService {
         }
 
         return aRespuesta(objetivo, rolNuevo.getCodigo());
+    }
+
+    /**
+     * Suspende una membresía de la empresa actual del actor (Fase B, PR5c -- ver design.md,
+     * sección "MembresiaAdminService"). Reutiliza EXACTAMENTE las mismas guardas que
+     * {@link #cambiarRol(UUID, UUID, UUID, String)} de PR5b, sin duplicar lógica de negocio:
+     * {@code exigirNoUltimoAdministrador} se invoca con {@code rolNuevoId = null} porque la
+     * membresía se va (se suspende), no cambia de rol -- ver su javadoc. Orden deliberado:
+     * permiso -&gt; existencia del objetivo (404) -&gt; autogestión (409) -&gt; último administrador
+     * (409), idéntico a {@code cambiarRol}.
+     */
+    @Transactional
+    public MiembroResponse suspender(UUID actorId, UUID empresaId, UUID objetivoId) {
+        permisoGuard.exigir(actorId, empresaId, PERMISO_SUSPENDER);
+
+        UsuarioEmpresa objetivo = resolverObjetivo(empresaId, objetivoId);
+
+        exigirNoAutogestion(actorId, objetivoId);
+        exigirNoUltimoAdministrador(empresaId, objetivo, null);
+
+        objetivo.setEstado(ESTADO_SUSPENDIDO);
+        usuarioEmpresaRepository.save(objetivo);
+
+        Rol rolActual = rolRepository.findById(objetivo.getRolId()).orElseThrow();
+        return aRespuesta(objetivo, rolActual.getCodigo());
     }
 
     /**
