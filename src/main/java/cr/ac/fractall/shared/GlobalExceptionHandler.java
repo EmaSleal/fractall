@@ -30,9 +30,12 @@ import cr.ac.fractall.facturacion.servicio.ReferenciaNoEsFacturaElectronicaExcep
 import cr.ac.fractall.facturacion.servicio.XmlFacturaFirmaException;
 import cr.ac.fractall.hacienda.servicio.TipoCambioNoDisponibleException;
 import cr.ac.fractall.seguridad.dto.MensajeResponse;
+import cr.ac.fractall.seguridad.servicio.AutoGestionNoPermitidaException;
 import cr.ac.fractall.seguridad.servicio.InvitacionInvalidaException;
+import cr.ac.fractall.seguridad.servicio.MiembroNoEncontradoException;
 import cr.ac.fractall.seguridad.servicio.PermisoDenegadoException;
 import cr.ac.fractall.seguridad.servicio.RolInvitacionInvalidoException;
+import cr.ac.fractall.seguridad.servicio.UltimoAdministradorException;
 import jakarta.validation.ConstraintViolationException;
 
 /**
@@ -131,11 +134,28 @@ public class GlobalExceptionHandler {
     /**
      * Recurso referenciado por id que no existe para el tenant actual (Fase B, migrado desde
      * {@code FacturaController#crear} -- ver el javadoc de la clase).
+     *
+     * <p>{@code MiembroNoEncontradoException} se une a este grupo (Fase B, PR5b -- cambio de
+     * rol/suspensión de membresías): el {@code usuarioId} objetivo no tiene fila
+     * {@code usuario_empresa} en la empresa ACTUAL del actor, mismo criterio de "recurso
+     * referenciado inexistente para este tenant" que las otras tres -- ver su javadoc.
      */
     @ExceptionHandler({ClienteNoEncontradoException.class, ProductoNoEncontradoException.class,
-            ClienteExoneracionNoEncontradaException.class})
+            ClienteExoneracionNoEncontradaException.class, MiembroNoEncontradoException.class})
     public ResponseEntity<MensajeResponse> manejarRecursoReferenciadoNoEncontrado(RuntimeException excepcion) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new MensajeResponse(excepcion.getMessage()));
+    }
+
+    /**
+     * Reglas de negocio de administración de membresías (Fase B, PR5b -- ver design.md,
+     * decisión G): autogestión (aplicar la acción sobre la propia membresía) y degradar/suspender
+     * al último {@code ADMIN_EMPRESA} activo de la empresa son conflictos de estado sobre una
+     * operación por lo demás autorizada y bien formada -- mismo criterio que
+     * {@link #manejarConflictoDeEstadoNotaCreditoDebito}.
+     */
+    @ExceptionHandler({AutoGestionNoPermitidaException.class, UltimoAdministradorException.class})
+    public ResponseEntity<MensajeResponse> manejarConflictoDeAdministracionDeMembresias(RuntimeException excepcion) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(new MensajeResponse(excepcion.getMessage()));
     }
 
     /**
