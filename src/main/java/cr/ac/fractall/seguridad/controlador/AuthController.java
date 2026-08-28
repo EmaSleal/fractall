@@ -38,6 +38,7 @@ import cr.ac.fractall.seguridad.dto.PerfilResponse;
 import cr.ac.fractall.seguridad.dto.ReenviarVerificacionRequest;
 import cr.ac.fractall.seguridad.dto.RecuperarPasswordRequest;
 import cr.ac.fractall.seguridad.dto.RefrescarTokenRequest;
+import cr.ac.fractall.seguridad.dto.RegistroPorInvitacionRequest;
 import cr.ac.fractall.seguridad.dto.RegistroRequest;
 import cr.ac.fractall.seguridad.dto.RegistroResponse;
 import cr.ac.fractall.seguridad.dto.RestablecerPasswordRequest;
@@ -211,6 +212,33 @@ public class AuthController {
       return ResponseEntity.status(HttpStatus.CONFLICT)
           .body(new RegistroResponse(null, null, excepcion.getMessage()));
     }
+  }
+
+  /**
+   * Registro por invitación (Fase B, PR4 -- ver design.md, sección
+   * "RegistroService.registrarPorInvitacion"). A diferencia de {@link #registrar}, NO envía
+   * ningún correo -- recibir el enlace de invitación en esa casilla ya prueba control del
+   * buzón -- y cierra con el MISMO patrón que {@code UsuarioController#aceptar}:
+   * {@code sesionService.seleccionarTenant} reconfirma la membresía {@code ACTIVO} recién
+   * creada y decide si la respuesta es un access token completo o un MFA pendiente.
+   *
+   * <p>Envuelto en un único {@link TenantContextDescartable#ejecutar} (registro + selección de
+   * tenant): igual que {@link #registrar}, este endpoint es público y corre fuera de
+   * {@code JwtTenantFilter}, así que nunca hay un tenant real que resolver todavía.
+   */
+  @Operation(summary = "Registrar una cuenta nueva a partir de una invitación")
+  @PostMapping("/registro/invitacion")
+  public ResponseEntity<?> registrarPorInvitacion(@Valid @RequestBody RegistroPorInvitacionRequest request) {
+    SesionResultado resultado = TenantContextDescartable.ejecutar(() -> {
+      RegistroService.RegistroPorInvitacionResultado registro = registroService.registrarPorInvitacion(request);
+      return sesionService.seleccionarTenant(registro.usuarioId(), registro.empresaId());
+    });
+
+    if (resultado.requiereMfa()) {
+      return ResponseEntity.ok(
+          new MfaPendienteResponse(resultado.tokenMfaPendiente(), resultado.mfaRequiereEnrolamiento()));
+    }
+    return ResponseEntity.ok(aRespuesta(resultado.tokens()));
   }
 
   @Operation(summary = "Verificar correo electrónico con token")

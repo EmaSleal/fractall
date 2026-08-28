@@ -11,11 +11,14 @@ import org.springframework.transaction.annotation.Transactional;
 
 import cr.ac.fractall.empresa.modelo.Empresa;
 import cr.ac.fractall.empresa.repositorio.EmpresaRepository;
+import cr.ac.fractall.seguridad.modelo.InvitacionUsuario;
 import cr.ac.fractall.seguridad.modelo.Rol;
 import cr.ac.fractall.seguridad.modelo.Usuario;
 import cr.ac.fractall.seguridad.modelo.UsuarioEmpresa;
 import cr.ac.fractall.seguridad.modelo.UsuarioToken;
+import cr.ac.fractall.seguridad.dto.RegistroPorInvitacionRequest;
 import cr.ac.fractall.seguridad.dto.RegistroRequest;
+import cr.ac.fractall.seguridad.repositorio.InvitacionUsuarioRepository;
 import cr.ac.fractall.seguridad.repositorio.RolRepository;
 import cr.ac.fractall.seguridad.repositorio.UsuarioEmpresaRepository;
 import cr.ac.fractall.seguridad.repositorio.UsuarioRepository;
@@ -51,11 +54,18 @@ public class RegistroService {
 
     private static final String ROL_ADMIN_EMPRESA = "ADMIN_EMPRESA";
 
+    private static final String ESTADO_USUARIO_ACTIVA = "ACTIVA";
+    private static final String ESTADO_USUARIO_PENDIENTE_VERIFICACION = "PENDIENTE_VERIFICACION";
+    private static final String ESTADO_MEMBRESIA_ACTIVO = "ACTIVO";
+    private static final String ESTADO_INVITACION_ACEPTADA = "ACEPTADA";
+
     private final UsuarioRepository usuarioRepository;
     private final EmpresaRepository empresaRepository;
     private final RolRepository rolRepository;
     private final UsuarioEmpresaRepository usuarioEmpresaRepository;
     private final UsuarioTokenRepository usuarioTokenRepository;
+    private final InvitacionUsuarioService invitacionUsuarioService;
+    private final InvitacionUsuarioRepository invitacionUsuarioRepository;
     private final PasswordEncoder passwordEncoder;
     private final SecureRandom secureRandom = new SecureRandom();
 
@@ -65,12 +75,16 @@ public class RegistroService {
             RolRepository rolRepository,
             UsuarioEmpresaRepository usuarioEmpresaRepository,
             UsuarioTokenRepository usuarioTokenRepository,
+            InvitacionUsuarioService invitacionUsuarioService,
+            InvitacionUsuarioRepository invitacionUsuarioRepository,
             PasswordEncoder passwordEncoder) {
         this.usuarioRepository = usuarioRepository;
         this.empresaRepository = empresaRepository;
         this.rolRepository = rolRepository;
         this.usuarioEmpresaRepository = usuarioEmpresaRepository;
         this.usuarioTokenRepository = usuarioTokenRepository;
+        this.invitacionUsuarioService = invitacionUsuarioService;
+        this.invitacionUsuarioRepository = invitacionUsuarioRepository;
         this.passwordEncoder = passwordEncoder;
     }
 
@@ -91,18 +105,8 @@ public class RegistroService {
 
         LocalDateTime ahora = LocalDateTime.now();
 
-        Usuario usuario = new Usuario();
-        usuario.setNombre(request.nombre());
-        usuario.setEmail(email);
-        usuario.setPasswordHash(passwordEncoder.encode(request.password()));
-        usuario.setEmailVerificado(false);
-        usuario.setEstado("PENDIENTE_VERIFICACION");
-        usuario.setMfaHabilitado(false);
-        usuario.setMfaRequerido(request.activarMfa() == null || request.activarMfa());
-        usuario.setIntentosFallidos(0);
-        usuario.setCreateDate(ahora);
-        usuario.setUpdateDate(ahora);
-        usuario = usuarioRepository.save(usuario);
+        boolean mfaRequerido = request.activarMfa() == null || request.activarMfa();
+        Usuario usuario = nuevoUsuario(request.nombre(), email, request.password(), mfaRequerido, false, ahora);
 
         Empresa empresa = new Empresa();
         empresa.setRazonSocial(request.razonSocial());
@@ -113,13 +117,7 @@ public class RegistroService {
         empresa.setUpdateDate(ahora);
         empresa = empresaRepository.save(empresa);
 
-        UsuarioEmpresa membresia = new UsuarioEmpresa();
-        membresia.setUsuarioId(usuario.getId());
-        membresia.setEmpresaId(empresa.getId());
-        membresia.setRolId(rolAdminEmpresa.getId());
-        membresia.setEstado("ACTIVO");
-        membresia.setFechaIngreso(ahora);
-        usuarioEmpresaRepository.save(membresia);
+        nuevaMembresia(usuario.getId(), empresa.getId(), rolAdminEmpresa.getId(), ESTADO_MEMBRESIA_ACTIVO, null, ahora);
 
         String tokenCrudo = generarTokenCrudo();
         UsuarioToken tokenVerificacion = new UsuarioToken();
@@ -134,6 +132,91 @@ public class RegistroService {
         return new RegistroResultado(usuario.getId(), empresa.getId(), usuario.getEmail(), tokenCrudo);
     }
 
+    /**
+     * Segundo punto de entrada, NO una rama dentro de {@link #registrar} (design.md, decisión
+     * D3): la ruta de alta de empresa nueva es la ruta de ingresos y no debe cargar riesgo de
+     * regresión de esta feature. NO crea {@code Empresa} (la invitación ya apunta a una
+     * existente), NO asigna {@code ADMIN_EMPRESA} por defecto (usa el rol de la invitación) y
+     * NO emite token de verificación de correo -- recibir el enlace de invitación en esa
+     * casilla ya prueba control del buzón.
+     *
+     * <p>El correo del nuevo {@code usuario} se toma SIEMPRE de {@code invitacion.getEmail()},
+     * nunca de {@code request} (que ni siquiera tiene ese campo -- ver
+     * {@link RegistroPorInvitacionRequest}): un token válido no puede canjearse hacia otra
+     * dirección.
+     *
+     * <p>Misma transacción que la validación del token ({@link InvitacionUsuarioService#consumirParaRegistro}
+     * corre con propagación {@code REQUIRED}, se une a esta): crear {@code usuario} → crear
+     * {@code usuario_empresa} {@code ACTIVO} con el {@code rol_id} e {@code invitado_por} de la
+     * invitación → marcar la invitación {@code ACEPTADA}. Un fallo en cualquier paso deja la
+     * invitación {@code PENDIENTE} y reintentable.
+     */
+    @Transactional
+    public RegistroPorInvitacionResultado registrarPorInvitacion(RegistroPorInvitacionRequest request) {
+        InvitacionUsuario invitacion = invitacionUsuarioService.consumirParaRegistro(request.invitacionToken());
+
+        Rol rol = rolRepository.findById(invitacion.getRolId())
+                .orElseThrow(() -> new IllegalStateException(
+                        "invitacion_usuario referencia un rol_id inexistente: " + invitacion.getRolId()));
+
+        LocalDateTime ahora = LocalDateTime.now();
+
+        // ADMIN_EMPRESA siempre requiere MFA, sin importar la preferencia del invitado -- mismo
+        // hook que InvitacionUsuarioService#aceptar aplica sobre una cuenta ya existente.
+        boolean mfaRequerido = ROL_ADMIN_EMPRESA.equals(rol.getCodigo())
+                || request.activarMfa() == null || request.activarMfa();
+
+        Usuario usuario = nuevoUsuario(request.nombre(), invitacion.getEmail(), request.password(), mfaRequerido, true, ahora);
+
+        nuevaMembresia(usuario.getId(), invitacion.getEmpresaId(), rol.getId(), ESTADO_MEMBRESIA_ACTIVO,
+                invitacion.getInvitadoPor(), ahora);
+
+        invitacion.setEstado(ESTADO_INVITACION_ACEPTADA);
+        invitacionUsuarioRepository.save(invitacion);
+
+        return new RegistroPorInvitacionResultado(usuario.getId(), invitacion.getEmpresaId(), rol.getCodigo());
+    }
+
+    /**
+     * Compartido por {@link #registrar} y {@link #registrarPorInvitacion} (design.md, decisión
+     * D3): {@code verificado} deriva tanto {@code emailVerificado} como {@code estado} -- ambos
+     * caminos hoy son mutuamente excluyentes en su valor ({@code false}/{@code PENDIENTE_VERIFICACION}
+     * para alta estándar, {@code true}/{@code ACTIVA} para alta por invitación), así que no hace
+     * falta un parámetro adicional para {@code estado}.
+     */
+    private Usuario nuevoUsuario(
+            String nombre, String email, String password, boolean mfaRequerido, boolean verificado, LocalDateTime ahora) {
+        Usuario usuario = new Usuario();
+        usuario.setNombre(nombre);
+        usuario.setEmail(email);
+        usuario.setPasswordHash(passwordEncoder.encode(password));
+        usuario.setEmailVerificado(verificado);
+        usuario.setEstado(verificado ? ESTADO_USUARIO_ACTIVA : ESTADO_USUARIO_PENDIENTE_VERIFICACION);
+        usuario.setMfaHabilitado(false);
+        usuario.setMfaRequerido(mfaRequerido);
+        usuario.setIntentosFallidos(0);
+        usuario.setCreateDate(ahora);
+        usuario.setUpdateDate(ahora);
+        return usuarioRepository.save(usuario);
+    }
+
+    /**
+     * Compartido por {@link #registrar} ({@code invitadoPor} siempre {@code null}: nadie invitó
+     * al fundador de su propia empresa) y {@link #registrarPorInvitacion} ({@code invitadoPor}
+     * viene de {@code invitacion.getInvitadoPor()}).
+     */
+    private UsuarioEmpresa nuevaMembresia(
+            UUID usuarioId, UUID empresaId, UUID rolId, String estado, UUID invitadoPor, LocalDateTime ahora) {
+        UsuarioEmpresa membresia = new UsuarioEmpresa();
+        membresia.setUsuarioId(usuarioId);
+        membresia.setEmpresaId(empresaId);
+        membresia.setRolId(rolId);
+        membresia.setEstado(estado);
+        membresia.setInvitadoPor(invitadoPor);
+        membresia.setFechaIngreso(ahora);
+        return usuarioEmpresaRepository.save(membresia);
+    }
+
     private String generarTokenCrudo() {
         byte[] bytes = new byte[TOKEN_BYTES];
         secureRandom.nextBytes(bytes);
@@ -142,5 +225,9 @@ public class RegistroService {
 
     /** {@code tokenCrudo} es de un solo uso por el llamador: enviarlo por correo y descartarlo. */
     public record RegistroResultado(UUID usuarioId, UUID empresaId, String email, String tokenCrudo) {
+    }
+
+    /** Resultado de {@link #registrarPorInvitacion}, para encadenar {@code SesionService.seleccionarTenant}. */
+    public record RegistroPorInvitacionResultado(UUID usuarioId, UUID empresaId, String rolCodigo) {
     }
 }

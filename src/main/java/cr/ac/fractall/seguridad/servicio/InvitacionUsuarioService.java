@@ -186,6 +186,24 @@ public class InvitacionUsuarioService {
     }
 
     /**
+     * Compartido con {@code RegistroService#registrarPorInvitacion} (Fase B, PR4 -- registro
+     * por invitación de un invitado que NO tiene cuenta): valida el token con la MISMA lógica
+     * de {@link #resolverInvitacionValida} usada por {@link #aceptar} y devuelve la fila viva,
+     * SIN mutarla a {@code ACEPTADA} -- esa transición ocurre en {@code RegistroService}, recién
+     * después de que el {@code usuario} y la {@code usuario_empresa} nuevos ya se guardaron, para
+     * que las 3 escrituras (usuario + membresía + invitación) queden en la misma transacción y
+     * puedan hacer rollback juntas si cualquiera falla.
+     *
+     * <p>{@code noRollbackFor}: mismo motivo exacto que {@link #aceptar} -- ver su javadoc --
+     * la escritura perezosa de {@code estado='EXPIRADA'} debe sobrevivir aunque este método
+     * termine lanzando {@link InvitacionInvalidaException}.
+     */
+    @Transactional(noRollbackFor = InvitacionInvalidaException.class)
+    public InvitacionUsuario consumirParaRegistro(String tokenCrudo) {
+        return resolverInvitacionValida(tokenCrudo);
+    }
+
+    /**
      * Valida el token contra las 4 causas de rechazo de design.md (inexistente, no
      * {@code PENDIENTE} -- ya {@code ACEPTADA} o {@code REVOCADA} --, o vencido) con un solo
      * mensaje ({@link InvitacionInvalidaException}, sin distinguir el motivo). La expiración es
