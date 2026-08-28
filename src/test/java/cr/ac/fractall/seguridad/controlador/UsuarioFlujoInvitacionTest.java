@@ -1,6 +1,7 @@
 package cr.ac.fractall.seguridad.controlador;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -11,6 +12,7 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -29,6 +31,7 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.vault.VaultContainer;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
 
@@ -564,5 +567,102 @@ class UsuarioFlujoInvitacionTest {
                 .findByUsuarioIdAndEmpresaIdAndEstado(invitadoId, semilla.empresaId(), ESTADO_ACTIVO)
                 .orElseThrow());
         assertThat(membresia).as("la membresía debe activarse aunque la respuesta sea MFA pendiente").isNotNull();
+    }
+
+    private record MiembroSemilla(UUID usuarioId, String email) {
+    }
+
+    /**
+     * Siembra un miembro adicional (no el actor dueño de {@code crearEmpresaConActor}) de una
+     * empresa ya existente, con el estado indicado -- usado para poblar {@code GET /usuarios}
+     * con filas {@code ACTIVO} e {@code INVITACION_PENDIENTE} sin pasar por el flujo completo
+     * de invitar+aceptar (fuera del alcance de PR5a, cubierto por PR3a/PR3b).
+     */
+    private MiembroSemilla agregarMiembro(UUID empresaId, String rolCodigo, String estado) {
+        return TenantContextDescartable.ejecutar(() -> {
+            LocalDateTime ahora = LocalDateTime.now();
+            Rol rol = rolRepository.findByCodigo(rolCodigo).orElseThrow();
+            String email = emailUnico("miembro");
+
+            Usuario usuario = new Usuario();
+            usuario.setNombre("Miembro " + email);
+            usuario.setEmail(email);
+            usuario.setPasswordHash("hash-no-relevante");
+            usuario.setEmailVerificado(true);
+            usuario.setEstado("ACTIVA");
+            usuario.setMfaHabilitado(false);
+            usuario.setMfaRequerido(false);
+            usuario.setIntentosFallidos(0);
+            usuario.setCreateDate(ahora);
+            usuario.setUpdateDate(ahora);
+            usuario = usuarioRepository.save(usuario);
+
+            UsuarioEmpresa membresia = new UsuarioEmpresa();
+            membresia.setUsuarioId(usuario.getId());
+            membresia.setEmpresaId(empresaId);
+            membresia.setRolId(rol.getId());
+            membresia.setEstado(estado);
+            membresia.setFechaIngreso(ahora);
+            usuarioEmpresaRepository.save(membresia);
+
+            return new MiembroSemilla(usuario.getId(), usuario.getEmail());
+        });
+    }
+
+    @Test
+    void listarSinPermisoUsuarioVerEsRechazada() throws Exception {
+        EmpresaConActor semilla = crearEmpresaConActor("listar-sin-permiso", ROL_CONSULTA);
+        String tokenActor = tokenPara(semilla.actorId(), semilla.empresaId());
+
+        mockMvc.perform(get("/usuarios")
+                        .header("Authorization", "Bearer " + tokenActor))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void listarIncluyeMiembrosActivosYPendientes() throws Exception {
+        EmpresaConActor semilla = crearEmpresaConActor("listar-admin", ROL_ADMIN_EMPRESA);
+        UUID empresaId = semilla.empresaId();
+        String tokenActor = tokenPara(semilla.actorId(), empresaId);
+
+        MiembroSemilla activo = agregarMiembro(empresaId, ROL_CONSULTA, ESTADO_ACTIVO);
+        MiembroSemilla pendiente = agregarMiembro(empresaId, ROL_CONSULTA, ESTADO_INVITACION_PENDIENTE);
+
+        String cuerpo = mockMvc.perform(get("/usuarios")
+                        .header("Authorization", "Bearer " + tokenActor))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+
+        List<Map<String, Object>> miembros = objectMapper.readValue(cuerpo, new TypeReference<>() {
+        });
+
+        Map<String, Object> filaActivo = miembros.stream()
+                .filter(m -> activo.usuarioId().toString().equals(m.get("usuarioId")))
+                .findFirst().orElseThrow(() -> new AssertionError("miembro ACTIVO ausente del listado"));
+        assertThat(filaActivo.get("estado")).isEqualTo(ESTADO_ACTIVO);
+
+        Map<String, Object> filaPendiente = miembros.stream()
+                .filter(m -> pendiente.usuarioId().toString().equals(m.get("usuarioId")))
+                .findFirst().orElseThrow(() -> new AssertionError("miembro INVITACION_PENDIENTE ausente del listado"));
+        assertThat(filaPendiente.get("estado")).isEqualTo(ESTADO_INVITACION_PENDIENTE);
+    }
+
+    @Test
+    void listarNoFiltraMiembrosDeOtraEmpresa() throws Exception {
+        EmpresaConActor empresaA = crearEmpresaConActor("listar-aislamiento-a", ROL_ADMIN_EMPRESA);
+        EmpresaConActor empresaB = crearEmpresaConActor("listar-aislamiento-b", ROL_ADMIN_EMPRESA);
+
+        MiembroSemilla exclusivoDeA = agregarMiembro(empresaA.empresaId(), ROL_CONSULTA, ESTADO_ACTIVO);
+
+        String tokenActorB = tokenPara(empresaB.actorId(), empresaB.empresaId());
+
+        String cuerpo = mockMvc.perform(get("/usuarios")
+                        .header("Authorization", "Bearer " + tokenActorB))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+
+        assertThat(cuerpo)
+                .as("un caller de la empresa B nunca debe ver un miembro exclusivo de la empresa A")
+                .doesNotContain(exclusivoDeA.email());
     }
 }
