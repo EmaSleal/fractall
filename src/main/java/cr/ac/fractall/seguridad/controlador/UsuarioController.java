@@ -12,6 +12,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -20,6 +21,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import cr.ac.fractall.notificaciones.servicio.EmailNotificacionService;
 import cr.ac.fractall.seguridad.dto.AccessTokenResponse;
+import cr.ac.fractall.seguridad.dto.CambiarRolRequest;
 import cr.ac.fractall.seguridad.dto.InvitarUsuarioRequest;
 import cr.ac.fractall.seguridad.dto.MensajeResponse;
 import cr.ac.fractall.seguridad.dto.MfaPendienteResponse;
@@ -139,6 +141,28 @@ public class UsuarioController {
         UUID empresaId = TenantContext.get();
         List<MiembroResponse> miembros = membresiaAdminService.listar(actorId.get(), empresaId);
         return ResponseEntity.ok(miembros);
+    }
+
+    /**
+     * Cambio de rol de un miembro de la empresa activa del caller (Fase B, PR5b -- ver
+     * design.md, sección "MembresiaAdminService"). Guardado por {@code usuario.editar_rol}
+     * dentro del servicio, nunca solo por autenticación. Latencia aceptada (resolución 4 del
+     * diseño): un rol degradado NO revoca el access token vigente; surte efecto en la siguiente
+     * emisión (≤15 min).
+     */
+    @Operation(summary = "Cambiar el rol de un miembro de la empresa activa")
+    @SecurityRequirement(name = "bearerAuth")
+    @PatchMapping("/{usuarioId}/rol")
+    public ResponseEntity<?> cambiarRol(
+            @PathVariable("usuarioId") UUID usuarioId, @Valid @RequestBody CambiarRolRequest request) {
+        Optional<UUID> actorId = usuarioIdAutenticado();
+        if (actorId.isEmpty()) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(MENSAJE_SIN_AUTENTICAR);
+        }
+
+        UUID empresaId = TenantContext.get();
+        MiembroResponse miembro = membresiaAdminService.cambiarRol(actorId.get(), empresaId, usuarioId, request.rolCodigo());
+        return ResponseEntity.ok(miembro);
     }
 
     private AccessTokenResponse aRespuesta(TokensAcceso tokens) {

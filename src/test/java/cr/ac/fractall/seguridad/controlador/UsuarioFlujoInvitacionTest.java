@@ -2,6 +2,7 @@ package cr.ac.fractall.seguridad.controlador;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -37,6 +38,7 @@ import com.sun.net.httpserver.HttpServer;
 
 import cr.ac.fractall.empresa.modelo.Empresa;
 import cr.ac.fractall.empresa.repositorio.EmpresaRepository;
+import cr.ac.fractall.seguridad.dto.CambiarRolRequest;
 import cr.ac.fractall.seguridad.dto.InvitarUsuarioRequest;
 import cr.ac.fractall.seguridad.modelo.InvitacionUsuario;
 import cr.ac.fractall.seguridad.modelo.Rol;
@@ -664,5 +666,120 @@ class UsuarioFlujoInvitacionTest {
         assertThat(cuerpo)
                 .as("un caller de la empresa B nunca debe ver un miembro exclusivo de la empresa A")
                 .doesNotContain(exclusivoDeA.email());
+    }
+
+    @Test
+    void cambiarRolSinPermisoUsuarioEditarRolEsRechazada() throws Exception {
+        EmpresaConActor semilla = crearEmpresaConActor("rol-sin-permiso", ROL_CONSULTA);
+        String tokenActor = tokenPara(semilla.actorId(), semilla.empresaId());
+        MiembroSemilla objetivo = agregarMiembro(semilla.empresaId(), ROL_CONSULTA, ESTADO_ACTIVO);
+
+        mockMvc.perform(patch("/usuarios/{usuarioId}/rol", objetivo.usuarioId())
+                        .header("Authorization", "Bearer " + tokenActor)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new CambiarRolRequest(ROL_ADMIN_EMPRESA))))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void cambiarRolDeMiembroDeOtraEmpresaEsRechazadoCon404() throws Exception {
+        EmpresaConActor empresaA = crearEmpresaConActor("rol-aislamiento-a", ROL_ADMIN_EMPRESA);
+        EmpresaConActor empresaB = crearEmpresaConActor("rol-aislamiento-b", ROL_ADMIN_EMPRESA);
+        MiembroSemilla exclusivoDeB = agregarMiembro(empresaB.empresaId(), ROL_CONSULTA, ESTADO_ACTIVO);
+        String tokenActorA = tokenPara(empresaA.actorId(), empresaA.empresaId());
+
+        mockMvc.perform(patch("/usuarios/{usuarioId}/rol", exclusivoDeB.usuarioId())
+                        .header("Authorization", "Bearer " + tokenActorA)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new CambiarRolRequest(ROL_ADMIN_EMPRESA))))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void cambiarRolConRolCodigoInexistenteEsRechazadoConBadRequest() throws Exception {
+        EmpresaConActor semilla = crearEmpresaConActor("rol-invalido", ROL_ADMIN_EMPRESA);
+        String tokenActor = tokenPara(semilla.actorId(), semilla.empresaId());
+        MiembroSemilla objetivo = agregarMiembro(semilla.empresaId(), ROL_CONSULTA, ESTADO_ACTIVO);
+
+        mockMvc.perform(patch("/usuarios/{usuarioId}/rol", objetivo.usuarioId())
+                        .header("Authorization", "Bearer " + tokenActor)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new CambiarRolRequest("ROL_QUE_NO_EXISTE"))))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void cambiarRolAutodegradacionEsRechazadaConConflictoYRolSinCambios() throws Exception {
+        EmpresaConActor semilla = crearEmpresaConActor("rol-autogestion", ROL_ADMIN_EMPRESA);
+        String tokenActor = tokenPara(semilla.actorId(), semilla.empresaId());
+
+        mockMvc.perform(patch("/usuarios/{usuarioId}/rol", semilla.actorId())
+                        .header("Authorization", "Bearer " + tokenActor)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new CambiarRolRequest(ROL_CONSULTA))))
+                .andExpect(status().isConflict());
+
+        UsuarioEmpresa membresiaActor = TenantContextDescartable.ejecutar(() -> usuarioEmpresaRepository
+                .findByUsuarioIdAndEmpresaIdAndEstado(semilla.actorId(), semilla.empresaId(), ESTADO_ACTIVO)
+                .orElseThrow());
+        Rol rolAdmin = TenantContextDescartable.ejecutar(() -> rolRepository.findByCodigo(ROL_ADMIN_EMPRESA).orElseThrow());
+        assertThat(membresiaActor.getRolId())
+                .as("un 409 de autogestión nunca debe mutar el rol del propio actor")
+                .isEqualTo(rolAdmin.getId());
+    }
+
+    @Test
+    void cambiarRolExitosoActualizaRolYPersisteNuevoRol() throws Exception {
+        EmpresaConActor semilla = crearEmpresaConActor("rol-exitoso", ROL_ADMIN_EMPRESA);
+        String tokenActor = tokenPara(semilla.actorId(), semilla.empresaId());
+        MiembroSemilla objetivo = agregarMiembro(semilla.empresaId(), ROL_CONSULTA, ESTADO_ACTIVO);
+
+        mockMvc.perform(patch("/usuarios/{usuarioId}/rol", objetivo.usuarioId())
+                        .header("Authorization", "Bearer " + tokenActor)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new CambiarRolRequest(ROL_ADMIN_EMPRESA))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.rolCodigo").value(ROL_ADMIN_EMPRESA));
+
+        UsuarioEmpresa membresia = TenantContextDescartable.ejecutar(() -> usuarioEmpresaRepository
+                .findByUsuarioIdAndEmpresaIdAndEstado(objetivo.usuarioId(), semilla.empresaId(), ESTADO_ACTIVO)
+                .orElseThrow());
+        Rol rolAdmin = TenantContextDescartable.ejecutar(() -> rolRepository.findByCodigo(ROL_ADMIN_EMPRESA).orElseThrow());
+        assertThat(membresia.getRolId()).isEqualTo(rolAdmin.getId());
+    }
+
+    @Test
+    void cambiarRolAAdminEmpresaMarcaMfaRequeridoSinTokenMfa() throws Exception {
+        EmpresaConActor semilla = crearEmpresaConActor("rol-promocion-mfa", ROL_ADMIN_EMPRESA);
+        String tokenActor = tokenPara(semilla.actorId(), semilla.empresaId());
+        MiembroSemilla objetivo = agregarMiembro(semilla.empresaId(), ROL_CONSULTA, ESTADO_ACTIVO);
+
+        mockMvc.perform(patch("/usuarios/{usuarioId}/rol", objetivo.usuarioId())
+                        .header("Authorization", "Bearer " + tokenActor)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new CambiarRolRequest(ROL_ADMIN_EMPRESA))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.accessToken").doesNotExist())
+                .andExpect(jsonPath("$.tokenMfaPendiente").doesNotExist());
+
+        boolean mfaRequerido = TenantContextDescartable.ejecutar(
+                () -> usuarioRepository.findById(objetivo.usuarioId()).orElseThrow().isMfaRequerido());
+        assertThat(mfaRequerido)
+                .as("promover a ADMIN_EMPRESA vía PATCH .../rol debe dejar mfaRequerido persistido, sin token")
+                .isTrue();
+    }
+
+    @Test
+    void cambiarRolConDosAdministradoresActivosPermiteDegradarAlPenultimo() throws Exception {
+        EmpresaConActor semilla = crearEmpresaConActor("rol-penultimo", ROL_ADMIN_EMPRESA);
+        String tokenActor = tokenPara(semilla.actorId(), semilla.empresaId());
+        MiembroSemilla otroAdmin = agregarMiembro(semilla.empresaId(), ROL_ADMIN_EMPRESA, ESTADO_ACTIVO);
+
+        mockMvc.perform(patch("/usuarios/{usuarioId}/rol", otroAdmin.usuarioId())
+                        .header("Authorization", "Bearer " + tokenActor)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new CambiarRolRequest(ROL_CONSULTA))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.rolCodigo").value(ROL_CONSULTA));
     }
 }

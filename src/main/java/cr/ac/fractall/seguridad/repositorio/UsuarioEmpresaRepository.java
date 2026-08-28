@@ -75,4 +75,28 @@ public interface UsuarioEmpresaRepository extends JpaRepository<UsuarioEmpresa, 
 
         java.time.LocalDateTime getFechaIngreso();
     }
+
+    /**
+     * Objetivo de cambio de rol / suspensión (Fase B, PR5b -- ver design.md, sección
+     * "MembresiaAdminService"). Incluye a propósito membresías en cualquier estado
+     * ({@code INVITACION_PENDIENTE}, {@code SUSPENDIDO}), no solo {@code ACTIVO}: un
+     * administrador debe poder cambiar el rol de una membresía todavía pendiente o ya
+     * suspendida sin necesitar un endpoint distinto para eso.
+     */
+    Optional<UsuarioEmpresa> findByUsuarioIdAndEmpresaId(UUID usuarioId, UUID empresaId);
+
+    /**
+     * Guarda del último administrador (Fase B, PR5b -- ver design.md, decisión de diseño
+     * {@code exigirNoUltimoAdministrador}): cuántas membresías {@code ADMIN_EMPRESA} ACTIVAS
+     * quedan en la empresa. Native query obligatorio por el mismo motivo que
+     * {@code findPermisoCodigos}/{@code listarMiembros}: {@code usuario_empresa} y {@code rol}
+     * se relacionan por una columna UUID suelta, sin {@code @ManyToOne} mapeado -- JPQL no
+     * puede hacer el join.
+     */
+    @Query(value = """
+            SELECT COUNT(*) FROM usuario_empresa ue
+            JOIN rol r ON r.id = ue.rol_id
+            WHERE ue.empresa_id = :empresaId AND r.codigo = 'ADMIN_EMPRESA' AND ue.estado = 'ACTIVO'
+            """, nativeQuery = true)
+    long contarAdministradoresActivos(@Param("empresaId") UUID empresaId);
 }
