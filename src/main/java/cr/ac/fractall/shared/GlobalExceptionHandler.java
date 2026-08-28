@@ -30,6 +30,7 @@ import cr.ac.fractall.facturacion.servicio.ReferenciaNoEsFacturaElectronicaExcep
 import cr.ac.fractall.facturacion.servicio.XmlFacturaFirmaException;
 import cr.ac.fractall.hacienda.servicio.TipoCambioNoDisponibleException;
 import cr.ac.fractall.seguridad.dto.MensajeResponse;
+import cr.ac.fractall.seguridad.servicio.PermisoDenegadoException;
 import jakarta.validation.ConstraintViolationException;
 
 /**
@@ -55,6 +56,17 @@ import jakarta.validation.ConstraintViolationException;
  */
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+
+    /**
+     * Fase B (invitación y administración de membresías): primer 403 global de la aplicación,
+     * lanzado por {@code PermisoGuard#exigir} cuando la membresía del actor no está ACTIVA en la
+     * empresa objetivo o cuando el permiso solicitado no está en {@code permisos_efectivos}. Ver
+     * el diseño de esa feature, decisión B.
+     */
+    @ExceptionHandler(PermisoDenegadoException.class)
+    public ResponseEntity<MensajeResponse> manejarPermisoDenegado(PermisoDenegadoException excepcion) {
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(new MensajeResponse(excepcion.getMessage()));
+    }
 
     @ExceptionHandler(FacturaNoEncontradaException.class)
     public ResponseEntity<MensajeResponse> manejarFacturaNoEncontrada(FacturaNoEncontradaException excepcion) {
