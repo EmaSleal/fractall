@@ -10,15 +10,21 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import cr.ac.fractall.notificaciones.servicio.EmailNotificacionService;
+import cr.ac.fractall.seguridad.dto.AccessTokenResponse;
 import cr.ac.fractall.seguridad.dto.InvitarUsuarioRequest;
 import cr.ac.fractall.seguridad.dto.MensajeResponse;
+import cr.ac.fractall.seguridad.dto.MfaPendienteResponse;
 import cr.ac.fractall.seguridad.servicio.InvitacionUsuarioService;
+import cr.ac.fractall.seguridad.servicio.SesionResultado;
+import cr.ac.fractall.seguridad.servicio.SesionService;
+import cr.ac.fractall.seguridad.servicio.TokensAcceso;
 import cr.ac.fractall.tenant.TenantContext;
 import jakarta.validation.Valid;
 
@@ -43,12 +49,15 @@ public class UsuarioController {
 
     private final InvitacionUsuarioService invitacionUsuarioService;
     private final EmailNotificacionService emailNotificacionService;
+    private final SesionService sesionService;
 
     public UsuarioController(
             InvitacionUsuarioService invitacionUsuarioService,
-            EmailNotificacionService emailNotificacionService) {
+            EmailNotificacionService emailNotificacionService,
+            SesionService sesionService) {
         this.invitacionUsuarioService = invitacionUsuarioService;
         this.emailNotificacionService = emailNotificacionService;
+        this.sesionService = sesionService;
     }
 
     @Operation(summary = "Invitar a una persona a la empresa activa")
@@ -71,6 +80,43 @@ public class UsuarioController {
                 r.email(), ASUNTO_INVITACION, construirHtmlInvitacion(r.tokenCrudo())));
 
         return ResponseEntity.status(HttpStatus.ACCEPTED).body(MENSAJE_INVITACION_GENERICA);
+    }
+
+    /**
+     * Aceptación de una invitación por un invitado que YA tiene cuenta (design.md, decisión D
+     * corregida por la decisión E: el token-continuation SÍ aplica aquí, a diferencia de
+     * {@code PATCH /usuarios/{id}/rol}). El único guard es el propio token -- ninguna llamada a
+     * {@code PermisoGuard} -- pero el endpoint sigue exigiendo autenticación (ver la nota de
+     * clase sobre {@code SecurityConfig}): el invitado debe estar logueado con SU tenant actual
+     * (que por definición no es el de la empresa que invita, {@code JwtTenantFilter}) para que
+     * {@code usuarioIdAutenticado()} resuelva su identidad.
+     *
+     * <p>{@code sesionService.seleccionarTenant} se invoca DESPUÉS de que
+     * {@code invitacionUsuarioService.aceptar} ya hizo commit (el límite transaccional de
+     * {@code aceptar} termina al retornar de esta llamada) -- necesario porque
+     * {@code seleccionarTenant} reconfirma la membresía {@code ACTIVO} recién activada.
+     */
+    @Operation(summary = "Aceptar una invitación como invitado que ya tiene cuenta")
+    @SecurityRequirement(name = "bearerAuth")
+    @PostMapping("/invitacion/{token}/aceptar")
+    public ResponseEntity<?> aceptar(@PathVariable("token") String token) {
+        Optional<UUID> usuarioId = usuarioIdAutenticado();
+        if (usuarioId.isEmpty()) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(MENSAJE_SIN_AUTENTICAR);
+        }
+
+        InvitacionUsuarioService.AceptacionResultado resultado =
+                invitacionUsuarioService.aceptar(token, usuarioId.get());
+
+        SesionResultado sesion = sesionService.seleccionarTenant(usuarioId.get(), resultado.empresaId());
+        if (sesion.requiereMfa()) {
+            return ResponseEntity.ok(new MfaPendienteResponse(sesion.tokenMfaPendiente(), sesion.mfaRequiereEnrolamiento()));
+        }
+        return ResponseEntity.ok(aRespuesta(sesion.tokens()));
+    }
+
+    private AccessTokenResponse aRespuesta(TokensAcceso tokens) {
+        return new AccessTokenResponse(tokens.accessToken(), tokens.refreshToken(), tokens.empresaId());
     }
 
     /** Mismo patrón que {@code AuthController#usuarioIdAutenticado} -- ver su javadoc. */

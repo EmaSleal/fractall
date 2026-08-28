@@ -43,7 +43,9 @@ import cr.ac.fractall.seguridad.repositorio.InvitacionUsuarioRepository;
 import cr.ac.fractall.seguridad.repositorio.RolRepository;
 import cr.ac.fractall.seguridad.repositorio.UsuarioEmpresaRepository;
 import cr.ac.fractall.seguridad.repositorio.UsuarioRepository;
+import cr.ac.fractall.seguridad.servicio.InvitacionUsuarioService;
 import cr.ac.fractall.seguridad.servicio.JwtService;
+import cr.ac.fractall.seguridad.servicio.TokenHasher;
 import cr.ac.fractall.tenant.TenantContextDescartable;
 
 /**
@@ -71,7 +73,12 @@ class UsuarioFlujoInvitacionTest {
     private static final String ROL_CONSULTA = "CONSULTA";
     private static final String ESTADO_ACTIVO = "ACTIVO";
     private static final String ESTADO_PENDIENTE = "PENDIENTE";
+    private static final String ESTADO_ACEPTADA = "ACEPTADA";
+    private static final String ESTADO_REVOCADA = "REVOCADA";
+    private static final String ESTADO_EXPIRADA = "EXPIRADA";
     private static final String ESTADO_INVITACION_PENDIENTE = "INVITACION_PENDIENTE";
+    private static final String MENSAJE_INVITACION_INVALIDA =
+            "La invitación no es válida, ya fue utilizada o expiró.";
 
     @Container
     static PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:18.1");
@@ -197,6 +204,9 @@ class UsuarioFlujoInvitacionTest {
 
     @Autowired
     private InvitacionUsuarioRepository invitacionUsuarioRepository;
+
+    @Autowired
+    private InvitacionUsuarioService invitacionUsuarioService;
 
     @Autowired
     private JwtService jwtService;
@@ -407,5 +417,152 @@ class UsuarioFlujoInvitacionTest {
         Optional<InvitacionUsuario> invitacion = TenantContextDescartable.ejecutar(
                 () -> invitacionUsuarioRepository.findByEmpresaIdAndEmailAndEstado(empresaId, email, ESTADO_PENDIENTE));
         assertThat(invitacion).as("un rolCodigo inexistente nunca debe crear la fila de invitación").isEmpty();
+    }
+
+    /**
+     * Emite una invitación llamando directamente a {@code InvitacionUsuarioService.emitir}
+     * (no vía HTTP): el controlador nunca expone el token crudo en su respuesta (anti-
+     * enumeración), así que la única forma de obtenerlo para sembrar el escenario de
+     * "aceptar" es invocar el servicio en el propio hilo de prueba, envuelto en
+     * {@code TenantContextDescartable} por el mismo motivo que {@code emitir()} lo necesita
+     * cuando corre fuera de {@code JwtTenantFilter}.
+     */
+    private String emitirTokenCrudo(UUID actorId, UUID empresaId, String email, String rolCodigo) {
+        return TenantContextDescartable.ejecutar(() -> invitacionUsuarioService
+                .emitir(actorId, empresaId, email, rolCodigo)
+                .orElseThrow(() -> new IllegalStateException("emitir() no debió omitir un correo nuevo"))
+                .tokenCrudo());
+    }
+
+    /**
+     * Acuña el access token del invitado que autentica {@code POST
+     * /usuarios/invitacion/{token}/aceptar}: el filtro solo necesita un claim
+     * {@code empresaId} válido para poblar {@code TenantContext} (JwtTenantFilter), y este
+     * endpoint no exige ninguna membresía sobre esa empresa (design.md: "ninguno: el token ES
+     * la autorización") -- por eso un UUID descartable es suficiente, igual que el tenant
+     * "actual" del invitado es por definición distinto al de la empresa que invita.
+     */
+    private String tokenInvitado(UUID invitadoId) {
+        return jwtService.generarToken(invitadoId, UUID.randomUUID());
+    }
+
+    private void forzarEstadoInvitacion(String tokenCrudo, String estado) {
+        TenantContextDescartable.ejecutar((Runnable) () -> {
+            InvitacionUsuario invitacion = invitacionUsuarioRepository
+                    .findByTokenHash(TokenHasher.sha256Hex(tokenCrudo)).orElseThrow();
+            invitacion.setEstado(estado);
+            invitacionUsuarioRepository.save(invitacion);
+        });
+    }
+
+    private String estadoInvitacionPersistido(String tokenCrudo) {
+        return TenantContextDescartable.ejecutar(() -> invitacionUsuarioRepository
+                .findByTokenHash(TokenHasher.sha256Hex(tokenCrudo)).orElseThrow().getEstado());
+    }
+
+    @Test
+    void aceptarConTokenInexistenteEsRechazadaConBadRequest() throws Exception {
+        UUID invitadoId = crearUsuarioConEmailExacto(emailUnico("token-inexistente"));
+
+        mockMvc.perform(post("/usuarios/invitacion/{token}/aceptar", "token-que-no-existe")
+                        .header("Authorization", "Bearer " + tokenInvitado(invitadoId)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.mensaje").value(MENSAJE_INVITACION_INVALIDA));
+    }
+
+    @Test
+    void aceptarConTokenExpiradoEsRechazadaYQuedaMarcadaExpirada() throws Exception {
+        EmpresaConActor semilla = crearEmpresaConActor("admin-expira", ROL_ADMIN_EMPRESA);
+        String emailInvitado = emailUnico("expirado");
+        UUID invitadoId = crearUsuarioConEmailExacto(emailInvitado);
+        String tokenCrudo = emitirTokenCrudo(semilla.actorId(), semilla.empresaId(), emailInvitado, ROL_CONSULTA);
+
+        TenantContextDescartable.ejecutar((Runnable) () -> {
+            InvitacionUsuario invitacion = invitacionUsuarioRepository
+                    .findByTokenHash(TokenHasher.sha256Hex(tokenCrudo)).orElseThrow();
+            invitacion.setExpiraEn(LocalDateTime.now().minusDays(1));
+            invitacionUsuarioRepository.save(invitacion);
+        });
+
+        mockMvc.perform(post("/usuarios/invitacion/{token}/aceptar", tokenCrudo)
+                        .header("Authorization", "Bearer " + tokenInvitado(invitadoId)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.mensaje").value(MENSAJE_INVITACION_INVALIDA));
+
+        assertThat(estadoInvitacionPersistido(tokenCrudo))
+                .as("el intento fallido sobre un token vencido debe dejar la fila EXPIRADA")
+                .isEqualTo(ESTADO_EXPIRADA);
+    }
+
+    @Test
+    void aceptarConTokenYaAceptadoEsRechazada() throws Exception {
+        EmpresaConActor semilla = crearEmpresaConActor("admin-ya-aceptada", ROL_ADMIN_EMPRESA);
+        String emailInvitado = emailUnico("ya-aceptada");
+        UUID invitadoId = crearUsuarioConEmailExacto(emailInvitado);
+        String tokenCrudo = emitirTokenCrudo(semilla.actorId(), semilla.empresaId(), emailInvitado, ROL_CONSULTA);
+        forzarEstadoInvitacion(tokenCrudo, ESTADO_ACEPTADA);
+
+        mockMvc.perform(post("/usuarios/invitacion/{token}/aceptar", tokenCrudo)
+                        .header("Authorization", "Bearer " + tokenInvitado(invitadoId)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.mensaje").value(MENSAJE_INVITACION_INVALIDA));
+    }
+
+    @Test
+    void aceptarConTokenRevocadoEsRechazada() throws Exception {
+        EmpresaConActor semilla = crearEmpresaConActor("admin-revocada", ROL_ADMIN_EMPRESA);
+        String emailInvitado = emailUnico("revocada");
+        UUID invitadoId = crearUsuarioConEmailExacto(emailInvitado);
+        String tokenCrudo = emitirTokenCrudo(semilla.actorId(), semilla.empresaId(), emailInvitado, ROL_CONSULTA);
+        forzarEstadoInvitacion(tokenCrudo, ESTADO_REVOCADA);
+
+        mockMvc.perform(post("/usuarios/invitacion/{token}/aceptar", tokenCrudo)
+                        .header("Authorization", "Bearer " + tokenInvitado(invitadoId)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.mensaje").value(MENSAJE_INVITACION_INVALIDA));
+    }
+
+    @Test
+    void aceptarConTokenValidoActivaMembresiaYMarcaInvitacionAceptada() throws Exception {
+        EmpresaConActor semilla = crearEmpresaConActor("admin-aceptar", ROL_ADMIN_EMPRESA);
+        String emailInvitado = emailUnico("acepta-consulta");
+        UUID invitadoId = crearUsuarioConEmailExacto(emailInvitado);
+        String tokenCrudo = emitirTokenCrudo(semilla.actorId(), semilla.empresaId(), emailInvitado, ROL_CONSULTA);
+
+        mockMvc.perform(post("/usuarios/invitacion/{token}/aceptar", tokenCrudo)
+                        .header("Authorization", "Bearer " + tokenInvitado(invitadoId)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.accessToken").isNotEmpty());
+
+        UsuarioEmpresa membresia = TenantContextDescartable.ejecutar(() -> usuarioEmpresaRepository
+                .findByUsuarioIdAndEmpresaIdAndEstado(invitadoId, semilla.empresaId(), ESTADO_ACTIVO)
+                .orElseThrow());
+        Rol rolConsulta = TenantContextDescartable.ejecutar(() -> rolRepository.findByCodigo(ROL_CONSULTA).orElseThrow());
+        assertThat(membresia.getRolId()).isEqualTo(rolConsulta.getId());
+
+        assertThat(estadoInvitacionPersistido(tokenCrudo)).isEqualTo(ESTADO_ACEPTADA);
+    }
+
+    @Test
+    void aceptarConRolAdminEmpresaMarcaMfaRequeridoYRespondeConMfaPendiente() throws Exception {
+        EmpresaConActor semilla = crearEmpresaConActor("admin-invita-admin", ROL_ADMIN_EMPRESA);
+        String emailInvitado = emailUnico("acepta-admin");
+        UUID invitadoId = crearUsuarioConEmailExacto(emailInvitado);
+        String tokenCrudo = emitirTokenCrudo(semilla.actorId(), semilla.empresaId(), emailInvitado, ROL_ADMIN_EMPRESA);
+
+        mockMvc.perform(post("/usuarios/invitacion/{token}/aceptar", tokenCrudo)
+                        .header("Authorization", "Bearer " + tokenInvitado(invitadoId)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.tokenMfaPendiente").isNotEmpty())
+                .andExpect(jsonPath("$.accessToken").doesNotExist());
+
+        boolean mfaRequerido = TenantContextDescartable.ejecutar(
+                () -> usuarioRepository.findById(invitadoId).orElseThrow().isMfaRequerido());
+        assertThat(mfaRequerido).as("aceptar como ADMIN_EMPRESA debe dejar mfaRequerido persistido").isTrue();
+
+        UsuarioEmpresa membresia = TenantContextDescartable.ejecutar(() -> usuarioEmpresaRepository
+                .findByUsuarioIdAndEmpresaIdAndEstado(invitadoId, semilla.empresaId(), ESTADO_ACTIVO)
+                .orElseThrow());
+        assertThat(membresia).as("la membresía debe activarse aunque la respuesta sea MFA pendiente").isNotNull();
     }
 }
