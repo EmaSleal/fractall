@@ -782,4 +782,73 @@ class UsuarioFlujoInvitacionTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.rolCodigo").value(ROL_CONSULTA));
     }
+
+    @Test
+    void suspenderSinPermisoUsuarioSuspenderEsRechazada() throws Exception {
+        EmpresaConActor semilla = crearEmpresaConActor("suspender-sin-permiso", ROL_CONSULTA);
+        String tokenActor = tokenPara(semilla.actorId(), semilla.empresaId());
+        MiembroSemilla objetivo = agregarMiembro(semilla.empresaId(), ROL_CONSULTA, ESTADO_ACTIVO);
+
+        mockMvc.perform(post("/usuarios/{usuarioId}/suspender", objetivo.usuarioId())
+                        .header("Authorization", "Bearer " + tokenActor))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void suspenderMiembroDeOtraEmpresaEsRechazadoCon404() throws Exception {
+        EmpresaConActor empresaA = crearEmpresaConActor("suspender-aislamiento-a", ROL_ADMIN_EMPRESA);
+        EmpresaConActor empresaB = crearEmpresaConActor("suspender-aislamiento-b", ROL_ADMIN_EMPRESA);
+        MiembroSemilla exclusivoDeB = agregarMiembro(empresaB.empresaId(), ROL_CONSULTA, ESTADO_ACTIVO);
+        String tokenActorA = tokenPara(empresaA.actorId(), empresaA.empresaId());
+
+        mockMvc.perform(post("/usuarios/{usuarioId}/suspender", exclusivoDeB.usuarioId())
+                        .header("Authorization", "Bearer " + tokenActorA))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void suspenderAutosuspensionEsRechazadaConConflictoYEstadoSinCambios() throws Exception {
+        EmpresaConActor semilla = crearEmpresaConActor("suspender-autogestion", ROL_ADMIN_EMPRESA);
+        String tokenActor = tokenPara(semilla.actorId(), semilla.empresaId());
+
+        mockMvc.perform(post("/usuarios/{usuarioId}/suspender", semilla.actorId())
+                        .header("Authorization", "Bearer " + tokenActor))
+                .andExpect(status().isConflict());
+
+        UsuarioEmpresa membresiaActor = TenantContextDescartable.ejecutar(() -> usuarioEmpresaRepository
+                .findByUsuarioIdAndEmpresaIdAndEstado(semilla.actorId(), semilla.empresaId(), ESTADO_ACTIVO)
+                .orElseThrow());
+        assertThat(membresiaActor.getEstado())
+                .as("un 409 de autogestión nunca debe suspender la propia membresía del actor")
+                .isEqualTo(ESTADO_ACTIVO);
+    }
+
+    @Test
+    void suspenderExitosoActualizaEstadoAPersisteSuspendido() throws Exception {
+        EmpresaConActor semilla = crearEmpresaConActor("suspender-exitoso", ROL_ADMIN_EMPRESA);
+        String tokenActor = tokenPara(semilla.actorId(), semilla.empresaId());
+        MiembroSemilla objetivo = agregarMiembro(semilla.empresaId(), ROL_CONSULTA, ESTADO_ACTIVO);
+
+        mockMvc.perform(post("/usuarios/{usuarioId}/suspender", objetivo.usuarioId())
+                        .header("Authorization", "Bearer " + tokenActor))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.estado").value("SUSPENDIDO"));
+
+        UsuarioEmpresa membresia = TenantContextDescartable.ejecutar(() -> usuarioEmpresaRepository
+                .findByUsuarioIdAndEmpresaId(objetivo.usuarioId(), semilla.empresaId())
+                .orElseThrow());
+        assertThat(membresia.getEstado()).isEqualTo("SUSPENDIDO");
+    }
+
+    @Test
+    void suspenderConDosAdministradoresActivosPermiteSuspenderAlPenultimo() throws Exception {
+        EmpresaConActor semilla = crearEmpresaConActor("suspender-penultimo", ROL_ADMIN_EMPRESA);
+        String tokenActor = tokenPara(semilla.actorId(), semilla.empresaId());
+        MiembroSemilla otroAdmin = agregarMiembro(semilla.empresaId(), ROL_ADMIN_EMPRESA, ESTADO_ACTIVO);
+
+        mockMvc.perform(post("/usuarios/{usuarioId}/suspender", otroAdmin.usuarioId())
+                        .header("Authorization", "Bearer " + tokenActor))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.estado").value("SUSPENDIDO"));
+    }
 }

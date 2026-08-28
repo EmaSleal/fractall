@@ -165,6 +165,28 @@ public class UsuarioController {
         return ResponseEntity.ok(miembro);
     }
 
+    /**
+     * Suspensión de un miembro de la empresa activa del caller (Fase B, PR5c -- ver design.md,
+     * sección "MembresiaAdminService"). Guardado por {@code usuario.suspender} dentro del
+     * servicio, nunca solo por autenticación. Reutiliza las mismas guardas de autogestión y
+     * último administrador de {@code PATCH .../rol} (PR5b), sin excepciones nuevas. Misma
+     * latencia aceptada que {@code cambiarRol} (resolución 4 del diseño): la suspensión NO
+     * revoca el access token vigente; surte efecto en la siguiente emisión (≤15 min).
+     */
+    @Operation(summary = "Suspender a un miembro de la empresa activa")
+    @SecurityRequirement(name = "bearerAuth")
+    @PostMapping("/{usuarioId}/suspender")
+    public ResponseEntity<?> suspender(@PathVariable("usuarioId") UUID usuarioId) {
+        Optional<UUID> actorId = usuarioIdAutenticado();
+        if (actorId.isEmpty()) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(MENSAJE_SIN_AUTENTICAR);
+        }
+
+        UUID empresaId = TenantContext.get();
+        MiembroResponse miembro = membresiaAdminService.suspender(actorId.get(), empresaId, usuarioId);
+        return ResponseEntity.ok(miembro);
+    }
+
     private AccessTokenResponse aRespuesta(TokensAcceso tokens) {
         return new AccessTokenResponse(tokens.accessToken(), tokens.refreshToken(), tokens.empresaId());
     }
