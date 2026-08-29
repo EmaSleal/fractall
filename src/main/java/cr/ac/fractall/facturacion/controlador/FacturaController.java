@@ -30,9 +30,13 @@ import cr.ac.fractall.shared.PaginaResponse;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 
+import cr.ac.fractall.facturacion.dto.CobroRegistradoResponse;
 import cr.ac.fractall.facturacion.dto.CrearFacturaRequest;
 import cr.ac.fractall.facturacion.dto.FacturaResponse;
+import cr.ac.fractall.facturacion.dto.HistorialCobrosResponse;
+import cr.ac.fractall.facturacion.dto.RegistrarCobroRequest;
 import cr.ac.fractall.facturacion.pdf.FacturaPdfService;
+import cr.ac.fractall.facturacion.servicio.CobroFacturaService;
 import cr.ac.fractall.facturacion.servicio.ComprobanteXmlPersistenceService;
 import cr.ac.fractall.facturacion.servicio.FacturaService;
 import cr.ac.fractall.seguridad.dto.MensajeResponse;
@@ -71,14 +75,17 @@ public class FacturaController {
     private final FacturaService facturaService;
     private final ComprobanteXmlPersistenceService comprobanteXmlPersistenceService;
     private final FacturaPdfService facturaPdfService;
+    private final CobroFacturaService cobroFacturaService;
 
     public FacturaController(
             FacturaService facturaService,
             ComprobanteXmlPersistenceService comprobanteXmlPersistenceService,
-            FacturaPdfService facturaPdfService) {
+            FacturaPdfService facturaPdfService,
+            CobroFacturaService cobroFacturaService) {
         this.facturaService = facturaService;
         this.comprobanteXmlPersistenceService = comprobanteXmlPersistenceService;
         this.facturaPdfService = facturaPdfService;
+        this.cobroFacturaService = cobroFacturaService;
     }
 
     /**
@@ -190,5 +197,47 @@ public class FacturaController {
         FacturaResponse response = facturaService.crear(request);
         comprobanteXmlPersistenceService.generarYPersistirXml(response.comprobanteId());
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
+    }
+
+    /**
+     * Registra un cobro sobre una factura a plazo (Release 3 / Fase C, ver diseño de
+     * {@code cobro_factura}). {@code registradoPor} nunca llega en el cuerpo de la solicitud --
+     * {@link CobroFacturaService#registrar} siempre lo resuelve del principal autenticado, sin
+     * importar qué campos adicionales envíe el cliente (ver el javadoc de
+     * {@code RegistrarCobroRequest}). {@code FacturaNoCobrableException}/
+     * {@code MedioPagoInvalidoException} → 400; {@code FacturaOrigenNoAceptadaException}/
+     * {@code MontoCobroExcedeSaldoException} → 409; {@code FacturaNoEncontradaException} → 404 --
+     * todas se propagan al {@code GlobalExceptionHandler} sin try/catch aquí.
+     */
+    @Operation(operationId = "registrarCobroFactura", summary = "Registrar un cobro sobre una factura a plazo")
+    @ApiResponses({
+        @ApiResponse(responseCode = "201", description = "Cobro registrado exitosamente",
+            content = @Content(schema = @Schema(implementation = CobroRegistradoResponse.class))),
+        @ApiResponse(responseCode = "400", description = "Factura fuera de alcance o medio de pago inválido",
+            content = @Content(schema = @Schema(implementation = MensajeResponse.class))),
+        @ApiResponse(responseCode = "404", description = "Factura no encontrada",
+            content = @Content(schema = @Schema(implementation = MensajeResponse.class))),
+        @ApiResponse(responseCode = "409", description = "Comprobante no aceptado o monto excede el saldo",
+            content = @Content(schema = @Schema(implementation = MensajeResponse.class)))
+    })
+    @SecurityRequirement(name = "bearerAuth")
+    @PostMapping("/{id}/cobros")
+    public ResponseEntity<CobroRegistradoResponse> registrarCobro(
+            @PathVariable UUID id, @Valid @RequestBody RegistrarCobroRequest request) {
+        return ResponseEntity.status(HttpStatus.CREATED).body(cobroFacturaService.registrar(id, request));
+    }
+
+    /**
+     * Devuelve el historial de cobros y el saldo/estado actual de una factura a plazo (Release 3 /
+     * Fase C). {@code FacturaNoCobrableException} (factura fuera de alcance, 400) y
+     * {@code FacturaNoEncontradaException} (factura inexistente, 404) se propagan al
+     * {@code GlobalExceptionHandler} -- distintas a propósito, ver el javadoc de
+     * {@code FacturaNoCobrableException}.
+     */
+    @Operation(summary = "Historial de cobros de una factura")
+    @SecurityRequirement(name = "bearerAuth")
+    @GetMapping("/{id}/cobros")
+    public ResponseEntity<HistorialCobrosResponse> listarCobros(@PathVariable UUID id) {
+        return ResponseEntity.ok(cobroFacturaService.listar(id));
     }
 }
