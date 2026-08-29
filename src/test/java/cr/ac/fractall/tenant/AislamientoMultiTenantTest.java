@@ -36,11 +36,14 @@ import cr.ac.fractall.catalogo.repositorio.ClienteRepository;
 import cr.ac.fractall.catalogo.repositorio.ProductoRepository;
 import cr.ac.fractall.empresa.modelo.Empresa;
 import cr.ac.fractall.empresa.repositorio.EmpresaRepository;
+import cr.ac.fractall.facturacion.modelo.CobroFactura;
 import cr.ac.fractall.facturacion.modelo.ComprobanteElectronico;
 import cr.ac.fractall.facturacion.modelo.Factura;
 import cr.ac.fractall.facturacion.modelo.FacturaInformacionReferencia;
 import cr.ac.fractall.facturacion.modelo.LineaFactura;
+import cr.ac.fractall.facturacion.repositorio.CobroFacturaRepository;
 import cr.ac.fractall.facturacion.repositorio.ComprobanteElectronicoRepository;
+import cr.ac.fractall.facturacion.repositorio.FacturaEstadoCobroRepository;
 import cr.ac.fractall.facturacion.repositorio.FacturaInformacionReferenciaRepository;
 import cr.ac.fractall.facturacion.repositorio.FacturaRepository;
 import cr.ac.fractall.facturacion.repositorio.LineaFacturaRepository;
@@ -179,6 +182,12 @@ class AislamientoMultiTenantTest {
     private FacturaInformacionReferenciaRepository facturaInformacionReferenciaRepository;
 
     @Autowired
+    private CobroFacturaRepository cobroFacturaRepository;
+
+    @Autowired
+    private FacturaEstadoCobroRepository facturaEstadoCobroRepository;
+
+    @Autowired
     private MockMvc mockMvc;
 
     @Autowired
@@ -312,6 +321,34 @@ class AislamientoMultiTenantTest {
         factura.setCreateDate(LocalDateTime.now());
         factura.setUpdateDate(LocalDateTime.now());
         return factura;
+    }
+
+    /**
+     * PR1 (Release 3, Fase C): {@code nuevaFactura()} fija {@code condicion_venta = "01"} y NUNCA
+     * setea {@code plazoCredito}. El CHECK de {@code factura} (V4:71, "condicion_venta <> '02' OR
+     * plazo_credito IS NOT NULL") revienta si se cambia la condicion a '02' sin plazo -- y el
+     * fallo llegaria como {@code DataIntegrityViolationException} generica, que parece un
+     * problema no relacionado.
+     */
+    private static Factura nuevaFacturaAPlazo(UUID clienteId, UUID creadoPor, String condicionVenta) {
+        Factura factura = nuevaFactura(clienteId, creadoPor);
+        factura.setCondicionVenta(condicionVenta);
+        if ("02".equals(condicionVenta)) {
+            factura.setPlazoCredito(30);
+        }
+        return factura;
+    }
+
+    private static CobroFactura nuevoCobro(UUID facturaId, String monto, UUID registradoPor) {
+        CobroFactura cobro = new CobroFactura();
+        cobro.setFacturaId(facturaId);
+        cobro.setMontoCobrado(new BigDecimal(monto));
+        cobro.setFechaCobro(LocalDateTime.now());
+        cobro.setMedioPago("04");
+        cobro.setReferencia(null);
+        cobro.setRegistradoPor(registradoPor);
+        cobro.setCreateDate(LocalDateTime.now());
+        return cobro;
     }
 
     private static LineaFactura nuevaLineaFactura(UUID facturaId, UUID productoId) {
@@ -480,6 +517,26 @@ class AislamientoMultiTenantTest {
         notaCreditoB.setFacturaReferenciaId(facturaOrigenA.getId());
 
         Exception excepcion = assertThrows(Exception.class, () -> facturaRepository.saveAndFlush(notaCreditoB));
+        assertThat(raizDe(excepcion).getMessage()).contains("Referencia cruzada entre tenants");
+    }
+
+    /**
+     * PR1 (Release 3, Fase C): {@code fn_validar_mismo_tenant} gana una rama nueva para
+     * {@code cobro_factura} -- ver el comentario de cabecera de {@code V23__cobro_factura.sql}.
+     * Mismo molde que {@link #notaCreditoNoPuedeReferenciarFacturaDeOtroTenant}.
+     */
+    @Test
+    void cobroNoPuedeReferenciarFacturaDeOtroTenant() {
+        TenantContext.set(empresaA.getId());
+        Cliente clienteA = clienteRepository.save(nuevoCliente("Cliente Cobro A", "600000013"));
+        Factura facturaOrigenA = facturaRepository.save(
+                nuevaFacturaAPlazo(clienteA.getId(), empresaA.getCreadoPor(), "02"));
+
+        TenantContext.set(empresaB.getId());
+        CobroFactura cobroCruzado = nuevoCobro(facturaOrigenA.getId(), "500.00000", usuario.getId());
+
+        Exception excepcion = assertThrows(Exception.class,
+                () -> cobroFacturaRepository.saveAndFlush(cobroCruzado));
         assertThat(raizDe(excepcion).getMessage()).contains("Referencia cruzada entre tenants");
     }
 
