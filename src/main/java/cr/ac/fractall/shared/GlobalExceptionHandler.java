@@ -32,6 +32,7 @@ import cr.ac.fractall.facturacion.servicio.MontoNotaCreditoExcedeOrigenException
 import cr.ac.fractall.facturacion.servicio.ReferenciaNoEsFacturaElectronicaException;
 import cr.ac.fractall.facturacion.servicio.XmlFacturaFirmaException;
 import cr.ac.fractall.hacienda.servicio.TipoCambioNoDisponibleException;
+import cr.ac.fractall.reportes.servicio.RangoFechasInvalidaException;
 import cr.ac.fractall.seguridad.dto.MensajeResponse;
 import cr.ac.fractall.seguridad.servicio.AutoGestionNoPermitidaException;
 import cr.ac.fractall.seguridad.servicio.InvitacionInvalidaException;
@@ -181,6 +182,10 @@ public class GlobalExceptionHandler {
      * factura fuera del alcance de la operación (mismo criterio que las excepciones de exoneración
      * de este grupo -- ver su javadoc), y la segunda un {@code medio_pago} que no está en el
      * catálogo FE v4.4, un dato de entrada inválido del llamador.
+     *
+     * <p>{@code RangoFechasInvalidaException} se une (Release 3 / Fase D -- reporte de IVA
+     * mensual, ver su diseño): {@code hasta}/{@code desde} inválidos en {@code GET /reportes/iva}
+     * son un dato de entrada del llamador, mismo criterio que el resto de este grupo.
      */
     @ExceptionHandler({ExoneracionNoPerteneceAlClienteException.class,
             ExoneracionNoAplicableAFacturaElectronicaException.class,
@@ -190,7 +195,8 @@ public class GlobalExceptionHandler {
             RolInvitacionInvalidoException.class,
             InvitacionInvalidaException.class,
             FacturaNoCobrableException.class,
-            MedioPagoInvalidoException.class})
+            MedioPagoInvalidoException.class,
+            RangoFechasInvalidaException.class})
     public ResponseEntity<MensajeResponse> manejarReglaDeNegocioInvalida(RuntimeException excepcion) {
         return ResponseEntity.badRequest().body(new MensajeResponse(excepcion.getMessage()));
     }
