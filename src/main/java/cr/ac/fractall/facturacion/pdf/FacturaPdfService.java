@@ -25,6 +25,7 @@ import cr.ac.fractall.catalogo.repositorio.ClienteRepository;
 import cr.ac.fractall.catalogo.repositorio.ProductoRepository;
 import cr.ac.fractall.empresa.modelo.Empresa;
 import cr.ac.fractall.empresa.repositorio.EmpresaRepository;
+import cr.ac.fractall.facturacion.calculo.CalculadoraImpuestoLinea;
 import cr.ac.fractall.facturacion.fe.CodigoReferencia;
 import cr.ac.fractall.facturacion.fe.CondicionVenta;
 import cr.ac.fractall.facturacion.fe.NombreInstitucionExoneracion;
@@ -432,15 +433,18 @@ public class FacturaPdfService {
 
             BigDecimal subtotal = nvlDecimal(linea.getSubtotal());
             BigDecimal porcImp = nvlDecimal(linea.getPorcentajeImpuestoAplicado());
-            BigDecimal montoImp = subtotal.multiply(porcImp)
-                    .divide(BigDecimal.valueOf(100), 5, RoundingMode.HALF_UP);
 
-            // Subtract exoneracion if present
-            if (linea.getExoneracionId() != null
-                    && linea.getMontoExoneracionAplicado() != null) {
-                montoImp = montoImp.subtract(linea.getMontoExoneracionAplicado())
-                        .max(BigDecimal.ZERO);
-            }
+            // Una sola consulta por linea, compartida con agregarDetalleExoneracionLinea
+            // (antes cada sitio hacia su propio findByLineaId y podian divergir -- ver
+            // discovery 7 del diseno). El monto neto sale de CalculadoraImpuestoLinea,
+            // la misma calculadora que usa el reporte de IVA: misma precedencia
+            // inline-sobre-legacy y, deliberadamente, SIN el piso .max(ZERO) que este
+            // servicio aplicaba antes (ver discovery 6 del diseno).
+            Optional<ImpuestoLineaExoneracion> exoneracionInline =
+                    impuestoLineaExoneracionRepository.findByLineaId(linea.getId());
+            BigDecimal montoImp = CalculadoraImpuestoLinea
+                    .calcular(linea, exoneracionInline.orElse(null))
+                    .impuestoNeto();
 
             BigDecimal totalLinea = subtotal.add(montoImp);
 
@@ -462,7 +466,7 @@ public class FacturaPdfService {
                     totalLinea.floatValue());
 
             escribirLinea(cs, cursor, fila, normal, FUENTE_PEQUENA);
-            agregarDetalleExoneracionLinea(cs, cursor, linea, normal);
+            agregarDetalleExoneracionLinea(cs, cursor, linea, exoneracionInline, normal);
         }
 
         cursor.y -= 6f;
@@ -478,10 +482,8 @@ public class FacturaPdfService {
             PDPageContentStream cs,
             Cursor cursor,
             LineaFactura linea,
+            Optional<ImpuestoLineaExoneracion> exoneracionInline,
             PDType1Font normal) throws IOException {
-
-        Optional<ImpuestoLineaExoneracion> exoneracionInline =
-                impuestoLineaExoneracionRepository.findByLineaId(linea.getId());
 
         if (exoneracionInline.isPresent()) {
             ImpuestoLineaExoneracion ex = exoneracionInline.get();
