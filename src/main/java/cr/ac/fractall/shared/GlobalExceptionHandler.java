@@ -22,9 +22,12 @@ import cr.ac.fractall.facturacion.servicio.ExoneracionNoAplicableAFacturaElectro
 import cr.ac.fractall.facturacion.servicio.ExoneracionNoPerteneceAlClienteException;
 import cr.ac.fractall.facturacion.servicio.ExoneracionNoVigenteException;
 import cr.ac.fractall.facturacion.servicio.ExoneracionRequiereClienteException;
+import cr.ac.fractall.facturacion.servicio.FacturaNoCobrableException;
 import cr.ac.fractall.facturacion.servicio.FacturaNoEncontradaException;
 import cr.ac.fractall.facturacion.servicio.FacturaOrigenNoAceptadaException;
 import cr.ac.fractall.facturacion.servicio.LineaOrigenNoPerteneceAFacturaException;
+import cr.ac.fractall.facturacion.servicio.MedioPagoInvalidoException;
+import cr.ac.fractall.facturacion.servicio.MontoCobroExcedeSaldoException;
 import cr.ac.fractall.facturacion.servicio.MontoNotaCreditoExcedeOrigenException;
 import cr.ac.fractall.facturacion.servicio.ReferenciaNoEsFacturaElectronicaException;
 import cr.ac.fractall.facturacion.servicio.XmlFacturaFirmaException;
@@ -172,6 +175,12 @@ public class GlobalExceptionHandler {
      * entrada del llamador inválido para la operación solicitada, no un id de recurso ni un
      * conflicto de estado sobre un recurso ya identificado -- el token nunca llegó a
      * identificar nada persistente desde el punto de vista del llamador.
+     *
+     * <p>{@code FacturaNoCobrableException}/{@code MedioPagoInvalidoException} se unen (Release 3
+     * / Fase C -- registro de cobros, ver diseño de {@code cobro_factura}): la primera cubre una
+     * factura fuera del alcance de la operación (mismo criterio que las excepciones de exoneración
+     * de este grupo -- ver su javadoc), y la segunda un {@code medio_pago} que no está en el
+     * catálogo FE v4.4, un dato de entrada inválido del llamador.
      */
     @ExceptionHandler({ExoneracionNoPerteneceAlClienteException.class,
             ExoneracionNoAplicableAFacturaElectronicaException.class,
@@ -179,7 +188,9 @@ public class GlobalExceptionHandler {
             ExoneracionRequiereClienteException.class,
             CondicionVentaInvalidaException.class,
             RolInvitacionInvalidoException.class,
-            InvitacionInvalidaException.class})
+            InvitacionInvalidaException.class,
+            FacturaNoCobrableException.class,
+            MedioPagoInvalidoException.class})
     public ResponseEntity<MensajeResponse> manejarReglaDeNegocioInvalida(RuntimeException excepcion) {
         return ResponseEntity.badRequest().body(new MensajeResponse(excepcion.getMessage()));
     }
@@ -208,8 +219,13 @@ public class GlobalExceptionHandler {
      * Reglas de negocio de Nota de Crédito/Débito (Release 2 / Fase B, ver diseño D-E/D-G): el
      * estado de datos del origen (estado de aceptación, o saldo ya consumido por NC previas)
      * entra en conflicto con la operación solicitada.
+     *
+     * <p>{@code MontoCobroExcedeSaldoException} se une (Release 3 / Fase C -- registro de cobros,
+     * ver diseño de {@code cobro_factura}, decisión D5/G): mismo criterio -- un saldo ya consumido
+     * (por cobros/NC previas) entra en conflicto con el cobro solicitado.
      */
-    @ExceptionHandler({FacturaOrigenNoAceptadaException.class, MontoNotaCreditoExcedeOrigenException.class})
+    @ExceptionHandler({FacturaOrigenNoAceptadaException.class, MontoNotaCreditoExcedeOrigenException.class,
+            MontoCobroExcedeSaldoException.class})
     public ResponseEntity<MensajeResponse> manejarConflictoDeEstadoNotaCreditoDebito(RuntimeException excepcion) {
         return ResponseEntity.status(HttpStatus.CONFLICT).body(new MensajeResponse(excepcion.getMessage()));
     }
