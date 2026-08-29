@@ -18,6 +18,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import cr.ac.fractall.reportes.dto.ReporteIvaResponse;
 import cr.ac.fractall.reportes.export.ReporteIvaExcelWriter;
+import cr.ac.fractall.reportes.export.ReporteIvaPdfWriter;
 import cr.ac.fractall.reportes.servicio.ReporteIvaService;
 import jakarta.validation.constraints.NotNull;
 
@@ -32,8 +33,6 @@ import jakarta.validation.constraints.NotNull;
  * (misma disciplina que {@code FacturaController}, ver su javadoc). {@code desde}/{@code hasta}
  * son OBLIGATORIOS (sin {@code required = false}) -- eso es lo que permite el theta-join JPQL de
  * {@code ReporteIvaRepository} en vez de SQL nativo (ver el diseño, decisión A3).
- *
- * <p>{@code /reportes/iva/pdf} llega en un PR posterior (Fase 7 del plan de tareas).
  */
 @Tag(name = "Reportes", description = "Reportes fiscales agregados por período")
 @Validated
@@ -72,6 +71,25 @@ public class ReporteIvaController {
         byte[] contenido = ReporteIvaExcelWriter.generar(reporteIvaService.generar(desde, hasta));
         String nombreArchivo = "reporte-iva_" + desde + "_" + hasta + ".xlsx";
         return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + nombreArchivo + "\"")
+                .body(contenido);
+    }
+
+    /**
+     * Genera el mismo reporte que {@link #obtener} como PDF (página 1 Resumen, página 2+ Detalle
+     * con encabezado repetible, ver {@link ReporteIvaPdfWriter}). Delegación de una sola línea, sin
+     * try/catch, misma disciplina que {@link #obtener}/{@link #excel}.
+     */
+    @Operation(summary = "Reporte de débito fiscal de IVA por período (PDF)")
+    @SecurityRequirement(name = "bearerAuth")
+    @GetMapping(path = "/iva/pdf", produces = MediaType.APPLICATION_PDF_VALUE)
+    public ResponseEntity<byte[]> pdf(
+            @RequestParam @NotNull @DateTimeFormat(iso = ISO.DATE) LocalDate desde,
+            @RequestParam @NotNull @DateTimeFormat(iso = ISO.DATE) LocalDate hasta) {
+        byte[] contenido = ReporteIvaPdfWriter.generar(reporteIvaService.generar(desde, hasta));
+        String nombreArchivo = "reporte-iva_" + desde + "_" + hasta + ".pdf";
+        return ResponseEntity.ok()
+                .contentType(MediaType.APPLICATION_PDF)
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + nombreArchivo + "\"")
                 .body(contenido);
     }
