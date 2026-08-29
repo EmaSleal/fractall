@@ -107,13 +107,24 @@ CREATE TABLE cobro_factura (
 );
 ```
 
-- `TenantAwareEntity` como superclase (mismo patrón obligatorio que toda entidad de negocio, sección 5.1) — no declarar `empresaId` por su cuenta.
-- Trigger de tope de sobre-cobro (`BEFORE INSERT ON cobro_factura`): `SUM(monto_cobrado)` existente más el registro nuevo no puede exceder `factura.total`. Mismo patrón ya usado para el tope de Nota de Crédito en Release 2, Fase A.
-- Trigger de restricción a venta a crédito (`BEFORE INSERT ON cobro_factura`): rechaza si `factura.condicion_venta <> '02'`. Una factura de contado se considera cobrada en el momento de la emisión — permitir un registro de cobro aparte abriría una vía de doble conteo.
+- `TenantAwareEntity` como superclase (mismo patrón obligatorio que toda entidad de negocio, sección 5.1) — no declarar `empresaId` por su cuenta. Confirmado por exploración: seguro acá porque `empresa_id` siempre se conoce al insertar, vía `factura.empresaId` — no aplica la restricción de Fase B sobre filas que se resuelven antes de conocer el tenant.
+- Trigger de tope de sobre-cobro (`BEFORE INSERT ON cobro_factura`): `SUM(monto_cobrado)` existente más el registro nuevo no puede exceder `factura.total`. **Corrección post-exploración:** el trigger de tope de Nota de Crédito (Release 2, Fase A) en realidad vive sobre `comprobante_electronico` (`WHEN tipo_comprobante='03'`), no sobre la propia fila de NC, porque `tipo_comprobante` solo existe en `comprobante_electronico` y la NC se valida en el momento en que se crea ese envoltorio fiscal, no la orden comercial — un problema de orden de persistencia específico de ese flujo. `cobro_factura` no tiene esa restricción: cada fila es inequívoca en el momento en que se inserta, así que el trigger va directo sobre la propia tabla, sin la indirección de NC. Mismo principio de acumular-vs-tope, topología más simple.
+- Trigger de restricción de alcance (`BEFORE INSERT ON cobro_factura`): rechaza si `factura.condicion_venta NOT IN ('02', '03', '04')`. **Alcance ampliado tras revisión del catálogo completo de `CondicionVenta` (v4.4):**
+  - **Incluidos — `02` Crédito, `03` Consignación, `04` Apartado:** las tres comparten la misma mecánica real — se emite el comprobante, el dinero no entra en ese momento, se cobra después en una o más partidas. El modelo de `cobro_factura` les aplica sin modificación, y consignación/apartado son casos de uso plausibles y comunes en comercio pequeño costarricense (mercado objetivo del producto), no un caso de borde teórico.
+  - **Excluidos deliberadamente — `05`/`06` Arrendamiento:** un arrendamiento no es "una factura con saldo pendiente" sino una serie de pagos recurrentes con calendario propio; forzarlo dentro de `cobro_factura` produciría un modelo incorrecto (un saldo decreciente no representa cuotas periódicas). Si aparece un caso de uso real, es una entidad distinta (`calendario_pago` o similar), no una extensión de esta.
+  - **Excluidos deliberadamente — `07` Cobro a favor de tercero, `08` Servicios prestados al Estado a crédito (B2G):** semánticamente no son cuentas por cobrar del emisor — `07` es cobro delegado para otra parte, `08` está fuera del mercado objetivo. **Corrección:** una revisión previa de este documento citaba también un código `09`; el catálogo `CondicionVenta` v4.4 no tiene código `09` (salta de `08` a `10` — ver `CondicionVenta.java`), así que esa referencia era un error de enumeración, no una exclusión real.
+  - `01` Contado sigue excluido por la razón original: se considera cobrado en el momento de la emisión, permitir un registro de cobro aparte abriría una vía de doble conteo.
+  - Misma disciplina de alcance ya aplicada en Release 2 al excluir `MontoExportacion`/`PartidaArancelaria` — exclusión documentada y justificada, no omisión, reversible si aparece caso de uso real.
 - Extender `fn_validar_mismo_tenant` (sección 4.16) para cubrir `cobro_factura.factura_id` — mismo patrón ya aplicado a `cliente_id`/`producto_id`/`exoneracion_id`/`factura_referencia_id`.
-- Vista derivada, sin columna persistida de saldo (mismo principio de "no almacenar lo que ya se puede derivar" ya aplicado al saldo disponible de NC en Release 2):
+- Vista derivada, sin columna persistida de saldo (mismo principio de "no almacenar lo que ya se puede derivar" ya aplicado al saldo disponible de NC en Release 2). **Corrección (el sketch original de este documento tenía un bug de fan-out y nunca se implementó tal cual):**
 
 ```sql
+-- Sketch original (NO usar -- fan-out bug): un LEFT JOIN de cobro_factura combinado con un
+-- segundo LEFT JOIN/SUM contra las notas de crédito aceptadas, bajo el mismo GROUP BY, produce
+-- un producto cartesiano entre ambas relaciones uno-a-muchos -- cada SUM cuenta de más en
+-- proporción a las filas del otro lado. El bug es invisible con una sola fila de cobro y cero
+-- NC (como en la versión original de este sketch, antes de netear NC); aparece en cuanto la
+-- factura tiene más de un cobro y al menos una NC aceptada al mismo tiempo.
 CREATE VIEW factura_estado_cobro AS
 SELECT f.id AS factura_id, f.empresa_id, f.total,
        COALESCE(SUM(c.monto_cobrado), 0) AS total_cobrado,
@@ -125,14 +136,16 @@ SELECT f.id AS factura_id, f.empresa_id, f.total,
        END AS estado_cobro
 FROM factura f
 LEFT JOIN cobro_factura c ON c.factura_id = f.id
-WHERE f.condicion_venta = '02'
+WHERE f.condicion_venta IN ('02', '03', '04')
 GROUP BY f.id, f.empresa_id, f.total;
 ```
 
-- `POST /facturas/{id}/cobros`: registra un cobro parcial/total. Precondición validada en backend: `factura.condicion_venta = '02'` y comprobante en estado `ACEPTADO` (no tiene sentido registrar cobro sobre una factura que Hacienda todavía no aceptó o que fue rechazada).
+La implementación real (`V23__cobro_factura.sql`) usa dos subconsultas `CROSS JOIN LATERAL` independientes en lugar del `JOIN`+`GROUP BY` de arriba — cada `LATERAL` agrega por separado (`COALESCE(SUM(...), 0)`) y devuelve siempre exactamente una fila, así que ninguna de las dos relaciones uno-a-muchos (cobros, notas de crédito) se cruza con la otra. También corrige el `CASE`: cuando `total_neto <= 0` (factura anulada por completo vía NC) el estado es `COBRADO`, no `PENDIENTE` para siempre — ese caso no existía en el sketch original porque netear NC contra el tope de cobro es una regla añadida después, no parte del sketch inicial.
+
+- `POST /facturas/{id}/cobros`: registra un cobro parcial/total. Precondición validada en backend: `factura.condicion_venta IN ('02', '03', '04')` y comprobante en estado `ACEPTADO` (no tiene sentido registrar cobro sobre una factura que Hacienda todavía no aceptó o que fue rechazada). Reutiliza el patrón ya usado en `NotaCreditoDebitoService` para leer `comprobante_electronico.estado` por `factura_id` (nunca desde `factura`).
 - `GET /facturas/{id}/cobros`: historial de cobros de una factura específica, para reconciliación.
 
-**Criterio de salida:** extensión de `AislamientoMultiTenantTest` con los mismos tres ejes de cobertura ya exigidos en Release 2 Fase A: (a) un cobro no puede referenciar una factura de otro tenant, (b) el trigger de tope bloquea un cobro que excede el saldo pendiente, (c) un segundo cobro parcial sobre la misma factura sí se permite mientras no exceda el total, (d) un intento de registrar cobro sobre una factura de contado (`condicion_venta = '01'`) es rechazado. La vista `factura_estado_cobro` devuelve `estado_cobro` correcto para los tres casos (`PENDIENTE`/`PARCIAL`/`COBRADO`) contra datos de prueba.
+**Criterio de salida:** extensión de `AislamientoMultiTenantTest` con los mismos ejes de cobertura ya exigidos en Release 2 Fase A: (a) un cobro no puede referenciar una factura de otro tenant, (b) el trigger de tope bloquea un cobro que excede el saldo pendiente, (c) un segundo cobro parcial sobre la misma factura sí se permite mientras no exceda el total, (d) un intento de registrar cobro sobre una factura de contado (`condicion_venta = '01'`) es rechazado, (e) un intento de registrar cobro sobre una factura de arrendamiento (`condicion_venta = '05'` o `'06'`) es rechazado por la misma razón que contado. La vista `factura_estado_cobro` devuelve `estado_cobro` correcto para los tres casos (`PENDIENTE`/`PARCIAL`/`COBRADO`) contra datos de prueba que cubran `'02'`, `'03'` y `'04'`, no solo crédito.
 
 ---
 

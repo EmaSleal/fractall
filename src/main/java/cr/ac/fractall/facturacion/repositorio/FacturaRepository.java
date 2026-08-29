@@ -6,10 +6,12 @@ import java.util.Optional;
 import java.util.UUID;
 
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import cr.ac.fractall.facturacion.modelo.Factura;
+import jakarta.persistence.LockModeType;
 
 /**
  * {@code Factura} extiende {@link cr.ac.fractall.tenant.TenantAwareEntity}: el filtro por
@@ -88,5 +90,43 @@ public interface FacturaRepository extends JpaRepository<Factura, UUID> {
             + "WHERE ce.tipo_comprobante = '03' AND f.factura_referencia_id = :facturaOrigenId "
             + "AND f.empresa_id = :empresaId", nativeQuery = true)
     BigDecimal sumarTotalNotasCreditoPorFacturaOrigen(
+            @Param("facturaOrigenId") UUID facturaOrigenId, @Param("empresaId") UUID empresaId);
+
+    /**
+     * Bloqueo pesimista de la fila factura para D6 (Release 3 / Fase C), tomado como PRIMERA
+     * sentencia de {@code CobroFacturaService#registrar}. Metodo derivado NUEVO, deliberadamente
+     * NO un {@code @Override} de {@code findById} como en {@code ContadorConsecutivoRepository}:
+     * alli el override es seguro porque {@code ConsecutivoService} es el unico consumidor;
+     * {@code findById} de este repositorio tiene multiples llamadores que no deben tomar un lock
+     * de escritura.
+     *
+     * <p>Por la misma razon NO lleva {@code @Transactional(readOnly = false)}: esa anotacion es
+     * obligatoria en el precedente solo porque Spring Data resuelve los atributos transaccionales
+     * de los metodos CRUD base desde {@code SimpleJpaRepository} ({@code readOnly = true}). Un
+     * metodo derivado declarado no recibe ese atributo y se une a la transaccion de escritura del
+     * llamador.
+     *
+     * <p>{@code @TenantId} aplica: una factura de otro tenant devuelve {@code Optional.empty()} =&gt;
+     * 404, que es el comportamiento deseado para el intento cross-tenant.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    Optional<Factura> findWithLockById(UUID id);
+
+    /**
+     * Neteo de D5 (Release 3 / Fase C). Metodo NUEVO, NO una modificacion de
+     * {@link #sumarTotalNotasCreditoPorFacturaOrigen}: ese suma NC en CUALQUIER estado a
+     * proposito, porque espeja el trigger de tope de NC de V18. Agregarle {@code estado =
+     * 'ACEPTADO'} cambiaria la semantica del tope de Nota de Credito de Release 2.
+     *
+     * <p>{@code ce.tipo_comprobante = '03'} es indispensable: {@code factura_referencia_id}
+     * tambien se puebla para Notas de Debito (V18:11-12), y una ND aceptada nunca debe restar del
+     * saldo cobrable.
+     */
+    @Query(value = "SELECT COALESCE(SUM(f.total), 0) FROM factura f "
+            + "JOIN comprobante_electronico ce ON ce.factura_id = f.id "
+            + "WHERE ce.tipo_comprobante = '03' AND ce.estado = 'ACEPTADO' "
+            + "AND f.factura_referencia_id = :facturaOrigenId AND f.empresa_id = :empresaId",
+           nativeQuery = true)
+    BigDecimal sumarTotalNotasCreditoAceptadasPorFacturaOrigen(
             @Param("facturaOrigenId") UUID facturaOrigenId, @Param("empresaId") UUID empresaId);
 }
