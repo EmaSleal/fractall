@@ -49,8 +49,10 @@ import cr.ac.fractall.empresa.repositorio.EmpresaRepository;
 import cr.ac.fractall.empresa.servicio.EmpresaService;
 import cr.ac.fractall.facturacion.dto.CrearFacturaRequest;
 import cr.ac.fractall.facturacion.dto.LineaFacturaItemRequest;
+import cr.ac.fractall.facturacion.dto.RegistrarCobroRequest;
 import cr.ac.fractall.facturacion.modelo.ComprobanteElectronico;
 import cr.ac.fractall.facturacion.modelo.ContadorConsecutivo;
+import cr.ac.fractall.facturacion.repositorio.CobroFacturaRepository;
 import cr.ac.fractall.facturacion.repositorio.ComprobanteElectronicoRepository;
 import cr.ac.fractall.facturacion.repositorio.ContadorConsecutivoRepository;
 import cr.ac.fractall.hacienda.dto.MensajeHacienda;
@@ -237,6 +239,9 @@ class FacturaControllerTest {
     private CredencialHaciendaRepository credencialHaciendaRepository;
 
     @Autowired
+    private CobroFacturaRepository cobroFacturaRepository;
+
+    @Autowired
     private JwtService jwtService;
 
     // Fase 8: reemplaza la implementación real OCI-backed -- ver el javadoc de
@@ -252,7 +257,7 @@ class FacturaControllerTest {
     @MockitoBean
     private HaciendaComprobanteApiService haciendaComprobanteApiService;
 
-    private record ContextoDePrueba(String accessToken, UUID empresaId, UUID clienteId, UUID productoId) {
+    private record ContextoDePrueba(String accessToken, UUID empresaId, UUID clienteId, UUID productoId, UUID usuarioId) {
     }
 
     private ContextoDePrueba crearContextoCompleto() {
@@ -341,7 +346,7 @@ class FacturaControllerTest {
                 producto.setUpdateDate(ahora);
                 producto = productoRepository.save(producto);
 
-                return new ContextoDePrueba(accessToken, empresa.getId(), cliente.getId(), producto.getId());
+                return new ContextoDePrueba(accessToken, empresa.getId(), cliente.getId(), producto.getId(), usuario.getId());
             } finally {
                 TenantContext.clear();
             }
@@ -483,6 +488,40 @@ class FacturaControllerTest {
                 .andExpect(status().isCreated())
                 .andReturn().getResponse().getContentAsString();
         return UUID.fromString(objectMapper.readTree(cuerpo).get("id").asText());
+    }
+
+    /**
+     * Crea, via POST /facturas, una factura a plazo (condicion_venta='02', plazoCredito=30) con
+     * su comprobante forzado a ACEPTADO (via repositorio, mismo patrón que
+     * {@code postReenviarConComprobanteEnFirmadoDevuelve200YFacturaResponse}) -- precondición de
+     * {@code CobroFacturaService#registrar}/{@code #listar} para las pruebas de
+     * {@code POST}/{@code GET /facturas/{id}/cobros} (Release 3 / Fase C).
+     */
+    private UUID crearFacturaAPlazoAceptada(ContextoDePrueba ctx, BigDecimal precioUnitario) throws Exception {
+        CrearFacturaRequest request = new CrearFacturaRequest(
+                ctx.clienteId(), "02", 30, null, null, null, null, null, null,
+                java.util.List.of(new LineaFacturaItemRequest(
+                        ctx.productoId(), BigDecimal.ONE, precioUnitario, null,
+                        null, null, null, null, null, null, null)),
+                null, null, null);
+        String cuerpo = mockMvc.perform(post("/facturas")
+                        .header("Authorization", "Bearer " + ctx.accessToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        UUID facturaId = UUID.fromString(objectMapper.readTree(cuerpo).get("id").asText());
+
+        TenantContext.set(ctx.empresaId());
+        try {
+            ComprobanteElectronico comprobante = comprobanteElectronicoRepository
+                    .findByFacturaId(facturaId).orElseThrow();
+            comprobante.setEstado("ACEPTADO");
+            comprobanteElectronicoRepository.save(comprobante);
+        } finally {
+            TenantContext.clear();
+        }
+        return facturaId;
     }
 
     @Test
@@ -964,6 +1003,154 @@ class FacturaControllerTest {
         ContextoDePrueba ctx = crearContextoCompleto();
 
         mockMvc.perform(post("/facturas/" + UUID.randomUUID() + "/reenviar")
+                        .header("Authorization", "Bearer " + ctx.accessToken()))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.mensaje").isString());
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // POST/GET /facturas/{id}/cobros tests (Release 3 / Fase C — cobro_factura)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Cobro parcial exitoso sobre una factura a crédito (Release 3 / Fase C): total de la
+     * factura es 1130.00000 (subtotal 1000.00000 + 13% IVA, MISMOS números que
+     * {@code AislamientoMultiTenantTest#notaCreditoAceptadaReduceElTopeDeCobroYElSaldoDeLaVista}
+     * y {@code CobroFacturaServiceTest}, para reusar el fixture ya probado). Un cobro de
+     * 500.00000 deja saldoPendiente=630.00000 y estadoCobro=PARCIAL.
+     */
+    @Test
+    void postCobroConCobroParcialRetorna201ConCuerpoCompuesto() throws Exception {
+        ContextoDePrueba ctx = crearContextoCompleto();
+        UUID facturaId = crearFacturaAPlazoAceptada(ctx, new BigDecimal("1000.00000"));
+
+        RegistrarCobroRequest request =
+                new RegistrarCobroRequest(new BigDecimal("500.00000"), "04", "primer-cobro", null);
+
+        mockMvc.perform(post("/facturas/" + facturaId + "/cobros")
+                        .header("Authorization", "Bearer " + ctx.accessToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.cobro.facturaId").value(facturaId.toString()))
+                .andExpect(jsonPath("$.cobro.montoCobrado").value(500.0))
+                .andExpect(jsonPath("$.cobro.medioPago").value("04"))
+                .andExpect(jsonPath("$.cobro.referencia").value("primer-cobro"))
+                .andExpect(jsonPath("$.estado.facturaId").value(facturaId.toString()))
+                .andExpect(jsonPath("$.estado.total").value(1130.0))
+                .andExpect(jsonPath("$.estado.totalCobrado").value(500.0))
+                .andExpect(jsonPath("$.estado.saldoPendiente").value(630.0))
+                .andExpect(jsonPath("$.estado.estadoCobro").value("PARCIAL"));
+    }
+
+    /**
+     * Un campo {@code registradoPor}-forjado en el cuerpo apuntando a otro usuario NUNCA tiene
+     * efecto (spec: "Forged registrado_por has no effect") -- {@code RegistrarCobroRequest} no
+     * tiene ese campo, así que Jackson lo ignora silenciosamente al deserializar, y el servicio
+     * SIEMPRE resuelve {@code registrado_por} del principal autenticado
+     * ({@code CobroFacturaService#resolverUsuarioAutenticado}). Se envía JSON crudo (no via
+     * {@code RegistrarCobroRequest}/Jackson) para simular exactamente un cliente que intenta
+     * inyectar ese campo.
+     */
+    @Test
+    void postCobroConCampoRegistradoPorForjadoEnElCuerpoEsIgnoradoYUsaElPrincipalAutenticado() throws Exception {
+        ContextoDePrueba ctx = crearContextoCompleto();
+        UUID facturaId = crearFacturaAPlazoAceptada(ctx, new BigDecimal("1000.00000"));
+        UUID otroUsuarioId = UUID.randomUUID();
+
+        String cuerpoConCampoForjado = ("{\"montoCobrado\": 500.00000, \"medioPago\": \"04\", "
+                + "\"referencia\": \"cobro-forjado\", \"registradoPor\": \"%s\"}").formatted(otroUsuarioId);
+
+        mockMvc.perform(post("/facturas/" + facturaId + "/cobros")
+                        .header("Authorization", "Bearer " + ctx.accessToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(cuerpoConCampoForjado))
+                .andExpect(status().isCreated());
+
+        TenantContext.set(ctx.empresaId());
+        try {
+            var cobros = cobroFacturaRepository.findByFacturaIdOrderByFechaCobroAscIdAsc(facturaId);
+            assertThat(cobros).hasSize(1);
+            assertThat(cobros.get(0).getRegistradoPor())
+                    .isEqualTo(ctx.usuarioId())
+                    .isNotEqualTo(otroUsuarioId);
+        } finally {
+            TenantContext.clear();
+        }
+    }
+
+    /**
+     * {@code GET /facturas/{id}/cobros} devuelve el historial ORDENADO (por fecha de cobro
+     * ascendente) más la proyección de saldo/estado actual, para una factura con 2 cobros
+     * previos.
+     */
+    @Test
+    void getCobrosRetornaHistorialOrdenadoYProyeccionActualConDosCobrosPrevios() throws Exception {
+        ContextoDePrueba ctx = crearContextoCompleto();
+        UUID facturaId = crearFacturaAPlazoAceptada(ctx, new BigDecimal("1000.00000"));
+
+        RegistrarCobroRequest primerCobro =
+                new RegistrarCobroRequest(new BigDecimal("300.00000"), "04", "cobro-1", null);
+        RegistrarCobroRequest segundoCobro =
+                new RegistrarCobroRequest(new BigDecimal("200.00000"), "01", "cobro-2", null);
+
+        mockMvc.perform(post("/facturas/" + facturaId + "/cobros")
+                        .header("Authorization", "Bearer " + ctx.accessToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(primerCobro)))
+                .andExpect(status().isCreated());
+        mockMvc.perform(post("/facturas/" + facturaId + "/cobros")
+                        .header("Authorization", "Bearer " + ctx.accessToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(segundoCobro)))
+                .andExpect(status().isCreated());
+
+        mockMvc.perform(get("/facturas/" + facturaId + "/cobros")
+                        .header("Authorization", "Bearer " + ctx.accessToken()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.estado.estadoCobro").value("PARCIAL"))
+                .andExpect(jsonPath("$.estado.saldoPendiente").value(630.0))
+                .andExpect(jsonPath("$.cobros.length()").value(2))
+                .andExpect(jsonPath("$.cobros[0].montoCobrado").value(300.0))
+                .andExpect(jsonPath("$.cobros[0].referencia").value("cobro-1"))
+                .andExpect(jsonPath("$.cobros[1].montoCobrado").value(200.0))
+                .andExpect(jsonPath("$.cobros[1].referencia").value("cobro-2"));
+    }
+
+    /**
+     * El spec exige que una factura fuera de alcance (contado, '01') se distinga de una factura
+     * verdaderamente inexistente -- NUNCA ambas como 404 (ver
+     * {@code FacturaNoCobrableException}). Se prueban ambos verbos ({@code POST}/{@code GET})
+     * contra ambos casos, asertando explícitamente los DOS status codes distintos.
+     */
+    @Test
+    void cobrosSobreFacturaDeContadoRetorna400DistintoDeFacturaInexistenteQueRetorna404() throws Exception {
+        ContextoDePrueba ctx = crearContextoCompleto();
+        UUID facturaContadoId = crearFactura(ctx);
+        UUID facturaInexistenteId = UUID.randomUUID();
+
+        RegistrarCobroRequest request = new RegistrarCobroRequest(new BigDecimal("100.00000"), "04", null, null);
+
+        mockMvc.perform(post("/facturas/" + facturaContadoId + "/cobros")
+                        .header("Authorization", "Bearer " + ctx.accessToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.mensaje").isString());
+
+        mockMvc.perform(get("/facturas/" + facturaContadoId + "/cobros")
+                        .header("Authorization", "Bearer " + ctx.accessToken()))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.mensaje").isString());
+
+        mockMvc.perform(post("/facturas/" + facturaInexistenteId + "/cobros")
+                        .header("Authorization", "Bearer " + ctx.accessToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.mensaje").isString());
+
+        mockMvc.perform(get("/facturas/" + facturaInexistenteId + "/cobros")
                         .header("Authorization", "Bearer " + ctx.accessToken()))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.mensaje").isString());
