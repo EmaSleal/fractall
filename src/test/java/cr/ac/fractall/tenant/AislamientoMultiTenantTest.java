@@ -39,6 +39,7 @@ import cr.ac.fractall.empresa.repositorio.EmpresaRepository;
 import cr.ac.fractall.facturacion.modelo.CobroFactura;
 import cr.ac.fractall.facturacion.modelo.ComprobanteElectronico;
 import cr.ac.fractall.facturacion.modelo.Factura;
+import cr.ac.fractall.facturacion.modelo.FacturaEstadoCobro;
 import cr.ac.fractall.facturacion.modelo.FacturaInformacionReferencia;
 import cr.ac.fractall.facturacion.modelo.LineaFactura;
 import cr.ac.fractall.facturacion.repositorio.CobroFacturaRepository;
@@ -538,6 +539,209 @@ class AislamientoMultiTenantTest {
         Exception excepcion = assertThrows(Exception.class,
                 () -> cobroFacturaRepository.saveAndFlush(cobroCruzado));
         assertThat(raizDe(excepcion).getMessage()).contains("Referencia cruzada entre tenants");
+    }
+
+    /**
+     * PR2 (Release 3, Fase C): {@code trg_validar_alcance_cobro_factura} rechaza cualquier
+     * {@code condicion_venta} fuera de {@code ('02','03','04')} -- contado ({@code 01}) se
+     * considera cobrado en el momento de la emisión; permitir un registro de cobro aparte abriría
+     * una vía de doble conteo. Ver el comentario de cabecera de la sección 3 de
+     * {@code V23__cobro_factura.sql}.
+     */
+    @Test
+    void cobroSobreFacturaDeContadoEsRechazado() {
+        TenantContext.set(empresaA.getId());
+        Cliente cliente = clienteRepository.save(nuevoCliente("Cliente Cobro Contado", "600000014"));
+        Factura facturaContado = facturaRepository.save(nuevaFactura(cliente.getId(), empresaA.getCreadoPor()));
+
+        CobroFactura cobro = nuevoCobro(facturaContado.getId(), "500.00000", usuario.getId());
+
+        Exception excepcion = assertThrows(Exception.class, () -> cobroFacturaRepository.saveAndFlush(cobro));
+        assertThat(raizDe(excepcion).getMessage()).contains("condicion_venta 01");
+    }
+
+    /**
+     * Triangulación de {@link #cobroSobreFacturaDeContadoEsRechazado}: un arrendamiento
+     * ({@code 05} con opción de compra, {@code 06} en función financiera) no es "una factura con
+     * saldo pendiente" sino una serie de pagos recurrentes con calendario propio -- forzarlo
+     * dentro de {@code cobro_factura} produciría un modelo incorrecto. Mismo trigger, mensaje que
+     * nombra la {@code condicion_venta} real en cada caso.
+     */
+    @Test
+    void cobroSobreFacturaDeArrendamientoEsRechazado() {
+        TenantContext.set(empresaA.getId());
+
+        Cliente clienteArrendamientoOpcion = clienteRepository.save(
+                nuevoCliente("Cliente Cobro Arrendamiento Opcion", "600000015"));
+        Factura facturaArrendamientoOpcion = facturaRepository.save(
+                nuevaFacturaAPlazo(clienteArrendamientoOpcion.getId(), empresaA.getCreadoPor(), "05"));
+        CobroFactura cobroOpcion = nuevoCobro(facturaArrendamientoOpcion.getId(), "500.00000", usuario.getId());
+        Exception excepcionOpcion = assertThrows(Exception.class,
+                () -> cobroFacturaRepository.saveAndFlush(cobroOpcion));
+        assertThat(raizDe(excepcionOpcion).getMessage()).contains("condicion_venta 05");
+
+        Cliente clienteArrendamientoFinanciero = clienteRepository.save(
+                nuevoCliente("Cliente Cobro Arrendamiento Financiero", "600000016"));
+        Factura facturaArrendamientoFinanciero = facturaRepository.save(
+                nuevaFacturaAPlazo(clienteArrendamientoFinanciero.getId(), empresaA.getCreadoPor(), "06"));
+        CobroFactura cobroFinanciero = nuevoCobro(facturaArrendamientoFinanciero.getId(), "500.00000", usuario.getId());
+        Exception excepcionFinanciero = assertThrows(Exception.class,
+                () -> cobroFacturaRepository.saveAndFlush(cobroFinanciero));
+        assertThat(raizDe(excepcionFinanciero).getMessage()).contains("condicion_venta 06");
+    }
+
+    /**
+     * PR2 (Release 3, Fase C): {@code trg_validar_tope_cobro_factura} rechaza un cobro cuyo
+     * acumulado excede el saldo neto de la factura -- sin notas de crédito de por medio, el saldo
+     * neto es simplemente {@code factura.total}. Ver la sección 4 de
+     * {@code V23__cobro_factura.sql}.
+     */
+    @Test
+    void topeCobroBloqueaExcesoSobreElSaldoNeto() {
+        TenantContext.set(empresaA.getId());
+        Cliente cliente = clienteRepository.save(nuevoCliente("Cliente Tope Cobro", "600000017"));
+        Factura facturaCredito = facturaRepository.save(
+                nuevaFacturaAPlazo(cliente.getId(), empresaA.getCreadoPor(), "02"));
+        // facturaCredito.total = 1130.00000 (default de nuevaFactura)
+
+        CobroFactura cobroExcesivo = nuevoCobro(facturaCredito.getId(), "1130.00001", usuario.getId());
+
+        Exception excepcion = assertThrows(Exception.class,
+                () -> cobroFacturaRepository.saveAndFlush(cobroExcesivo));
+        assertThat(raizDe(excepcion).getMessage()).containsIgnoringCase("excede");
+    }
+
+    /**
+     * Contraparte de {@link #topeCobroBloqueaExcesoSobreElSaldoNeto}: el trigger de tope suma
+     * TODOS los cobros previos contra la misma factura, no solo compara contra el último
+     * insertado -- dos cobros parciales cuya suma NO excede el total deben poder insertarse
+     * ambos.
+     */
+    @Test
+    void segundoCobroParcialSePermiteMientrasNoExcedaElSaldo() {
+        TenantContext.set(empresaA.getId());
+        Cliente cliente = clienteRepository.save(nuevoCliente("Cliente Cobro Parcial", "600000018"));
+        Factura facturaCredito = facturaRepository.save(
+                nuevaFacturaAPlazo(cliente.getId(), empresaA.getCreadoPor(), "02"));
+        // facturaCredito.total = 1130.00000 (default de nuevaFactura)
+
+        CobroFactura primerCobro = cobroFacturaRepository.saveAndFlush(
+                nuevoCobro(facturaCredito.getId(), "500.00000", usuario.getId()));
+        CobroFactura segundoCobro = cobroFacturaRepository.saveAndFlush(
+                nuevoCobro(facturaCredito.getId(), "600.00000", usuario.getId()));
+
+        assertThat(primerCobro.getId()).isNotNull();
+        assertThat(segundoCobro.getId()).isNotNull();
+        assertThat(cobroFacturaRepository.sumarMontoCobradoPorFactura(facturaCredito.getId()))
+                .isEqualByComparingTo("1100.00000");
+    }
+
+    /**
+     * Triangulación del límite exacto: el trigger usa {@code >}, no {@code >=} (ver
+     * {@code fn_validar_tope_cobro_factura} en V23) -- un cobro que lleva el acumulado
+     * exactamente al saldo neto debe permitirse (si no, pagar una factura completa sería
+     * imposible), y el mínimo exceso posterior representable en {@code NUMERIC(14,5)} debe
+     * bloquearse.
+     */
+    @Test
+    void cobroPorElSaldoExactoSePermiteYElMinimoExcesoPosteriorSeBloquea() {
+        TenantContext.set(empresaA.getId());
+        Cliente cliente = clienteRepository.save(nuevoCliente("Cliente Cobro Exacto", "600000019"));
+        Factura facturaCredito = facturaRepository.save(
+                nuevaFacturaAPlazo(cliente.getId(), empresaA.getCreadoPor(), "02"));
+        // facturaCredito.total = 1130.00000 (default de nuevaFactura)
+
+        CobroFactura cobroExacto = cobroFacturaRepository.saveAndFlush(
+                nuevoCobro(facturaCredito.getId(), "1130.00000", usuario.getId()));
+        assertThat(cobroExacto.getId()).isNotNull();
+
+        CobroFactura cobroExceso = nuevoCobro(facturaCredito.getId(), "0.00001", usuario.getId());
+        Exception excepcion = assertThrows(Exception.class,
+                () -> cobroFacturaRepository.saveAndFlush(cobroExceso));
+        assertThat(raizDe(excepcion).getMessage()).containsIgnoringCase("excede");
+    }
+
+    /**
+     * Requisito "Over-Collection Cap (NC-Netted)" del spec: una Nota de Crédito ACEPTADA que
+     * referencia la factura origen reduce el tope de cobro y el saldo reportado por la vista --
+     * no basta con {@code factura.total} en bruto. Orden de fixture obligatorio: el comprobante
+     * {@code '01'} de la factura origen debe existir ANTES de insertar la NC, porque
+     * {@code fn_validar_referencia_es_factura_electronica} lo lee en {@code BEFORE INSERT} (V18).
+     */
+    @Test
+    void notaCreditoAceptadaReduceElTopeDeCobroYElSaldoDeLaVista() {
+        TenantContext.set(empresaA.getId());
+        Cliente cliente = clienteRepository.save(nuevoCliente("Cliente Cobro NC Neteo", "600000020"));
+        Factura facturaOrigen = facturaRepository.save(
+                nuevaFacturaAPlazo(cliente.getId(), empresaA.getCreadoPor(), "02"));
+        comprobanteElectronicoRepository.saveAndFlush(
+                nuevoComprobante(facturaOrigen.getId(), "01", "origen-cobro-nc-01", "clave-origen-cobro-nc-0001"));
+        // facturaOrigen.total = 1130.00000 (default de nuevaFactura)
+
+        Factura notaCredito = nuevaFactura(cliente.getId(), empresaA.getCreadoPor());
+        notaCredito.setFacturaReferenciaId(facturaOrigen.getId());
+        notaCredito.setTotal(new BigDecimal("130.00000"));
+        notaCredito = facturaRepository.saveAndFlush(notaCredito);
+
+        ComprobanteElectronico comprobanteNc = nuevoComprobante(
+                notaCredito.getId(), "03", "nc-cobro-neteo-01", "clave-nc-cobro-neteo-0001");
+        comprobanteNc.setEstado("ACEPTADO");
+        comprobanteElectronicoRepository.saveAndFlush(comprobanteNc);
+        // saldo neto = 1130.00000 (total) - 130.00000 (NC aceptada) = 1000.00000
+
+        CobroFactura cobroExacto = cobroFacturaRepository.saveAndFlush(
+                nuevoCobro(facturaOrigen.getId(), "1000.00000", usuario.getId()));
+        assertThat(cobroExacto.getId()).isNotNull();
+
+        CobroFactura cobroExceso = nuevoCobro(facturaOrigen.getId(), "0.00001", usuario.getId());
+        Exception excepcion = assertThrows(Exception.class,
+                () -> cobroFacturaRepository.saveAndFlush(cobroExceso));
+        assertThat(raizDe(excepcion).getMessage()).containsIgnoringCase("excede");
+
+        FacturaEstadoCobro estado = facturaEstadoCobroRepository.findByFacturaId(facturaOrigen.getId())
+                .orElseThrow();
+        assertThat(estado.getTotalNotaCredito()).isEqualByComparingTo("130.00000");
+        assertThat(estado.getTotalNeto()).isEqualByComparingTo("1000.00000");
+        assertThat(estado.getSaldoPendiente()).isEqualByComparingTo("0.00000");
+        assertThat(estado.getEstadoCobro()).isEqualTo("COBRADO");
+    }
+
+    /**
+     * Requisito "Balance Projection View" del spec: {@code factura_estado_cobro} debe reportar
+     * {@code PENDIENTE}/{@code PARCIAL}/{@code COBRADO} para CADA {@code condicion_venta}
+     * elegible ({@code 02}, {@code 03}, {@code 04}), no solo crédito -- las tres comparten la
+     * misma mecánica de cobro diferido (ver la sección 3 de {@code V23__cobro_factura.sql}).
+     */
+    @Test
+    void vistaReportaEstadosCorrectosParaCreditoConsignacionYApartado() {
+        TenantContext.set(empresaA.getId());
+        String[] condicionesElegibles = {"02", "03", "04"};
+        String[] numerosIdentificacion = {"600000021", "600000022", "600000023"};
+
+        for (int i = 0; i < condicionesElegibles.length; i++) {
+            Cliente cliente = clienteRepository.save(
+                    nuevoCliente("Cliente Vista Estados " + condicionesElegibles[i], numerosIdentificacion[i]));
+            Factura factura = facturaRepository.save(
+                    nuevaFacturaAPlazo(cliente.getId(), empresaA.getCreadoPor(), condicionesElegibles[i]));
+            // factura.total = 1130.00000 (default de nuevaFactura)
+
+            FacturaEstadoCobro pendiente = facturaEstadoCobroRepository.findByFacturaId(factura.getId())
+                    .orElseThrow();
+            assertThat(pendiente.getEstadoCobro()).isEqualTo("PENDIENTE");
+            assertThat(pendiente.getTotalCobrado()).isEqualByComparingTo("0.00000");
+
+            cobroFacturaRepository.saveAndFlush(nuevoCobro(factura.getId(), "500.00000", usuario.getId()));
+            FacturaEstadoCobro parcial = facturaEstadoCobroRepository.findByFacturaId(factura.getId())
+                    .orElseThrow();
+            assertThat(parcial.getEstadoCobro()).isEqualTo("PARCIAL");
+            assertThat(parcial.getSaldoPendiente()).isEqualByComparingTo("630.00000");
+
+            cobroFacturaRepository.saveAndFlush(nuevoCobro(factura.getId(), "630.00000", usuario.getId()));
+            FacturaEstadoCobro cobrado = facturaEstadoCobroRepository.findByFacturaId(factura.getId())
+                    .orElseThrow();
+            assertThat(cobrado.getEstadoCobro()).isEqualTo("COBRADO");
+            assertThat(cobrado.getSaldoPendiente()).isEqualByComparingTo("0.00000");
+        }
     }
 
     /**
