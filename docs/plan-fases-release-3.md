@@ -151,33 +151,42 @@ La implementación real (`V23__cobro_factura.sql`) usa dos subconsultas `CROSS J
 
 ---
 
-## Fase D — Motor de reportes: IVA mensual y Flujo de Caja
+## Fase D — Motor de reportes: IVA mensual y Flujo de Caja — 🟡 PARCIAL (D.1/D.3 CERRADOS, D.2 PENDIENTE)
 
-**Depende de:** Fase C (el reporte de Flujo de Caja requiere `cobro_factura`/`factura_estado_cobro`).
+> **Cierre parcial (2026-08-30):** esta fase se partió en dos cambios SDD independientes durante `sdd-propose`, porque D.1 y D.2 no comparten query, agregado, invariante ni modo de falla — solo un prefijo de URL y un encabezado de este documento. **Change 1 — `reporte-iva-mensual`** (D.1 + D.3) está implementado, mergeado a `main` y archivado vía PRs [#41](https://github.com/EmaSleal/fractall/pull/41)-[#48](https://github.com/EmaSleal/fractall/pull/48) + aterrizaje final [#49](https://github.com/EmaSleal/fractall/pull/49). Verificado con `sdd-verify`: PASS (0 críticos, 0 warnings), 597/597 tests. **Change 2 — `reporte-flujo-caja`** (D.2) no ha arrancado su propio ciclo SDD; debe demostrar que puede reutilizar sin modificar la convención de exportación que Change 1 ya envió (`reportes/export/`: `CursorPdf`, los writers, el contrato Resumen/Detalle) — si no puede, es señal de que la abstracción necesita ajuste, no que Change 2 deba bifurcarla.
+>
+> **Hallazgo colateral no planeado:** al extraer la fórmula de impuesto que el reporte de IVA necesitaba, se encontró un defecto real ya en producción en `FacturaPdfService` — la exoneración inline (`ImpuestoLineaExoneracion`) nunca se restaba del impuesto mostrado en el PDF de factura, porque el código solo restaba el campo legacy `monto_exoneracion_aplicado`, que para una línea con exoneración inline es `NULL` por diseño. El test existente que debía cubrir este caso usaba un fixture estructuralmente imposible (`exoneracionId` seteado junto con una fila inline, algo que `LineaFacturaEnsamblador` nunca produce), así que el defecto nunca falló ningún test. Corregido en el mismo cambio (PR8), con el mismo criterio de "solución integral, no parche" ya aplicado en el cierre de Fase A y en el neteo de NC de Fase C.
+>
+> **Correcciones al texto original de D.1** (la descripción de abajo ya refleja lo implementado, no el sketch original): (a) el neteo de NC/ND no es un JOIN de agregación aparte — una NC/ND es en sí misma una fila `factura` con sus propias `linea_factura` y su propia tarifa, así que el reporte es una travesía con signo (`01`/`02`/`04` → +1, `03` → −1) sobre comprobantes aceptados del período, y el neteo por tarifa sale solo; (b) el período de una NC/ND se atribuye por su propia `fecha_emision` de emisión, no por el período de la factura que referencia; (c) el join usa JPQL con filtrado automático de tenant (`@TenantId`), no SQL nativo con `empresa_id` manual como el resto de reportes nativos de este proyecto, porque `desde`/`hasta` son obligatorios y no disparan el problema de tipos de parámetro opcional que motivó esa convención en otros lados; (d) el texto original no mencionaba exoneraciones — el reporte neteas ambas fuentes (legacy e inline) con la precedencia real del motor de facturación, no una de las dos.
+
+**Depende de:** Fase C (el reporte de Flujo de Caja requiere `cobro_factura`/`factura_estado_cobro`) — D.2 sigue pendiente por esta dependencia, ya satisfecha desde el cierre de Fase C.
 
 **Trabajo:**
 
-### D.1 — Reporte de IVA mensual (D-104)
+### D.1 — Reporte de IVA mensual (D-104) — ✅ CERRADO (`reporte-iva-mensual`)
 
-- `GET /reportes/iva?desde=&hasta=`: agregación sobre `comprobante_electronico` (filtrado a `estado = 'ACEPTADO'` exclusivamente) JOIN `factura` JOIN `linea_factura`, agrupado por `porcentaje_impuesto_aplicado`.
-- Columna separada para ventas exentas (`gravado_aplicado = false`), distinta de gravadas al 0% — fiscalmente no son lo mismo aunque el monto de impuesto resultante sea igual.
-- Neteo obligatorio contra NC/ND del mismo período (`tipo_comprobante` `03`/`02`, vía `factura_referencia_id`) antes de totalizar — un IVA mensual que ignora las NC del período sobreestima la obligación real.
-- Response incluye desglose por tarifa + totalizador de IVA débito fiscal del período.
+- `GET /reportes/iva?desde=&hasta=`: travesía firmada sobre `comprobante_electronico` (filtrado a `estado = 'ACEPTADO'` exclusivamente) JOIN `factura` JOIN `linea_factura` vía JPQL, agrupado por `(gravado_aplicado, porcentaje_impuesto_aplicado)`.
+- Columna separada para ventas exentas (`gravado_aplicado = false`), distinta de gravadas al 0% — fiscalmente no son lo mismo aunque el monto de impuesto resultante sea igual. **Implementado exactamente así, confirmado correcto.**
+- Neteo de NC/ND del período (`tipo_comprobante` `03`/`02`) vía travesía con signo, cada nota atribuida por su propia fecha de emisión (no la de la factura referenciada) — ver corrección (a)/(b) arriba.
+- Response incluye desglose por tarifa + totalizador de IVA débito fiscal del período. Sin columna de `medio_pago` en ningún lado — decisión deliberada, ese campo no tiene relación causal con la obligación de IVA y pertenece al reporte de flujo de caja (D.2), no a este.
 
-### D.2 — Reporte de Flujo de Caja
+### D.2 — Reporte de Flujo de Caja — ⏳ PENDIENTE (change SDD `reporte-flujo-caja`, no iniciado)
 
 - `GET /reportes/flujo-caja?desde=&hasta=`: dos series temporales separadas, no una sola cifra — ventas del período (`factura.fecha_emision`, comprobante `ACEPTADO`) y cobros del período (`cobro_factura.fecha_cobro`). Un cobro de agosto puede corresponder a una factura de julio; mezclarlas en una sola serie produce un número que no responde ni "cuánto vendí" ni "cuánto cobré".
-- Desglose por `condicion_venta` (contado vs. crédito) y por `medio_pago`.
-- Totalizador de cartera pendiente al cierre del período: `SUM(saldo_pendiente)` desde `factura_estado_cobro` para facturas con `fecha_emision` dentro o antes del rango consultado.
+- Desglose por `condicion_venta` (contado vs. crédito) en la serie de ventas, y por `medio_pago` en la serie de cobros — **no** al revés: `factura.medio_pago` es una intención declarada al facturar, no lo efectivamente cobrado, y mezclarlo en la serie de ventas presentaría intención como hecho (decisión ya tomada en la propuesta de Change 1, a reconfirmar cuando arranque este cambio).
+- Totalizador de cartera pendiente al cierre del período: **advertencia ya documentada en la propuesta de Change 1** — `SUM(saldo_pendiente)` desde `factura_estado_cobro` tal como dice esta línea es un bug de corrección real para cualquier período que no sea "hoy", porque la vista no tiene corte de fecha y neteo cobros/NC posteriores al cierre consultado. La query correcta debe evaluar cada componente acotado a `fecha_corte`, no leer la vista directamente. Ver el detalle completo en `sdd/reportes-iva-flujo-caja/proposal` (Engram, decisión D3 del documento original).
 - Comparativo contra el período anterior de igual duración (mismo rango de días, desplazado hacia atrás) — no solo snapshot del período consultado.
 
-### D.3 — Exportación en dos niveles (convención general, no exclusiva de estos dos reportes)
+### D.3 — Exportación en dos niveles (convención general, no exclusiva de estos dos reportes) — ✅ CERRADO para IVA, pendiente de reutilización en D.2
 
-- **PDF:** página 1 con los agregados ya calculados (desglose por tarifa de IVA, KPIs de flujo de caja, cartera pendiente) — legible sin procesar nada más; página 2 con el detalle transaccional fila por fila.
-- **Excel:** misma separación pero como hojas, no páginas — pestaña `Resumen` (agregados) y pestaña `Detalle` (una fila por transacción, sin agregación), dado que un contador que va a cruzar esta información en Excel espera pestañas separadas, no un salto de página dentro de una hoja continua.
-- Esta convención de "Resumen + Detalle" queda establecida como estándar para cualquier reporte exportable futuro del sistema, no se rediseña reporte por reporte.
+- **PDF:** página 1 con los agregados ya calculados — legible sin procesar nada más; página 2+ con el detalle transaccional fila por fila, con salto de página y reemisión de encabezado automáticos (`CursorPdf`, nuevo en `reportes/export/`).
+- **Excel:** misma separación pero como hojas, no páginas — pestaña `Resumen` (agregados) y pestaña `Detalle` (una fila por transacción, sin agregación).
+- Implementado y probado contra el reporte de IVA (`reportes/export/CursorPdf`, `ReporteIvaExcelWriter`, `ReporteIvaPdfWriter`). Primera dependencia de Apache POI en el proyecto (`poi-ooxml`), con 2 pines de mediación explícitos por un downgrade real de `commons-compress`/`commons-io` que Testcontainers necesitaba en versión más nueva.
+- Esta convención de "Resumen + Detalle" queda establecida como estándar para cualquier reporte exportable futuro del sistema, no se rediseña reporte por reporte — **pendiente de confirmar** que D.2 la reutiliza sin modificarla cuando arranque su propio ciclo SDD; si necesita bifurcarla, es señal de que la abstracción estaba mal, no que D.2 deba forzarla.
 
-**Criterio de salida:** contra un set de datos de prueba con facturas gravadas a múltiples tarifas, una NC parcial, y facturas a crédito con cobros parciales registrados, ambos reportes devuelven cifras verificables a mano; la exportación PDF y Excel de ambos respeta la convención Resumen/Detalle; el reporte de IVA neteado contra NC coincide con el cálculo manual esperado.
+**Criterio de salida (D.1 — cumplido):** contra un set de datos de prueba con facturas gravadas a múltiples tarifas, exoneraciones legacy e inline, y una NC/ND en el período, el reporte de IVA devuelve cifras verificables a mano y reconciliadas contra `factura.total_impuesto` almacenado; la exportación PDF y Excel respeta la convención Resumen/Detalle.
+
+**Criterio de salida (D.2 — pendiente):** contra un set de datos de prueba con facturas a crédito con cobros parciales registrados, el reporte de flujo de caja devuelve cifras verificables a mano; la cartera pendiente a un corte pasado excluye cobros posteriores a ese corte; la exportación reutiliza la convención de D.3 sin modificarla.
 
 ---
 
