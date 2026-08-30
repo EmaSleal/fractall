@@ -447,11 +447,17 @@ class FacturaPdfServiceTest {
 
     // -------------------------------------------------------------------------
     // Test 13: exoneracion inline (bloque ExoneracionRequest) -- detalle completo por linea
+    //
+    // Reconstruido (discovery 4 del diseño): la version anterior de este test combinaba
+    // exoneracionId != null CON una fila ImpuestoLineaExoneracion -- una forma que
+    // LineaFacturaEnsamblador:150 nunca produce en produccion (las columnas legacy
+    // quedan en null cuando la exoneracion es inline). Se reconstruye con
+    // stubLineaConExoneracionInline (ambas columnas legacy en null, solo la fila inline).
     // -------------------------------------------------------------------------
     @Test
     void generarConExoneracionInlineMuestraInstitucionYMontoPorLinea() {
-        LineaFactura linea = stubLinea(facturaId, productoAId, 1,
-                new BigDecimal("1000.00000"), new BigDecimal("130.00000"), UUID.randomUUID());
+        LineaFactura linea = stubLineaConExoneracionInline(facturaId, productoAId, 1,
+                new BigDecimal("1000.00000"));
         when(lineaFacturaRepository.findByFacturaIdOrderByNumeroLinea(facturaId))
                 .thenReturn(List.of(linea));
         when(productoRepository.findById(productoAId))
@@ -474,6 +480,68 @@ class FacturaPdfServiceTest {
         assertThat(texto).contains("Ministerio de Hacienda");
         assertThat(texto).contains("EX-2026-001");
         assertThat(texto).contains("130.00");
+    }
+
+    // -------------------------------------------------------------------------
+    // Test 13b (RED para el fix del defecto real): la version inline-only de una
+    // exoneracion debe restarse del impuesto de la linea. Antes del fix,
+    // linea.getExoneracionId() es null (forma real de produccion) asi que el guard de
+    // ":439" nunca dispara y el impuesto/total de la linea se imprimen SIN restar el
+    // monto exonerado -- esto es el defecto real en facturas PDF ya emitidas.
+    // -------------------------------------------------------------------------
+    @Test
+    void generarConExoneracionInlineRestaElMontoDelImpuestoDeLaLinea() {
+        LineaFactura linea = stubLineaConExoneracionInline(facturaId, productoAId, 1,
+                new BigDecimal("1000.00000"));
+        when(lineaFacturaRepository.findByFacturaIdOrderByNumeroLinea(facturaId))
+                .thenReturn(List.of(linea));
+        when(productoRepository.findById(productoAId))
+                .thenReturn(Optional.of(productoA));
+
+        ImpuestoLineaExoneracion exoneracionInline = new ImpuestoLineaExoneracion();
+        exoneracionInline.setLineaId(linea.getId());
+        exoneracionInline.setNombreInstitucion("01");
+        exoneracionInline.setMontoExoneracion(new BigDecimal("130.00000"));
+        when(impuestoLineaExoneracionRepository.findByLineaId(linea.getId()))
+                .thenReturn(Optional.of(exoneracionInline));
+
+        byte[] pdf = servicio.generarPdf(comprobanteId);
+
+        String texto = extractText(pdf);
+        // Columnas %Imp / Imp. / Total de la fila: 13.0% de impuesto bruto, pero neto en
+        // 0.00 (1000.00 x 13% = 130.00, menos 130.00 exonerado inline) y total = subtotal.
+        String segmentoEsperado = String.format("%5.1f %8.2f %10.2f", 13.0f, 0.00f, 1000.00f);
+        assertThat(texto).contains(segmentoEsperado);
+    }
+
+    // -------------------------------------------------------------------------
+    // Test 13c (pin discovery 6 del diseño): al repuntar a CalculadoraImpuestoLinea se
+    // remueve silenciosamente el piso .max(ZERO) que FacturaPdfService aplicaba antes --
+    // un monto exonerado mayor al impuesto bruto debe imprimirse NEGATIVO, sin piso.
+    // -------------------------------------------------------------------------
+    @Test
+    void generarConExoneracionInlineMayorAlImpuestoNoAplicaPiso() {
+        LineaFactura linea = stubLineaConExoneracionInline(facturaId, productoAId, 1,
+                new BigDecimal("1000.00000"));
+        when(lineaFacturaRepository.findByFacturaIdOrderByNumeroLinea(facturaId))
+                .thenReturn(List.of(linea));
+        when(productoRepository.findById(productoAId))
+                .thenReturn(Optional.of(productoA));
+
+        ImpuestoLineaExoneracion exoneracionInline = new ImpuestoLineaExoneracion();
+        exoneracionInline.setLineaId(linea.getId());
+        exoneracionInline.setNombreInstitucion("01");
+        exoneracionInline.setMontoExoneracion(new BigDecimal("200.00000"));
+        when(impuestoLineaExoneracionRepository.findByLineaId(linea.getId()))
+                .thenReturn(Optional.of(exoneracionInline));
+
+        byte[] pdf = servicio.generarPdf(comprobanteId);
+
+        String texto = extractText(pdf);
+        // 1000.00 x 13% = 130.00 bruto; 130.00 - 200.00 = -70.00 neto (sin piso en cero);
+        // total de linea = 1000.00 + (-70.00) = 930.00.
+        String segmentoEsperado = String.format("%5.1f %8.2f %10.2f", 13.0f, -70.00f, 930.00f);
+        assertThat(texto).contains(segmentoEsperado);
     }
 
     // -------------------------------------------------------------------------
@@ -608,6 +676,32 @@ class FacturaPdfServiceTest {
             l.setMontoExoneracionAplicado(montoExoneracion);
             l.setPorcentajeExoneracionAplicado(new BigDecimal("100.00"));
         }
+        return l;
+    }
+
+    /**
+     * Linea exonerada por la via INLINE real de produccion: ambas columnas legacy
+     * ({@code exoneracionId}, {@code montoExoneracionAplicado}) quedan en null -- la
+     * exoneracion vive exclusivamente en la fila {@code ImpuestoLineaExoneracion}
+     * (ver {@code LineaFacturaEnsamblador:150}). La combinacion "exoneracionId no nulo
+     * Y fila inline presente" (usada por el fixture anterior de este test) es
+     * estructuralmente imposible en produccion -- ver design discovery 4.
+     */
+    private LineaFactura stubLineaConExoneracionInline(UUID factId, UUID prodId, int numero,
+            BigDecimal subtotal) {
+        LineaFactura l = new LineaFactura();
+        setField(l, "id", UUID.randomUUID());
+        l.setFacturaId(factId);
+        l.setProductoId(prodId);
+        l.setNumeroLinea(numero);
+        l.setCantidad(BigDecimal.ONE);
+        l.setPrecioUnitario(subtotal);
+        l.setSubtotal(subtotal);
+        l.setCodigoCabysAplicado("2132100000100");
+        l.setGravadoAplicado(true);
+        l.setPorcentajeImpuestoAplicado(new BigDecimal("13.00"));
+        l.setExoneracionId(null);
+        l.setMontoExoneracionAplicado(null);
         return l;
     }
 
