@@ -26,8 +26,10 @@ import cr.ac.fractall.empresa.repositorio.EmpresaRepository;
 import cr.ac.fractall.facturacion.modelo.CobroFactura;
 import cr.ac.fractall.facturacion.modelo.ComprobanteElectronico;
 import cr.ac.fractall.facturacion.modelo.Factura;
+import cr.ac.fractall.facturacion.modelo.FacturaEstadoCobro;
 import cr.ac.fractall.facturacion.repositorio.CobroFacturaRepository;
 import cr.ac.fractall.facturacion.repositorio.ComprobanteElectronicoRepository;
+import cr.ac.fractall.facturacion.repositorio.FacturaEstadoCobroRepository;
 import cr.ac.fractall.facturacion.repositorio.FacturaRepository;
 import cr.ac.fractall.seguridad.modelo.Usuario;
 import cr.ac.fractall.seguridad.repositorio.UsuarioRepository;
@@ -35,9 +37,9 @@ import cr.ac.fractall.tenant.TenantContext;
 
 /**
  * Prueba de integración de {@link ReporteFlujoCajaRepository} -- Q1 ({@code buscarVentasEnPeriodo})
- * y Q2 ({@code buscarCobrosEnPeriodo}) (Release 3 / Fase D, PR2 de {@code reporte-flujo-caja}, ver
- * el diseño obs #918). Q3 (cartera) llega en la PR3 de este mismo cambio -- ver
- * {@code sdd/reporte-flujo-caja/tasks}, Fase 2 vs. Fase 3.
+ * y Q2 ({@code buscarCobrosEnPeriodo}) llegaron en la PR2 de {@code reporte-flujo-caja} (Release 3
+ * / Fase D, ver el diseño obs #918). Esta PR (3 de 7) agrega Q3 ({@code
+ * buscarCarteraPendienteAlCorte}) -- ver {@code sdd/reporte-flujo-caja/tasks}, Fase 3.
  *
  * <p>Fixtures construidas por saves directos de repositorio (no vía {@code FacturaService}/
  * {@code CobroFacturaService}), mismo estilo que {@code V24CorregirAlcanceCobroFacturaIT}: ninguna
@@ -87,9 +89,19 @@ class ReporteFlujoCajaRepositoryIT {
     @Autowired
     private ReporteFlujoCajaRepository reporteFlujoCajaRepository;
 
+    @Autowired
+    private FacturaEstadoCobroRepository facturaEstadoCobroRepository;
+
     /** Período fijo de agosto 2026 (media-noche inclusiva / media-noche exclusiva), usado por todas las pruebas. */
     private static final LocalDateTime DESDE_AGOSTO = LocalDateTime.of(2026, 8, 1, 0, 0);
     private static final LocalDateTime HASTA_AGOSTO_EXCLUSIVO = LocalDateTime.of(2026, 9, 1, 0, 0);
+
+    /**
+     * Corte fijo para las pruebas de Q3 (cartera): {@code fechaCorte = 2026-08-15},
+     * {@code corteExclusivo = 2026-08-16T00:00} -- la forma medio-abierta que el servicio (Fase 4)
+     * resuelve como {@code fechaCorte.plusDays(1).atStartOfDay()} (Decisión B9, finding 5).
+     */
+    private static final LocalDateTime CORTE_EXCLUSIVO = LocalDateTime.of(2026, 8, 16, 0, 0);
 
     private Empresa empresaA;
     private Usuario usuarioA;
@@ -200,6 +212,25 @@ class ReporteFlujoCajaRepositoryIT {
         cobro.setRegistradoPor(registradoPor);
         cobro.setCreateDate(LocalDateTime.now());
         return cobro;
+    }
+
+    /**
+     * Arma una Nota de Crédito que referencia {@code origenId}, heredando {@code condicionVenta}
+     * (a mano, como haría {@code NotaCreditoDebitoService}), con su propio comprobante
+     * {@code tipo_comprobante='03'} en el {@code estado}/{@code fechaEmision} indicados -- usado por
+     * las pruebas de cota (2) y de exclusión de NC propia (Q3).
+     */
+    private Factura crearNotaCredito(
+            UUID clienteId, UUID creadoPor, String condicionVenta, UUID origenId, String total,
+            String estado, LocalDateTime fechaEmision, String consecutivo) {
+        Factura notaCredito = nuevaFactura(clienteId, creadoPor, condicionVenta, total);
+        notaCredito.setFacturaReferenciaId(origenId);
+        notaCredito = facturaRepository.saveAndFlush(notaCredito);
+        ComprobanteElectronico comprobanteNc = nuevoComprobante(
+                notaCredito.getId(), "03", consecutivo, "clave-" + consecutivo, fechaEmision);
+        comprobanteNc.setEstado(estado);
+        comprobanteElectronicoRepository.saveAndFlush(comprobanteNc);
+        return notaCredito;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -345,5 +376,276 @@ class ReporteFlujoCajaRepositoryIT {
                 .containsExactlyInAnyOrder(
                         tuple(origen.getId(), "01", new BigDecimal("1000.00000")),
                         tuple(notaCredito.getId(), "03", new BigDecimal("300.00000")));
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Q3 -- cartera pendiente punto-en-el-tiempo (PR3)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Aislamiento por tenant para Q3 -- una factura pendiente de OTRO tenant, dentro del mismo
+     * corte, nunca debe aparecer en la cartera del tenant actual.
+     */
+    @Test
+    void carteraDeOtroTenantNoApareceEnElCorte() {
+        Cliente clienteA = clienteRepository.save(nuevoCliente("Cliente Cartera A", "800000010"));
+        Factura facturaA = facturaRepository.save(
+                nuevaFactura(clienteA.getId(), usuarioA.getId(), "02", "1000.00000"));
+        comprobanteElectronicoRepository.saveAndFlush(nuevoComprobante(
+                facturaA.getId(), "01", "cartera-a-001", "clave-cartera-a-001",
+                LocalDateTime.of(2026, 8, 1, 9, 0)));
+
+        Usuario usuarioB = usuarioRepository.save(nuevoUsuario("D"));
+        Empresa empresaB = empresaRepository.save(nuevaEmpresa("Empresa Flujo Caja D S.A.", usuarioB.getId()));
+        TenantContext.set(empresaB.getId());
+        Cliente clienteB = clienteRepository.save(nuevoCliente("Cliente Cartera B", "800000011"));
+        Factura facturaB = facturaRepository.save(
+                nuevaFactura(clienteB.getId(), usuarioB.getId(), "02", "2000.00000"));
+        comprobanteElectronicoRepository.saveAndFlush(nuevoComprobante(
+                facturaB.getId(), "01", "cartera-b-001", "clave-cartera-b-001",
+                LocalDateTime.of(2026, 8, 1, 9, 0)));
+
+        TenantContext.set(empresaA.getId());
+        List<Object[]> filas = reporteFlujoCajaRepository.buscarCarteraPendienteAlCorte(
+                empresaA.getId(), CORTE_EXCLUSIVO);
+
+        assertThat(filas).hasSize(1);
+        assertThat((UUID) filas.get(0)[0]).isEqualTo(facturaA.getId());
+    }
+
+    /**
+     * Cota (1) -- un cobro registrado DESPUÉS del corte no se netea: la factura debe seguir
+     * mostrando el saldo previo al cobro.
+     */
+    @Test
+    void carteraExcluyeCobrosPosterioresAlCorte() {
+        Cliente cliente = clienteRepository.save(nuevoCliente("Cliente Cota1", "800000012"));
+        Factura factura = facturaRepository.save(
+                nuevaFactura(cliente.getId(), usuarioA.getId(), "02", "1000.00000"));
+        comprobanteElectronicoRepository.saveAndFlush(nuevoComprobante(
+                factura.getId(), "01", "cota1-001", "clave-cota1-001",
+                LocalDateTime.of(2026, 8, 1, 9, 0)));
+        // Cobro DESPUES del corte (2026-08-15) -- no debe netearse.
+        cobroFacturaRepository.saveAndFlush(nuevoCobro(
+                factura.getId(), "400.00000", "04", LocalDateTime.of(2026, 8, 20, 10, 0), usuarioA.getId()));
+
+        List<Object[]> filas = reporteFlujoCajaRepository.buscarCarteraPendienteAlCorte(
+                empresaA.getId(), CORTE_EXCLUSIVO);
+
+        assertThat(filas).hasSize(1);
+        Object[] fila = filas.get(0);
+        assertThat((UUID) fila[0]).isEqualTo(factura.getId());
+        assertThat((BigDecimal) fila[6]).as("saldo_pendiente").isEqualByComparingTo("1000.00000");
+    }
+
+    /**
+     * Cota (2) -- una NC aceptada emitida DESPUÉS del corte no se netea: el {@code total_neto} de
+     * la factura origen debe conservar el total bruto, sin descontar esa NC.
+     */
+    @Test
+    void carteraExcluyeNotasCreditoEmitidasDespuesDelCorte() {
+        Cliente cliente = clienteRepository.save(nuevoCliente("Cliente Cota2", "800000013"));
+        Factura origen = facturaRepository.save(
+                nuevaFactura(cliente.getId(), usuarioA.getId(), "02", "1000.00000"));
+        comprobanteElectronicoRepository.saveAndFlush(nuevoComprobante(
+                origen.getId(), "01", "cota2-origen", "clave-cota2-origen",
+                LocalDateTime.of(2026, 8, 1, 9, 0)));
+        // NC aceptada emitida DESPUES del corte -- no debe netearse.
+        crearNotaCredito(cliente.getId(), usuarioA.getId(), "02", origen.getId(), "300.00000",
+                "ACEPTADO", LocalDateTime.of(2026, 8, 20, 11, 0), "cota2-nc");
+
+        List<Object[]> filas = reporteFlujoCajaRepository.buscarCarteraPendienteAlCorte(
+                empresaA.getId(), CORTE_EXCLUSIVO);
+
+        assertThat(filas).hasSize(1);
+        Object[] fila = filas.get(0);
+        assertThat((UUID) fila[0]).isEqualTo(origen.getId());
+        assertThat((BigDecimal) fila[4]).as("total_neto").isEqualByComparingTo("1000.00000");
+        assertThat((BigDecimal) fila[6]).as("saldo_pendiente").isEqualByComparingTo("1000.00000");
+    }
+
+    /**
+     * Cota (3) -- una factura cuya PROPIA {@code fecha_emision} es posterior al corte se excluye
+     * POR COMPLETO del resultado, sin importar su saldo.
+     */
+    @Test
+    void carteraExcluyeFacturasEmitidasDespuesDelCorte() {
+        Cliente cliente = clienteRepository.save(nuevoCliente("Cliente Cota3", "800000014"));
+        Factura factura = facturaRepository.save(
+                nuevaFactura(cliente.getId(), usuarioA.getId(), "02", "1000.00000"));
+        // Emitida DESPUES del corte -- debe desaparecer por completo del resultado.
+        comprobanteElectronicoRepository.saveAndFlush(nuevoComprobante(
+                factura.getId(), "01", "cota3-001", "clave-cota3-001",
+                LocalDateTime.of(2026, 8, 20, 9, 0)));
+
+        List<Object[]> filas = reporteFlujoCajaRepository.buscarCarteraPendienteAlCorte(
+                empresaA.getId(), CORTE_EXCLUSIVO);
+
+        assertThat(filas).isEmpty();
+    }
+
+    /**
+     * Forma medio-abierta (finding 5, Decisión B9) -- un cobro registrado el MISMO día del corte
+     * (dentro de las 24h de {@code fechaCorte}) SÍ debe netearse: {@code corteExclusivo} es
+     * media-noche del día SIGUIENTE, comparado con {@code <} estricto.
+     */
+    @Test
+    void carteraIncluyeCobroRegistradoElMismoDiaDelCorte() {
+        Cliente cliente = clienteRepository.save(nuevoCliente("Cliente MedioAbierto", "800000015"));
+        Factura factura = facturaRepository.save(
+                nuevaFactura(cliente.getId(), usuarioA.getId(), "02", "1000.00000"));
+        comprobanteElectronicoRepository.saveAndFlush(nuevoComprobante(
+                factura.getId(), "01", "medioabierto-001", "clave-medioabierto-001",
+                LocalDateTime.of(2026, 8, 1, 9, 0)));
+        // Cobro el MISMO dia del corte (2026-08-15), avanzada la tarde -- debe netearse.
+        cobroFacturaRepository.saveAndFlush(nuevoCobro(
+                factura.getId(), "400.00000", "04", LocalDateTime.of(2026, 8, 15, 23, 59), usuarioA.getId()));
+
+        List<Object[]> filas = reporteFlujoCajaRepository.buscarCarteraPendienteAlCorte(
+                empresaA.getId(), CORTE_EXCLUSIVO);
+
+        assertThat(filas).hasSize(1);
+        assertThat((BigDecimal) filas.get(0)[6]).as("saldo_pendiente").isEqualByComparingTo("600.00000");
+    }
+
+    /**
+     * Requisito "Cartera Pendiente Equivalence to factura_estado_cobro at Today" -- con
+     * {@code fechaCorte = hoy}, el saldo de Q3 para una factura con cobro parcial Y una NC
+     * aceptada, ambos antes de hoy, debe coincidir EXACTAMENTE con el {@code saldo_pendiente} de la
+     * vista {@code factura_estado_cobro} para esa misma factura ({@code isEqualByComparingTo}, no
+     * {@code isEqualTo}) -- post-V24 (Fase 1, Decisión B11), la vista ya no reporta la NC como su
+     * propia fila espuria, así que la equivalencia estricta es válida (design revision 2, superando
+     * el plan original de divergencia documentada).
+     */
+    @Test
+    void carteraAlDiaDeHoyCoincideConLaVistaFacturaEstadoCobroInclusoConUnaNotaCreditoAceptada() {
+        LocalDateTime ayer = LocalDateTime.now().minusDays(1);
+        LocalDateTime corteExclusivoHoy = LocalDateTime.now().plusDays(1).toLocalDate().atStartOfDay();
+
+        Cliente cliente = clienteRepository.save(nuevoCliente("Cliente Equivalencia", "800000016"));
+        Factura origen = facturaRepository.save(
+                nuevaFactura(cliente.getId(), usuarioA.getId(), "02", "1000.00000"));
+        comprobanteElectronicoRepository.saveAndFlush(nuevoComprobante(
+                origen.getId(), "01", "equiv-origen", "clave-equiv-origen", ayer));
+        cobroFacturaRepository.saveAndFlush(nuevoCobro(
+                origen.getId(), "200.00000", "04", ayer, usuarioA.getId()));
+        crearNotaCredito(cliente.getId(), usuarioA.getId(), "02", origen.getId(), "300.00000",
+                "ACEPTADO", ayer, "equiv-nc");
+
+        List<Object[]> filas = reporteFlujoCajaRepository.buscarCarteraPendienteAlCorte(
+                empresaA.getId(), corteExclusivoHoy);
+
+        assertThat(filas).hasSize(1);
+        BigDecimal saldoQ3 = (BigDecimal) filas.get(0)[6];
+
+        FacturaEstadoCobro estadoVista = facturaEstadoCobroRepository.findByFacturaId(origen.getId())
+                .orElseThrow();
+
+        assertThat(saldoQ3)
+                .as("Q3 debe coincidir exactamente con factura_estado_cobro post-V24")
+                .isEqualByComparingTo(estadoVista.getSaldoPendiente());
+        assertThat(saldoQ3).isEqualByComparingTo("500.00000");
+    }
+
+    /**
+     * Requisito "Ventas Series Includes All condicion_venta Values", asimetría intencional con
+     * ventas -- una factura {@code condicion_venta='01'} (contado) NUNCA debe aparecer en la
+     * cartera, aunque esté ACEPTADA antes del corte.
+     */
+    @Test
+    void carteraExcluyeFacturaContado() {
+        Cliente cliente = clienteRepository.save(nuevoCliente("Cliente Contado Cartera", "800000017"));
+        Factura facturaContado = facturaRepository.save(
+                nuevaFactura(cliente.getId(), usuarioA.getId(), "01", "1130.00000"));
+        comprobanteElectronicoRepository.saveAndFlush(nuevoComprobante(
+                facturaContado.getId(), "01", "contado-cartera-001", "clave-contado-cartera-001",
+                LocalDateTime.of(2026, 8, 1, 8, 0)));
+
+        List<Object[]> filas = reporteFlujoCajaRepository.buscarCarteraPendienteAlCorte(
+                empresaA.getId(), CORTE_EXCLUSIVO);
+
+        assertThat(filas).isEmpty();
+    }
+
+    /**
+     * Divergencia B (finding 3 del diseño) -- una factura cuyo comprobante fue RECHAZADO nunca debe
+     * aparecer en cartera: Q3 exige {@code ce.estado = 'ACEPTADO'} explícitamente, a diferencia de
+     * la vista, que no filtra {@code estado} en absoluto.
+     */
+    @Test
+    void carteraExcluyeComprobanteRechazado() {
+        Cliente cliente = clienteRepository.save(nuevoCliente("Cliente Rechazado", "800000018"));
+        Factura factura = facturaRepository.save(
+                nuevaFactura(cliente.getId(), usuarioA.getId(), "02", "1000.00000"));
+        ComprobanteElectronico comprobanteRechazado = nuevoComprobante(
+                factura.getId(), "01", "rechazado-001", "clave-rechazado-001",
+                LocalDateTime.of(2026, 8, 1, 9, 0));
+        comprobanteRechazado.setEstado("RECHAZADO");
+        comprobanteElectronicoRepository.saveAndFlush(comprobanteRechazado);
+
+        List<Object[]> filas = reporteFlujoCajaRepository.buscarCarteraPendienteAlCorte(
+                empresaA.getId(), CORTE_EXCLUSIVO);
+
+        assertThat(filas).isEmpty();
+    }
+
+    /**
+     * Divergencia A (finding 1 del diseño) -- una Nota de Crédito ACEPTADA, con
+     * {@code condicion_venta} heredada dentro del rango permitido, NUNCA debe aparecer en cartera
+     * como su PROPIA fila: {@code ce.tipo_comprobante} de la NC es {@code '03'}, fuera del filtro
+     * {@code IN ('01','04')} del base set -- esta consulta mantiene su propio filtro explícito
+     * independientemente del estado de la vista (Decisión B1).
+     */
+    @Test
+    void carteraExcluyeNotaCreditoComoFacturaPropia() {
+        Cliente cliente = clienteRepository.save(nuevoCliente("Cliente NC Propia Cartera", "800000019"));
+        Factura origen = facturaRepository.save(
+                nuevaFactura(cliente.getId(), usuarioA.getId(), "02", "1000.00000"));
+        comprobanteElectronicoRepository.saveAndFlush(nuevoComprobante(
+                origen.getId(), "01", "ncpropia-origen", "clave-ncpropia-origen",
+                LocalDateTime.of(2026, 8, 1, 9, 0)));
+        Factura notaCredito = crearNotaCredito(cliente.getId(), usuarioA.getId(), "02", origen.getId(),
+                "300.00000", "ACEPTADO", LocalDateTime.of(2026, 8, 2, 9, 0), "ncpropia-nc");
+
+        List<Object[]> filas = reporteFlujoCajaRepository.buscarCarteraPendienteAlCorte(
+                empresaA.getId(), CORTE_EXCLUSIVO);
+
+        assertThat(filas)
+                .extracting(fila -> (UUID) fila[0])
+                .as("la NC no debe aparecer como su propia fila de cartera")
+                .doesNotContain(notaCredito.getId());
+        assertThat(filas).hasSize(1);
+        assertThat((UUID) filas.get(0)[0]).isEqualTo(origen.getId());
+    }
+
+    /**
+     * Requisito "Fully-Credited Invoice Reports as Settled" -- una factura totalmente acreditada
+     * por una NC aceptada (antes del corte) por el mismo monto debe traer {@code total_neto <= 0} y
+     * {@code saldo_pendiente <= 0}, nunca positivo: el conteo de facturas pendientes (Fase 4,
+     * servicio) filtra {@code saldoPendiente > 0}, así que esta fila no debe contarse como
+     * pendiente. Esta prueba pin-ea el valor crudo que la fila trae (la exclusión del conteo es
+     * responsabilidad del servicio, no de esta consulta -- ver javadoc de
+     * {@link FilaCarteraFactura}).
+     */
+    @Test
+    void carteraConFacturaTotalmenteAcreditadaNoCuentaComoPendiente() {
+        Cliente cliente = clienteRepository.save(nuevoCliente("Cliente Totalmente Acreditada", "800000020"));
+        Factura origen = facturaRepository.save(
+                nuevaFactura(cliente.getId(), usuarioA.getId(), "02", "1000.00000"));
+        comprobanteElectronicoRepository.saveAndFlush(nuevoComprobante(
+                origen.getId(), "01", "totalcredito-origen", "clave-totalcredito-origen",
+                LocalDateTime.of(2026, 8, 1, 9, 0)));
+        // NC aceptada por el TOTAL de la factura, antes del corte -- total_neto debe caer a 0.
+        crearNotaCredito(cliente.getId(), usuarioA.getId(), "02", origen.getId(), "1000.00000",
+                "ACEPTADO", LocalDateTime.of(2026, 8, 2, 9, 0), "totalcredito-nc");
+
+        List<Object[]> filas = reporteFlujoCajaRepository.buscarCarteraPendienteAlCorte(
+                empresaA.getId(), CORTE_EXCLUSIVO);
+
+        assertThat(filas).hasSize(1);
+        Object[] fila = filas.get(0);
+        assertThat((UUID) fila[0]).isEqualTo(origen.getId());
+        assertThat((BigDecimal) fila[4]).as("total_neto").isEqualByComparingTo("0.00000");
+        assertThat((BigDecimal) fila[6]).as("saldo_pendiente").isEqualByComparingTo("0.00000");
     }
 }

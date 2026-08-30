@@ -13,9 +13,10 @@ import cr.ac.fractall.facturacion.modelo.Factura;
 
 /**
  * Cinco consultas nativas y tenant-scoped para el reporte de flujo de caja (Release 3 / Fase D,
- * ver el diseño obs #918, sección "Interfaces / Contracts"). Esta PR (2 de 7) implementa Q1, Q2,
- * Q4 y Q5 -- ventas, cobros, y los dos escalares del comparativo del período anterior. Q3
- * (cartera pendiente, {@code buscarCarteraPendienteAlCorte}) llega en la PR3 de este cambio.
+ * ver el diseño obs #918, sección "Interfaces / Contracts"). La PR2 (2 de 7) implementó Q1, Q2, Q4
+ * y Q5 -- ventas, cobros, y los dos escalares del comparativo del período anterior. Esta PR (3 de
+ * 7) agrega Q3 (cartera pendiente, {@code buscarCarteraPendienteAlCorte}) -- la consulta de mayor
+ * complejidad de este cambio, ver su propio javadoc.
  *
  * <p>Extiende el marcador {@link Repository} (sin CRUD), no {@code JpaRepository}: mismo patrón
  * de solo lectura que {@code ReporteIvaRepository}.
@@ -146,4 +147,105 @@ public interface ReporteFlujoCajaRepository extends Repository<Factura, UUID> {
             @Param("empresaId") UUID empresaId,
             @Param("desde") LocalDateTime desde,
             @Param("hasta") LocalDateTime hasta);
+
+    /**
+     * Q3 -- cartera pendiente punto-en-el-tiempo, una fila por factura (Decisión B1, Requisito
+     * "Point-in-Time Cartera Pendiente With Three Date Bounds"). Traslada la topología de DOS
+     * {@code CROSS JOIN LATERAL} independientes de {@code factura_estado_cobro} (ver V23/V24) en
+     * vez de un {@code JOIN + GROUP BY}: con dos relaciones uno-a-muchos (cobros Y notas de
+     * crédito) un producto cartesiano duplicaría filas y ambos {@code SUM} contarían de más.
+     *
+     * <p><b>Tres cotas independientes</b>, cada una en su propia sub-consulta o filtro, nunca
+     * mezcladas entre sí:
+     * <ul>
+     *   <li>Cota (1) -- {@code cobro_factura.fecha_cobro < :corteExclusivo}, dentro del LATERAL de
+     *       cobros: un cobro posterior al corte no se netea.
+     *   <li>Cota (2) -- {@code nc_ce.fecha_emision < :corteExclusivo}, dentro del LATERAL de notas
+     *       de crédito: una NC aceptada emitida después del corte no se netea.
+     *   <li>Cota (3) -- {@code ce.fecha_emision < :corteExclusivo}, en el {@code WHERE} externo: una
+     *       factura emitida después del corte se excluye POR COMPLETO, sin importar su saldo.
+     * </ul>
+     *
+     * <p>Forma medio-abierta ({@code <}, nunca {@code <=}) sobre un parámetro
+     * {@code corteExclusivo = fechaCorte.plusDays(1).atStartOfDay()} resuelto por el servicio
+     * (Decisión B9, finding 5): comparar directamente {@code <= fechaCorte} con un
+     * {@code TIMESTAMP} excluiría silenciosamente todo lo ocurrido DURANTE el día del corte, porque
+     * PostgreSQL ensancha una fecha a media-noche.
+     *
+     * <p>Base set restringido a {@code f.condicion_venta IN ('02','03','04')} (excluye contado,
+     * D2/B1) y {@code ce.tipo_comprobante IN ('01','04')} (Factura o Tiquete -- nunca la propia NC/
+     * ND, que hereda {@code condicion_venta} de su origen, ver diseño finding 1) Y
+     * {@code ce.estado = 'ACEPTADO'}.
+     *
+     * <p><b>Divergencia deliberada vs. la vista {@code factura_estado_cobro}</b> (finding 3 del
+     * diseño): la vista NUNCA filtró {@code estado = 'ACEPTADO'} sobre la factura base, ni antes ni
+     * después de V24 -- esta consulta SÍ lo exige explícitamente, porque la cota (3) necesita
+     * {@code ce.fecha_emision} de todos modos (solo existe vía este join) y una factura sin
+     * comprobante aceptado no debería contarse como cartera cobrable. Esta consulta usa
+     * {@code LEFT JOIN} (no {@code JOIN}) a {@code comprobante_electronico} con el mismo chequeo
+     * tolerante a NULL que V24 introdujo en la vista ({@code ce.tipo_comprobante IS NULL OR
+     * ce.tipo_comprobante IN ('01','04')}) para replicar exactamente su topología de join -- pero,
+     * a diferencia de la vista, esta consulta mantiene {@code ce.estado = 'ACEPTADO'} y la cota (3)
+     * como filtros ESTRICTOS (no tolerantes a NULL): una factura sin ningún
+     * {@code comprobante_electronico} tiene ambos valores NULL, así que estos dos filtros ya la
+     * excluyen por sí solos, dejando el comportamiento neto idéntico al de un {@code JOIN} interno
+     * para ese caso, sin depender de que esa premisa (finding 9) sea universalmente cierta en datos
+     * de prueba como lo demostró el gate de no-regresión de la PR1 (V24).
+     *
+     * <p>{@code nc_ce.tipo_comprobante = '03'} es indispensable en el LATERAL de notas de crédito:
+     * {@code factura_referencia_id} también se puebla para notas de débito ('04' en
+     * {@code tipo_comprobante}, no confundir con el '04' de Tiquete en {@code ce.tipo_comprobante}
+     * del base set -- son catálogos distintos), y una ND aceptada NUNCA debe restar (misma
+     * razón que {@code FacturaRepository}).
+     *
+     * <p>{@code saldo_pendiente} NO se redondea a piso -- ver el javadoc de
+     * {@link FilaCarteraFactura}.
+     */
+    @Query(value = """
+            SELECT base.factura_id,
+                   base.consecutivo,
+                   base.total,
+                   base.total_nota_credito,
+                   base.total_neto,
+                   base.total_cobrado,
+                   CAST(base.total_neto - base.total_cobrado AS NUMERIC(14,5)) AS saldo_pendiente
+            FROM (
+                SELECT f.id                                         AS factura_id,
+                       ce.consecutivo                               AS consecutivo,
+                       f.total                                      AS total,
+                       nc.total_nc                                  AS total_nota_credito,
+                       CAST(f.total - nc.total_nc AS NUMERIC(14,5)) AS total_neto,
+                       c.total_cobrado                              AS total_cobrado
+                FROM factura f
+                LEFT JOIN comprobante_electronico ce ON ce.factura_id = f.id
+                CROSS JOIN LATERAL (
+                    SELECT CAST(COALESCE(SUM(nc2.total), 0) AS NUMERIC(14,5)) AS total_nc
+                    FROM factura nc2
+                    JOIN comprobante_electronico nc_ce ON nc_ce.factura_id = nc2.id
+                    WHERE nc2.factura_referencia_id = f.id
+                      AND nc2.empresa_id  = :empresaId
+                      AND nc_ce.empresa_id = :empresaId
+                      AND nc_ce.tipo_comprobante = '03'
+                      AND nc_ce.estado = 'ACEPTADO'
+                      AND nc_ce.fecha_emision < CAST(:corteExclusivo AS timestamp)
+                ) nc
+                CROSS JOIN LATERAL (
+                    SELECT CAST(COALESCE(SUM(cf.monto_cobrado), 0) AS NUMERIC(14,5)) AS total_cobrado
+                    FROM cobro_factura cf
+                    WHERE cf.factura_id = f.id
+                      AND cf.empresa_id = :empresaId
+                      AND cf.fecha_cobro < CAST(:corteExclusivo AS timestamp)
+                ) c
+                WHERE f.empresa_id  = :empresaId
+                  AND (ce.empresa_id IS NULL OR ce.empresa_id = :empresaId)
+                  AND f.condicion_venta IN ('02', '03', '04')
+                  AND (ce.tipo_comprobante IS NULL OR ce.tipo_comprobante IN ('01', '04'))
+                  AND ce.estado = 'ACEPTADO'
+                  AND ce.fecha_emision < CAST(:corteExclusivo AS timestamp)
+            ) base
+            ORDER BY base.factura_id
+            """, nativeQuery = true)
+    List<Object[]> buscarCarteraPendienteAlCorte(
+            @Param("empresaId") UUID empresaId,
+            @Param("corteExclusivo") LocalDateTime corteExclusivo);
 }
