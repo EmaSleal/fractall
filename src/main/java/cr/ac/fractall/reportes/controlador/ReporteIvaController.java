@@ -7,6 +7,7 @@ import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.format.annotation.DateTimeFormat.ISO;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
@@ -16,6 +17,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import cr.ac.fractall.reportes.dto.ReporteIvaResponse;
+import cr.ac.fractall.reportes.export.ReporteIvaExcelWriter;
 import cr.ac.fractall.reportes.servicio.ReporteIvaService;
 import jakarta.validation.constraints.NotNull;
 
@@ -31,8 +33,7 @@ import jakarta.validation.constraints.NotNull;
  * son OBLIGATORIOS (sin {@code required = false}) -- eso es lo que permite el theta-join JPQL de
  * {@code ReporteIvaRepository} en vez de SQL nativo (ver el diseño, decisión A3).
  *
- * <p>Solo el endpoint JSON en este PR -- {@code /reportes/iva/pdf} y {@code /reportes/iva/excel}
- * llegan en PRs posteriores (Fase 5-7 del plan de tareas).
+ * <p>{@code /reportes/iva/pdf} llega en un PR posterior (Fase 7 del plan de tareas).
  */
 @Tag(name = "Reportes", description = "Reportes fiscales agregados por período")
 @Validated
@@ -53,5 +54,25 @@ public class ReporteIvaController {
             @RequestParam @NotNull @DateTimeFormat(iso = ISO.DATE) LocalDate desde,
             @RequestParam @NotNull @DateTimeFormat(iso = ISO.DATE) LocalDate hasta) {
         return ResponseEntity.ok(reporteIvaService.generar(desde, hasta));
+    }
+
+    /**
+     * Genera el mismo reporte que {@link #obtener} como XLSX ({@code Resumen}/{@code Detalle}, ver
+     * {@link ReporteIvaExcelWriter}). Delegación de una sola línea, sin try/catch, misma disciplina
+     * que {@link #obtener} -- {@code RangoFechasInvalidaException} se propaga igual.
+     */
+    @Operation(summary = "Reporte de débito fiscal de IVA por período (Excel)")
+    @SecurityRequirement(name = "bearerAuth")
+    @GetMapping(
+            path = "/iva/excel",
+            produces = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    public ResponseEntity<byte[]> excel(
+            @RequestParam @NotNull @DateTimeFormat(iso = ISO.DATE) LocalDate desde,
+            @RequestParam @NotNull @DateTimeFormat(iso = ISO.DATE) LocalDate hasta) {
+        byte[] contenido = ReporteIvaExcelWriter.generar(reporteIvaService.generar(desde, hasta));
+        String nombreArchivo = "reporte-iva_" + desde + "_" + hasta + ".xlsx";
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + nombreArchivo + "\"")
+                .body(contenido);
     }
 }
