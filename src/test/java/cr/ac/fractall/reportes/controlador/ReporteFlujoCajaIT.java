@@ -1,7 +1,9 @@
 package cr.ac.fractall.reportes.controlador;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.hamcrest.Matchers.containsString;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -42,6 +44,7 @@ import cr.ac.fractall.facturacion.repositorio.ComprobanteElectronicoRepository;
 import cr.ac.fractall.facturacion.repositorio.ContadorConsecutivoRepository;
 import cr.ac.fractall.facturacion.servicio.CobroFacturaService;
 import cr.ac.fractall.facturacion.servicio.FacturaService;
+import cr.ac.fractall.reportes.export.ReporteFlujoCajaExcelWriter;
 import cr.ac.fractall.seguridad.modelo.Usuario;
 import cr.ac.fractall.seguridad.repositorio.UsuarioRepository;
 import cr.ac.fractall.seguridad.servicio.JwtService;
@@ -366,5 +369,30 @@ class ReporteFlujoCajaIT {
                         .param("hasta", "2026-08-01")
                         .header("Authorization", "Bearer " + tenant.accessToken()))
                 .andExpect(status().isBadRequest());
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Export Excel -- PR6 (ver sdd/reporte-flujo-caja/tasks, Fase 6)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * {@code GET /reportes/flujo-caja/excel} debe responder con el
+     * {@code Content-Disposition} de un archivo {@code .xlsx}, mismo criterio que
+     * {@code ReporteIvaController#excel} -- delegación de una sola línea a
+     * {@link ReporteFlujoCajaExcelWriter#generar}, sin try/catch.
+     */
+    @Test
+    void excelDevuelveContentDispositionXlsx() throws Exception {
+        ContextoTenant tenant = crearTenant();
+
+        mockMvc.perform(get("/reportes/flujo-caja/excel")
+                        .param("desde", "2026-08-01")
+                        .param("hasta", "2026-08-31")
+                        .header("Authorization", "Bearer " + tenant.accessToken()))
+                .andExpect(status().isOk())
+                .andExpect(header().string(
+                        "Content-Disposition",
+                        containsString(
+                                "attachment; filename=\"reporte-flujo-caja_2026-08-01_2026-08-31.xlsx\"")));
     }
 }
