@@ -18,6 +18,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import cr.ac.fractall.reportes.dto.ReporteFlujoCajaResponse;
 import cr.ac.fractall.reportes.export.ReporteFlujoCajaExcelWriter;
+import cr.ac.fractall.reportes.export.ReporteFlujoCajaPdfWriter;
 import cr.ac.fractall.reportes.servicio.ReporteFlujoCajaService;
 import jakarta.validation.constraints.NotNull;
 
@@ -33,8 +34,8 @@ import jakarta.validation.constraints.NotNull;
  * RangoFechasInvalidaException} se propaga al {@code GlobalExceptionHandler} sin try/catch aquí
  * (misma disciplina que {@code ReporteIvaController}/{@code FacturaController}).
  *
- * <p>El endpoint {@code /excel} llega en PR6 de este cambio (ver el diseño obs #918 y
- * {@code sdd/reporte-flujo-caja/tasks}, Fase 6) -- {@code /pdf} sigue pendiente para PR7.
+ * <p>El endpoint {@code /excel} llegó en PR6, {@code /pdf} en PR7 (ver el diseño obs #918 y
+ * {@code sdd/reporte-flujo-caja/tasks}, Fases 6 y 7) -- los tres endpoints ahora completos.
  */
 @Tag(name = "Reportes", description = "Reportes fiscales agregados por período")
 @Validated
@@ -75,6 +76,29 @@ public class ReporteFlujoCajaController {
                 ReporteFlujoCajaExcelWriter.generar(reporteFlujoCajaService.generar(desde, hasta));
         String nombreArchivo = "reporte-flujo-caja_" + desde + "_" + hasta + ".xlsx";
         return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + nombreArchivo + "\"")
+                .body(contenido);
+    }
+
+    /**
+     * Genera el mismo reporte que {@link #obtener} como PDF (página 1 Resumen, página 2+
+     * DetalleVentas, página siguiente+ DetalleCobros -- encabezados repetibles, ver {@link
+     * ReporteFlujoCajaPdfWriter}). Delegación de una sola línea, sin try/catch, misma disciplina
+     * que {@link #obtener}/{@link #excel} -- y misma asimetría que {@code ReporteIvaController#pdf}:
+     * a diferencia de {@link #excel}, aquí SÍ se fija {@code .contentType(...)} explícitamente
+     * además del {@code Content-Disposition} (mirror byte-for-byte, no "mejora" deliberada).
+     */
+    @Operation(summary = "Reporte de flujo de caja (ventas, cobros, cartera pendiente) por período (PDF)")
+    @SecurityRequirement(name = "bearerAuth")
+    @GetMapping(path = "/flujo-caja/pdf", produces = MediaType.APPLICATION_PDF_VALUE)
+    public ResponseEntity<byte[]> pdf(
+            @RequestParam @NotNull @DateTimeFormat(iso = ISO.DATE) LocalDate desde,
+            @RequestParam @NotNull @DateTimeFormat(iso = ISO.DATE) LocalDate hasta) {
+        byte[] contenido =
+                ReporteFlujoCajaPdfWriter.generar(reporteFlujoCajaService.generar(desde, hasta));
+        String nombreArchivo = "reporte-flujo-caja_" + desde + "_" + hasta + ".pdf";
+        return ResponseEntity.ok()
+                .contentType(MediaType.APPLICATION_PDF)
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + nombreArchivo + "\"")
                 .body(contenido);
     }
