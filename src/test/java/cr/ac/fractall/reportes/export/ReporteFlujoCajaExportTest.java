@@ -7,9 +7,13 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
+import org.apache.pdfbox.Loader;
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.text.PDFTextStripper;
 import org.apache.poi.ss.usermodel.Cell;
 import org.apache.poi.ss.usermodel.CellType;
 import org.apache.poi.ss.usermodel.Row;
@@ -212,6 +216,128 @@ class ReporteFlujoCajaExportTest {
                     .isCloseTo(230.00000, within(0.000001));
             assertThat(filaComparativoDatos.getCell(5).getNumericCellValue())
                     .isCloseTo(100.00000, within(0.000001));
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Export PDF -- PR7 (ver sdd/reporte-flujo-caja/tasks, Fase 7; diseño obs #918, decisión B10)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Fixture con 120 filas de DetalleVentas y 120 de DetalleCobros -- mismo orden de magnitud que
+     * {@code ReporteIvaExportTest#reportePdfConFixtureGrande} (120 filas, ~53 líneas/página en A4
+     * con la interlínea del writer), suficiente para forzar múltiples saltos de página DENTRO de
+     * cada una de las dos secciones de detalle, no solo una.
+     */
+    private ReporteFlujoCajaResponse reportePdfConFixtureGrande() {
+        List<FilaDetalleVenta> detalleVentas = new ArrayList<>();
+        for (int i = 1; i <= 120; i++) {
+            detalleVentas.add(filaDetalleVenta(String.format("%020d", i), "1000.00000", 1));
+        }
+        List<FilaDetalleCobro> detalleCobros = new ArrayList<>();
+        for (int i = 1; i <= 120; i++) {
+            detalleCobros.add(filaDetalleCobro(UUID.randomUUID(), "04", "Tarjeta", "500.00000"));
+        }
+        return reporteConDetalle(detalleVentas, detalleCobros);
+    }
+
+    private String textoDePagina(PDDocument doc, int numeroPagina) throws IOException {
+        PDFTextStripper stripper = new PDFTextStripper();
+        stripper.setStartPage(numeroPagina);
+        stripper.setEndPage(numeroPagina);
+        return stripper.getText(doc);
+    }
+
+    /**
+     * Busca, en el rango {@code [desde, hasta]}, la PRIMERA página cuyo texto contenga
+     * {@code marcador} -- usado para ubicar dinámicamente dónde empieza la sección DetalleCobros
+     * sin asumir un número de página fijo (depende del tamaño del fixture y de cuántas líneas
+     * caben por página). Retorna -1 si no se encuentra.
+     */
+    private int buscarPrimeraPaginaConTexto(PDDocument doc, String marcador, int desde, int hasta)
+            throws IOException {
+        for (int pagina = desde; pagina <= hasta; pagina++) {
+            if (textoDePagina(doc, pagina).contains(marcador)) {
+                return pagina;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * Requisito de diseño: página 1 = 4 bloques de Resumen; página 2+ = sección DetalleVentas
+     * (encabezado repetible); página N+ = sección DetalleCobros, con su PROPIO encabezado
+     * (decisión B10: reemplaza al de ventas vía el mecanismo de slot único de {@link CursorPdf}).
+     * "MedioPago" solo aparece en el encabezado de DetalleCobros -- nunca en Resumen ni en
+     * DetalleVentas -- así que su primera aparición marca el inicio de esa sección.
+     */
+    @Test
+    void pdfConFixtureGrandeGeneraAlMenosCuatroPaginas() throws IOException {
+        byte[] pdf = ReporteFlujoCajaPdfWriter.generar(reportePdfConFixtureGrande());
+
+        try (PDDocument doc = Loader.loadPDF(pdf)) {
+            int totalPaginas = doc.getNumberOfPages();
+            assertThat(totalPaginas).isGreaterThanOrEqualTo(4);
+
+            int paginaInicioCobros = buscarPrimeraPaginaConTexto(doc, "MedioPago", 2, totalPaginas);
+            assertThat(paginaInicioCobros).as("debe existir una página de inicio de DetalleCobros").isPositive();
+
+            int paginasVentas = paginaInicioCobros - 2;
+            int paginasCobros = totalPaginas - paginaInicioCobros + 1;
+            assertThat(paginasVentas).as("al menos 2 páginas de DetalleVentas").isGreaterThanOrEqualTo(2);
+            assertThat(paginasCobros).as("al menos 1 página de DetalleCobros").isGreaterThanOrEqualTo(1);
+        }
+    }
+
+    /**
+     * "Signo" es una columna exclusiva del encabezado de DetalleVentas (nunca aparece en
+     * DetalleCobros ni en Resumen) -- probar su presencia en TODAS las páginas de esa sección
+     * confirma que {@link CursorPdf#registrarEncabezadoRepetible} lo reemite en cada salto de
+     * página automático dentro de la sección, no solo en la primera.
+     */
+    @Test
+    void encabezadoDeDetalleVentasSeRepiteEnSusPaginas() throws IOException {
+        byte[] pdf = ReporteFlujoCajaPdfWriter.generar(reportePdfConFixtureGrande());
+
+        try (PDDocument doc = Loader.loadPDF(pdf)) {
+            int totalPaginas = doc.getNumberOfPages();
+            int paginaInicioCobros = buscarPrimeraPaginaConTexto(doc, "MedioPago", 2, totalPaginas);
+            // paginaInicioCobros > 3 asegura al menos 2 páginas de DetalleVentas (páginas 2 y 3).
+            assertThat(paginaInicioCobros).isGreaterThan(3);
+
+            for (int pagina = 2; pagina < paginaInicioCobros; pagina++) {
+                assertThat(textoDePagina(doc, pagina))
+                        .as("el encabezado de DetalleVentas debe repetirse en la página " + pagina)
+                        .contains("Signo");
+            }
+        }
+    }
+
+    /**
+     * Prueba central de la decisión B10: {@code CursorPdf} tiene un ÚNICO slot de encabezado
+     * repetible -- re-registrarlo antes de DetalleCobros REEMPLAZA al de DetalleVentas. Si el
+     * reemplazo no funcionara, las páginas de DetalleCobros seguirían mostrando el encabezado de
+     * DetalleVentas ("Signo") en vez del propio ("MedioPago"). Se prueba en AL MENOS 2 páginas de
+     * DetalleCobros para confirmar que la re-emisión ocurre en cada salto de página dentro de esa
+     * sección, no solo en su primera página.
+     */
+    @Test
+    void encabezadoDeDetalleCobrosSeRepiteEnSusPaginas() throws IOException {
+        byte[] pdf = ReporteFlujoCajaPdfWriter.generar(reportePdfConFixtureGrande());
+
+        try (PDDocument doc = Loader.loadPDF(pdf)) {
+            int totalPaginas = doc.getNumberOfPages();
+            int paginaInicioCobros = buscarPrimeraPaginaConTexto(doc, "MedioPago", 2, totalPaginas);
+            assertThat(paginaInicioCobros).isPositive();
+            assertThat(totalPaginas - paginaInicioCobros)
+                    .as("al menos 2 páginas de DetalleCobros")
+                    .isGreaterThanOrEqualTo(1);
+
+            for (int pagina = paginaInicioCobros; pagina <= totalPaginas; pagina++) {
+                assertThat(textoDePagina(doc, pagina))
+                        .as("el encabezado de DetalleCobros debe repetirse en la página " + pagina)
+                        .contains("MedioPago");
+            }
         }
     }
 }

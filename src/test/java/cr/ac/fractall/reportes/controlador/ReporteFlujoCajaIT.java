@@ -395,4 +395,29 @@ class ReporteFlujoCajaIT {
                         containsString(
                                 "attachment; filename=\"reporte-flujo-caja_2026-08-01_2026-08-31.xlsx\"")));
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Export PDF -- PR7 (ver sdd/reporte-flujo-caja/tasks, Fase 7)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * {@code GET /reportes/flujo-caja/pdf} debe responder con el {@code Content-Disposition} de un
+     * archivo {@code .pdf}, mismo criterio que {@code ReporteIvaController#pdf} -- delegación de
+     * una sola línea a {@link cr.ac.fractall.reportes.export.ReporteFlujoCajaPdfWriter#generar},
+     * sin try/catch.
+     */
+    @Test
+    void pdfDevuelveContentDispositionPdf() throws Exception {
+        ContextoTenant tenant = crearTenant();
+
+        mockMvc.perform(get("/reportes/flujo-caja/pdf")
+                        .param("desde", "2026-08-01")
+                        .param("hasta", "2026-08-31")
+                        .header("Authorization", "Bearer " + tenant.accessToken()))
+                .andExpect(status().isOk())
+                .andExpect(header().string(
+                        "Content-Disposition",
+                        containsString(
+                                "attachment; filename=\"reporte-flujo-caja_2026-08-01_2026-08-31.pdf\"")));
+    }
 }
