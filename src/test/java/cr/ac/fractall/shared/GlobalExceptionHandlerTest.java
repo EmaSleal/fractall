@@ -342,6 +342,30 @@ class GlobalExceptionHandlerTest {
             SQLException sqlException = new SQLException("Error no relacionado con NC/ND", "23505");
             throw new UncategorizedSQLException("insert", "insert into otra_tabla ...", sqlException);
         }
+
+        @PostMapping("/test/sql-no-categorizado-vx001")
+        public void sqlNoCategorizadoVx001() {
+            SQLException sqlException = new SQLException(
+                    "ERROR: La exoneración referenciada está inactiva\n  Where: PL/pgSQL function fn_validar_exoneracion_vigente()",
+                    "VX001");
+            throw new UncategorizedSQLException("insert", "insert into linea_factura ...", sqlException);
+        }
+
+        @PostMapping("/test/sql-no-categorizado-vx002")
+        public void sqlNoCategorizadoVx002() {
+            SQLException sqlException = new SQLException(
+                    "ERROR: La exoneración referenciada venció el 2026-01-01 00:00:00\n  Where: PL/pgSQL function fn_validar_exoneracion_vigente()",
+                    "VX002");
+            throw new UncategorizedSQLException("insert", "insert into linea_factura ...", sqlException);
+        }
+
+        @PostMapping("/test/sql-no-categorizado-vx003")
+        public void sqlNoCategorizadoVx003() {
+            SQLException sqlException = new SQLException(
+                    "ERROR: El tipo de exoneración 01 es exclusivo de Nota de Crédito/Débito, no aplica a Factura Electrónica\n  Where: PL/pgSQL function fn_validar_exoneracion_vigente()",
+                    "VX003");
+            throw new UncategorizedSQLException("insert", "insert into linea_factura ...", sqlException);
+        }
     }
 
     private MockMvc mockMvcConNotaCreditoDebito() {
@@ -413,6 +437,36 @@ class GlobalExceptionHandlerTest {
         assertThatThrownBy(() -> mockMvcConNotaCreditoDebito()
                         .perform(post("/test/sql-no-categorizado-otro-sqlstate")))
                 .hasCauseInstanceOf(UncategorizedSQLException.class);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // T-001: SQLSTATE propios (VX001/VX002/VX003) de fn_validar_exoneracion_vigente (V10,
+    // redefinida por V25) -- la carrera de concurrencia entre la validación Java de
+    // FacturaService/LineaFacturaEnsamblador y el flush debe responder 400 con un mensaje de
+    // dominio limpio (igual que la validación Java no concurrente), nunca el texto crudo de
+    // Postgres ("ERROR:", "Where:", nombre de la función PL/pgSQL).
+    // ─────────────────────────────────────────────────────────────────────────
+
+    @Test
+    void handler_sqlStateVx001ExoneracionInactiva_devuelve400ConMensajeLimpio() throws Exception {
+        mockMvcConNotaCreditoDebito().perform(post("/test/sql-no-categorizado-vx001"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.mensaje").value("La exoneración referenciada no está vigente (inactiva o vencida)"));
+    }
+
+    @Test
+    void handler_sqlStateVx002ExoneracionVencida_devuelve400ConMensajeLimpio() throws Exception {
+        mockMvcConNotaCreditoDebito().perform(post("/test/sql-no-categorizado-vx002"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.mensaje").value("La exoneración referenciada no está vigente (inactiva o vencida)"));
+    }
+
+    @Test
+    void handler_sqlStateVx003TipoExclusivoNcNd_devuelve400ConMensajeLimpio() throws Exception {
+        mockMvcConNotaCreditoDebito().perform(post("/test/sql-no-categorizado-vx003"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.mensaje").value(
+                        "El tipo de exoneración referenciado es exclusivo de Nota de Crédito/Débito, no aplica a Factura Electrónica"));
     }
 
     // ─────────────────────────────────────────────────────────────────────────
