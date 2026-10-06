@@ -1,5 +1,6 @@
 package cr.ac.fractall.facturacion;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -60,6 +61,14 @@ import cr.ac.fractall.tenant.TenantContext;
  * {@code @RestController} de prueba registrado solo en el contexto de este test vía
  * {@code @Import}, para que la petición pase por el {@code GlobalExceptionHandler} real de la
  * aplicación (no un stub) y la respuesta HTTP se pueda verificar end-to-end.
+ *
+ * <p><b>T-001 (corrección, criterio 7):</b> {@link #lineaFacturaConProductoDeOtroTenant_devuelve409ConMensajeGenericoSinFugaDeDatos}
+ * reutiliza la misma infraestructura para reproducir, contra el mismo endpoint y el mismo
+ * {@code POST /test/linea-factura-directa}, la regresión de seguridad detectada en revisión:
+ * {@code fn_validar_mismo_tenant} (V10/V18/V19/V23) también lanza su {@code RAISE EXCEPTION} sin
+ * SQLSTATE propio ({@code P0001}), pero a diferencia de {@code fn_validar_exoneracion_vigente}
+ * SÍ incluye el {@code empresa_id} de otro tenant en el texto del error -- el fallback genérico de
+ * {@code GlobalExceptionHandler} nunca debe filtrar ese texto crudo en la respuesta HTTP.
  */
 @Testcontainers
 @SpringBootTest
@@ -294,5 +303,53 @@ class ExoneracionTriggerSqlStateIT {
                 .andExpect(jsonPath("$.mensaje").value(
                         "El tipo de exoneración referenciado es exclusivo de Nota de Crédito/Débito, "
                                 + "no aplica a Factura Electrónica"));
+    }
+
+    /**
+     * T-001 (corrección, criterio 7) -- ver el javadoc de cabecera de la clase. Inserta una
+     * {@code linea_factura} directo vía repositorio (saltando {@code LineaFacturaEnsamblador} a
+     * propósito, igual que los 3 casos de arriba) cuyo {@code producto_id} pertenece a una empresa
+     * DISTINTA del tenant actual, para que {@code fn_validar_mismo_tenant} (no
+     * {@code fn_validar_exoneracion_vigente}) sea quien rechace con {@code P0001}. Verifica que la
+     * respuesta HTTP 409 es EXACTAMENTE el mensaje fijo y genérico, y que el cuerpo completo no
+     * contiene el {@code empresa_id} de ningún tenant ni texto crudo de Postgres.
+     */
+    @Test
+    void lineaFacturaConProductoDeOtroTenant_devuelve409ConMensajeGenericoSinFugaDeDatos() throws Exception {
+        TenantContext.set(UUID.randomUUID());
+        Empresa empresaOtroTenant = new Empresa();
+        empresaOtroTenant.setRazonSocial("Empresa Otro Tenant S.A.");
+        empresaOtroTenant.setNumeroIdentificacion(String.valueOf(
+                100_000_000_000L + Math.abs(UUID.randomUUID().getMostSignificantBits() % 900_000_000_000L)));
+        empresaOtroTenant.setAmbienteHacienda("SANDBOX");
+        empresaOtroTenant.setStatus("REGISTRADA");
+        empresaOtroTenant.setCreadoPor(usuarioId);
+        empresaOtroTenant.setCreateDate(LocalDateTime.now());
+        empresaOtroTenant.setUpdateDate(LocalDateTime.now());
+        empresaOtroTenant = empresaRepository.save(empresaOtroTenant);
+        UUID empresaOtroTenantId = empresaOtroTenant.getId();
+
+        TenantContext.set(empresaOtroTenantId);
+        Producto productoDeOtroTenant = crearProducto();
+
+        TenantContext.set(factura.getEmpresaId());
+
+        var request = new ControladorDeLineaFacturaDirecta.LineaFacturaDirectaRequest(
+                factura.getId(), productoDeOtroTenant.getId(), null);
+
+        String cuerpoRespuesta = mockMvc.perform(post("/test/linea-factura-directa")
+                        .header("Authorization", "Bearer " + accessToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.mensaje").value("La operación viola una regla de integridad del sistema"))
+                .andReturn().getResponse().getContentAsString();
+
+        assertThat(cuerpoRespuesta)
+                .doesNotContain(empresaOtroTenantId.toString())
+                .doesNotContain(factura.getEmpresaId().toString())
+                .doesNotContain("ERROR:")
+                .doesNotContain("Where:")
+                .doesNotContain("PL/pgSQL");
     }
 }

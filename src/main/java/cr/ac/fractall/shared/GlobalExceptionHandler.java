@@ -46,6 +46,7 @@ import cr.ac.fractall.seguridad.servicio.PermisoDenegadoException;
 import cr.ac.fractall.seguridad.servicio.RolInvitacionInvalidoException;
 import cr.ac.fractall.seguridad.servicio.UltimoAdministradorException;
 import jakarta.validation.ConstraintViolationException;
+import lombok.extern.slf4j.Slf4j;
 
 /**
  * Backstop de defensa en profundidad para el patrón "check-then-act" de los pre-chequeos
@@ -69,7 +70,19 @@ import jakarta.validation.ConstraintViolationException;
  * estricta, pero sí es un cambio de contrato (ver {@code GlobalExceptionHandlerTest}).
  */
 @RestControllerAdvice
+@Slf4j
 public class GlobalExceptionHandler {
+
+    /**
+     * Mensaje fijo y genérico para el fallback {@code P0001} (ver {@link #manejarErrorSqlNoCategorizado}).
+     * Nunca se usa {@code sqlException.getMessage()} en la respuesta HTTP: el texto crudo de un
+     * {@code RAISE EXCEPTION} sin SQLSTATE propio puede incluir identificadores internos (p. ej. el
+     * {@code empresa_id} de otro tenant en {@code fn_validar_mismo_tenant}), el prefijo {@code
+     * "ERROR:"} y contexto PL/pgSQL (ADR-002, ADR-008 -- fail-closed ante lo desconocido). El
+     * mensaje real se registra solo en el log del servidor, nunca en la respuesta al cliente.
+     */
+    private static final String MENSAJE_GENERICO_SQL_NO_CATEGORIZADO =
+            "La operación viola una regla de integridad del sistema";
 
     /**
      * Fase B (invitación y administración de membresías): primer 403 global de la aplicación,
@@ -298,6 +311,17 @@ public class GlobalExceptionHandler {
      * <p>Para cualquier SQLSTATE que no sea uno de los 3 de exoneración ni {@code P0001}, o para
      * cualquier excepción de la que no se pueda desenvolver un {@link SQLException}, se re-lanza
      * para escalar sin manejar (mismo comportamiento que tenía ANTES de este handler).
+     *
+     * <p><b>Corrección de T-001 (revisión):</b> el fallback {@code P0001} responde siempre
+     * {@link #MENSAJE_GENERICO_SQL_NO_CATEGORIZADO}, nunca {@code sqlException.getMessage()}. Al
+     * desenvolver {@link JpaSystemException} para que el caso de exoneración funcionara contra la
+     * ruta JPA real, este fallback empezó a activarse también para {@code fn_validar_mismo_tenant}
+     * (V10/V18/V19/V23) -- que lanza su {@code RAISE EXCEPTION} sin SQLSTATE propio y SÍ incluye el
+     * {@code empresa_id} de OTRO tenant en el texto. Antes de esta corrección esa ruta JPA escalaba
+     * como 500 opaco (sin filtrar el UUID, pero tampoco categorizado); con el unwrap ya activo, un
+     * mensaje crudo habría devuelto 409 filtrando el UUID del tenant ajeno -- regresión de
+     * seguridad detectada en revisión, contraria a ADR-002/ADR-008 (fail-closed). El mensaje real
+     * (con SQLSTATE) se registra solo en el log del servidor a nivel WARN; el cliente nunca lo ve.
      */
     @ExceptionHandler({UncategorizedSQLException.class, JpaSystemException.class})
     public ResponseEntity<MensajeResponse> manejarErrorSqlNoCategorizado(RuntimeException excepcion) {
@@ -313,7 +337,9 @@ public class GlobalExceptionHandler {
         if (!"P0001".equals(sqlState)) {
             throw excepcion;
         }
-        return ResponseEntity.status(HttpStatus.CONFLICT).body(new MensajeResponse(sqlException.getMessage()));
+        log.warn("RAISE EXCEPTION de trigger sin SQLSTATE propio (P0001): {}", sqlException.getMessage());
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(new MensajeResponse(MENSAJE_GENERICO_SQL_NO_CATEGORIZADO));
     }
 
     /**

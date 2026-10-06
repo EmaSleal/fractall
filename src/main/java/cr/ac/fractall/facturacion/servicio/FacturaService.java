@@ -65,8 +65,10 @@ import cr.ac.fractall.tenant.TenantContext;
  *
  * <p><b>Por qué las validaciones de exoneración se repiten en Java, no solo en los triggers de
  * V10:</b> un {@code RAISE EXCEPTION} de {@code fn_validar_mismo_tenant} (V10) usa el SQLSTATE
- * genérico {@code P0001}, que {@code GlobalExceptionHandler} mapea a 409 con el mensaje crudo del
- * motor -- sin categorizar, y fuera de alcance de T-001 (ver V25__exoneracion_sqlstate_propio.sql).
+ * genérico {@code P0001}, que {@code GlobalExceptionHandler} mapea a 409 con un mensaje fijo y
+ * genérico (nunca el texto crudo del motor, que puede incluir el {@code empresa_id} de otro
+ * tenant -- corrección de T-001 en revisión) -- sin categorizar, y fuera de alcance de T-001 dar
+ * un SQLSTATE propio a ese trigger (ver V25__exoneracion_sqlstate_propio.sql).
  * {@code fn_validar_exoneracion_vigente} (también V10), en cambio, desde T-001 lanza cada uno de
  * sus 3 casos con un SQLSTATE propio ({@code VX001}/{@code VX002}/{@code VX003}) que
  * {@code GlobalExceptionHandler} mapea a 400 con un mensaje de dominio limpio, equivalente al de

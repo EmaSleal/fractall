@@ -17,8 +17,10 @@
 --   VX002 -- la cliente_exoneracion referenciada venció
 --   VX003 -- el tipo de exoneración es exclusivo de Nota de Crédito/Débito, no aplica a Factura Electrónica
 --
--- fn_validar_mismo_tenant (también V10) NO se toca: sigue usando P0001 genérico y escalando como
--- 409 crudo -- fuera de alcance de T-001 (ver "Fuera de alcance" de la tarea).
+-- fn_validar_mismo_tenant (también V10) NO se toca: sigue usando P0001 genérico -- fuera de
+-- alcance de T-001 dar un SQLSTATE propio (ver "Fuera de alcance" de la tarea). Su P0001 escala
+-- como 409 con un mensaje FIJO y genérico (corrección de T-001 en revisión: el texto crudo de ese
+-- trigger incluye el empresa_id de otro tenant, así que GlobalExceptionHandler nunca lo expone).
 CREATE OR REPLACE FUNCTION fn_validar_exoneracion_vigente()
 RETURNS TRIGGER AS $$
 DECLARE

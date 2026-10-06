@@ -414,15 +414,19 @@ class GlobalExceptionHandlerTest {
      * {@code DataIntegrityViolationException} arriba): el trigger {@code
      * fn_validar_tope_nota_credito} (V18) lanza un {@code RAISE EXCEPTION} sin código SQLSTATE
      * explícito, que Postgres/el driver categorizan como {@code P0001} -- Spring lo envuelve en
-     * {@code UncategorizedSQLException}, NO en {@code DataIntegrityViolationException}. El
-     * handler debe traducirlo a 409 con el mensaje real del trigger.
+     * {@code UncategorizedSQLException}, NO en {@code DataIntegrityViolationException}.
+     *
+     * <p>Corrección de T-001 (revisión): el handler NUNCA devuelve el mensaje crudo del trigger en
+     * la respuesta -- otros triggers con el mismo SQLSTATE genérico ({@code fn_validar_mismo_tenant})
+     * sí incluyen datos internos (el {@code empresa_id} de otro tenant) en su texto, y la decisión
+     * de qué mostrar no puede depender del trigger que la originó. El 409 siempre lleva el mensaje
+     * fijo y genérico; el texto real del trigger solo se registra en el log del servidor.
      */
     @Test
-    void handler_uncategorizedSqlExceptionConSqlStateP0001_devuelve409ConElMensajeDelTrigger() throws Exception {
+    void handler_uncategorizedSqlExceptionConSqlStateP0001_devuelve409ConMensajeGenerico() throws Exception {
         mockMvcConNotaCreditoDebito().perform(post("/test/sql-no-categorizado-p0001"))
                 .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.mensaje").value(
-                        "El monto de las Notas de Crédito (80 previas + 30 actual) excede el total de la factura origen (100)"));
+                .andExpect(jsonPath("$.mensaje").value("La operación viola una regla de integridad del sistema"));
     }
 
     /**
