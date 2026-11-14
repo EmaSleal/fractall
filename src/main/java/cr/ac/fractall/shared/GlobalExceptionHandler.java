@@ -1,9 +1,14 @@
 package cr.ac.fractall.shared;
 
+import java.sql.SQLException;
+import java.util.Map;
+
+import org.hibernate.JDBCException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.UncategorizedSQLException;
+import org.springframework.orm.jpa.JpaSystemException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -41,6 +46,7 @@ import cr.ac.fractall.seguridad.servicio.PermisoDenegadoException;
 import cr.ac.fractall.seguridad.servicio.RolInvitacionInvalidoException;
 import cr.ac.fractall.seguridad.servicio.UltimoAdministradorException;
 import jakarta.validation.ConstraintViolationException;
+import lombok.extern.slf4j.Slf4j;
 
 /**
  * Backstop de defensa en profundidad para el patrón "check-then-act" de los pre-chequeos
@@ -64,7 +70,19 @@ import jakarta.validation.ConstraintViolationException;
  * estricta, pero sí es un cambio de contrato (ver {@code GlobalExceptionHandlerTest}).
  */
 @RestControllerAdvice
+@Slf4j
 public class GlobalExceptionHandler {
+
+    /**
+     * Mensaje fijo y genérico para el fallback {@code P0001} (ver {@link #manejarErrorSqlNoCategorizado}).
+     * Nunca se usa {@code sqlException.getMessage()} en la respuesta HTTP: el texto crudo de un
+     * {@code RAISE EXCEPTION} sin SQLSTATE propio puede incluir identificadores internos (p. ej. el
+     * {@code empresa_id} de otro tenant en {@code fn_validar_mismo_tenant}), el prefijo {@code
+     * "ERROR:"} y contexto PL/pgSQL (ADR-002, ADR-008 -- fail-closed ante lo desconocido). El
+     * mensaje real se registra solo en el log del servidor, nunca en la respuesta al cliente.
+     */
+    private static final String MENSAJE_GENERICO_SQL_NO_CATEGORIZADO =
+            "La operación viola una regla de integridad del sistema";
 
     /**
      * Fase B (invitación y administración de membresías): primer 403 global de la aplicación,
@@ -248,6 +266,21 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * SQLSTATE propios de {@code fn_validar_exoneracion_vigente} (V10, redefinida por T-001 en
+     * V25__exoneracion_sqlstate_propio.sql) -- ver el comentario de esa migración sobre la
+     * convención de clase personalizada {@code VX}. Mapeados aquí, ANTES del fallback genérico
+     * {@code P0001}, a un mensaje de dominio limpio equivalente al de
+     * {@link ExoneracionNoVigenteException}/{@link ExoneracionNoAplicableAFacturaElectronicaException}
+     * -- la decisión se toma por SQLSTATE, nunca por el contenido del mensaje crudo del motor
+     * (ADR-046).
+     */
+    private static final Map<String, String> MENSAJE_POR_SQLSTATE_EXONERACION = Map.of(
+            "VX001", "La exoneración referenciada no está vigente (inactiva o vencida)",
+            "VX002", "La exoneración referenciada no está vigente (inactiva o vencida)",
+            "VX003", "El tipo de exoneración referenciado es exclusivo de Nota de Crédito/Débito, "
+                    + "no aplica a Factura Electrónica");
+
+    /**
      * Complemento de defensa en profundidad al pre-chequeo de Java de {@code
      * NotaCreditoDebitoService#crearNotaCredito} (regla 3, tope de monto) -- cubre la carrera de
      * concurrencia entre dos Notas de Crédito que ambas pasan el pre-chequeo antes de que
@@ -257,17 +290,71 @@ public class GlobalExceptionHandler {
      * NO se traduce a {@link DataIntegrityViolationException} -- pertenece a otra clase de
      * SQLSTATE ({@code P0001}) -- así que sin este handler escalaría como un 500 crudo.
      *
-     * <p>Filtra explícitamente por {@code SQLSTATE == "P0001"} para no capturar cualquier otro
-     * {@link UncategorizedSQLException} no relacionado con NC/ND: si no coincide, se re-lanza
+     * <p>T-001 agrega, ANTES del fallback {@code P0001}, los 3 SQLSTATE propios de
+     * {@code fn_validar_exoneracion_vigente} ({@code VX001}/{@code VX002}/{@code VX003}): la misma
+     * carrera de concurrencia (la exoneración se desactiva o vence entre la validación Java de
+     * {@code FacturaService}/{@code LineaFacturaEnsamblador} y el flush) ahora responde 400 con un
+     * mensaje limpio, igual que la validación Java no concurrente, en vez del 409 crudo que recibía
+     * cualquier otro {@code P0001}.
+     *
+     * <p><b>Hallazgo de T-001:</b> {@code UncategorizedSQLException} NO es el único envoltorio
+     * real -- era una suposición nunca verificada contra Postgres real (el test de V18 solo
+     * fabricaba la excepción a mano). Un {@code RAISE EXCEPTION} disparado por Hibernate 7 dentro
+     * de un {@code saveAndFlush} de un repositorio Spring Data JPA (la ruta real de {@code
+     * FacturaService}/{@code NotaCreditoDebitoService}, confirmado con Postgres real por el IT
+     * {@code ExoneracionTriggerSqlStateIT}) llega envuelto en {@link JpaSystemException} con un
+     * {@link JDBCException} de Hibernate como causa -- NUNCA en {@code UncategorizedSQLException},
+     * que solo aplica a JDBC plano (p. ej. vía {@code JdbcTemplate}). Sin
+     * {@link #extraerSqlExceptionDeTrigger}, este handler nunca se activaba para la ruta real de
+     * persistencia JPA y el error escalaba como 500 crudo pese a existir desde V18.
+     *
+     * <p>Para cualquier SQLSTATE que no sea uno de los 3 de exoneración ni {@code P0001}, o para
+     * cualquier excepción de la que no se pueda desenvolver un {@link SQLException}, se re-lanza
      * para escalar sin manejar (mismo comportamiento que tenía ANTES de este handler).
+     *
+     * <p><b>Corrección de T-001 (revisión):</b> el fallback {@code P0001} responde siempre
+     * {@link #MENSAJE_GENERICO_SQL_NO_CATEGORIZADO}, nunca {@code sqlException.getMessage()}. Al
+     * desenvolver {@link JpaSystemException} para que el caso de exoneración funcionara contra la
+     * ruta JPA real, este fallback empezó a activarse también para {@code fn_validar_mismo_tenant}
+     * (V10/V18/V19/V23) -- que lanza su {@code RAISE EXCEPTION} sin SQLSTATE propio y SÍ incluye el
+     * {@code empresa_id} de OTRO tenant en el texto. Antes de esta corrección esa ruta JPA escalaba
+     * como 500 opaco (sin filtrar el UUID, pero tampoco categorizado); con el unwrap ya activo, un
+     * mensaje crudo habría devuelto 409 filtrando el UUID del tenant ajeno -- regresión de
+     * seguridad detectada en revisión, contraria a ADR-002/ADR-008 (fail-closed). El mensaje real
+     * (con SQLSTATE) se registra solo en el log del servidor a nivel WARN; el cliente nunca lo ve.
      */
-    @ExceptionHandler(UncategorizedSQLException.class)
-    public ResponseEntity<MensajeResponse> manejarErrorSqlNoCategorizado(UncategorizedSQLException excepcion) {
-        String sqlState = excepcion.getSQLException().getSQLState();
+    @ExceptionHandler({UncategorizedSQLException.class, JpaSystemException.class})
+    public ResponseEntity<MensajeResponse> manejarErrorSqlNoCategorizado(RuntimeException excepcion) {
+        SQLException sqlException = extraerSqlExceptionDeTrigger(excepcion);
+        if (sqlException == null) {
+            throw excepcion;
+        }
+        String sqlState = sqlException.getSQLState();
+        String mensajeExoneracion = MENSAJE_POR_SQLSTATE_EXONERACION.get(sqlState);
+        if (mensajeExoneracion != null) {
+            return ResponseEntity.badRequest().body(new MensajeResponse(mensajeExoneracion));
+        }
         if (!"P0001".equals(sqlState)) {
             throw excepcion;
         }
+        log.warn("RAISE EXCEPTION de trigger sin SQLSTATE propio (P0001): {}", sqlException.getMessage());
         return ResponseEntity.status(HttpStatus.CONFLICT)
-                .body(new MensajeResponse(excepcion.getSQLException().getMessage()));
+                .body(new MensajeResponse(MENSAJE_GENERICO_SQL_NO_CATEGORIZADO));
+    }
+
+    /**
+     * Desenvuelve el {@link SQLException} real de un {@code RAISE EXCEPTION} de trigger, que según
+     * la ruta por la que llegue la excepción está envuelto de 2 formas distintas -- ver el javadoc
+     * de {@link #manejarErrorSqlNoCategorizado}. {@code null} si no es ninguno de los 2 casos
+     * conocidos (otro tipo de fallo de acceso a datos, no relacionado con un trigger).
+     */
+    private static SQLException extraerSqlExceptionDeTrigger(RuntimeException excepcion) {
+        if (excepcion instanceof UncategorizedSQLException uncategorizedSqlException) {
+            return uncategorizedSqlException.getSQLException();
+        }
+        if (excepcion.getCause() instanceof JDBCException jdbcException) {
+            return jdbcException.getSQLException();
+        }
+        return null;
     }
 }
