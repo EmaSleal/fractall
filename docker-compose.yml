@@ -1,7 +1,8 @@
-# LOCAL DEVELOPMENT compose only (Vault in dev mode, no Caddy). The full
-# production compose — Raft storage + GCP KMS auto-unseal + Caddy TLS
-# reverse proxy (arch doc section 9.2-9.3) — is a separate, deferred
-# artifact for actual VM deployment; do not conflate the two.
+# This compose is the one Dokploy deploys on the VM (see P-014), so it must
+# stay safe to run on a public host: PostgreSQL publishes no ports and takes
+# its credentials from the environment. For local development, add
+# docker-compose.dev.yml, which publishes PostgreSQL on 127.0.0.1 only:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 
 services:
   postgres:
@@ -9,16 +10,15 @@ services:
     restart: unless-stopped
     environment:
       - POSTGRES_DB=facturacion
-      - POSTGRES_USER=fractall
-      - POSTGRES_PASSWORD=fractall
-    ports:
-      - "5432:5432"
+      # Same credentials the app uses, so there is a single pair to manage.
+      - POSTGRES_USER=${DB_USERNAME:?DB_USERNAME must be set}
+      - POSTGRES_PASSWORD=${DB_PASSWORD:?DB_PASSWORD must be set}
     volumes:
       - postgres_data:/var/lib/postgresql
     networks:
       - red_interna
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U fractall"]
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
       interval: 30s
       timeout: 5s
       retries: 5

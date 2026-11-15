@@ -41,10 +41,10 @@ Paquete raíz: `cr.ac.fractall`
 ## Configuración
 
 1. Copiar `.env.example` a `.env` y completar las variables (credenciales de base de datos, Vault, Resend, OCI, etc.).
-2. Levantar los servicios de desarrollo:
+2. Levantar los servicios de desarrollo. `docker-compose.dev.yml` publica PostgreSQL solo en `127.0.0.1:5432`; el `docker-compose.yml` base no publica la base porque es el que se despliega en la VM:
 
    ```bash
-   docker compose up -d
+   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
    ```
 
 ## Ejecutar la aplicación
