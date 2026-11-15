@@ -56,7 +56,7 @@ class LineaFacturaEnsamblador {
      * exclusivos de Nota de Crédito/Débito y quedan bloqueados SOLO para Factura Electrónica --
      * ver el javadoc de la clase.
      */
-    private static final Set<String> TIPOS_EXONERACION_EXCLUSIVOS_NC_ND = Set.of("01", "05", "06", "07");
+    static final Set<String> TIPOS_EXONERACION_EXCLUSIVOS_NC_ND = Set.of("01", "05", "06", "07");
 
     private final ProductoRepository productoRepository;
     private final ClienteExoneracionRepository clienteExoneracionRepository;
