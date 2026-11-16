@@ -51,7 +51,7 @@ class NotaCreditoDebitoControllerTest {
                 UUID.randomUUID(), "SANDBOX", "03", "00100001010000000001",
                 "50601010100011010000000001000000001100000000001", UUID.randomUUID(),
                 "GENERADO", Instant.now(), null, null, BigDecimal.ZERO,
-                List.of(), List.of(), List.of(), null, null, null, null, 0);
+                List.of(), List.of(), List.of(), null, null, null, null, 0, false);
     }
 
     private MockMvc mockMvcNotaCredito(NotaCreditoDebitoService servicio) {

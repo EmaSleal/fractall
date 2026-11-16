@@ -32,7 +32,10 @@ import cr.ac.fractall.facturacion.repositorio.ComprobanteElectronicoRepository;
 import cr.ac.fractall.hacienda.dto.MensajeHacienda;
 import cr.ac.fractall.hacienda.dto.RespuestaHaciendaDTO;
 import cr.ac.fractall.hacienda.servicio.HaciendaComprobanteApiService;
+import cr.ac.fractall.hacienda.servicio.HaciendaClaveDesconocidaException;
+import cr.ac.fractall.hacienda.servicio.HaciendaComunicacionException;
 import cr.ac.fractall.hacienda.servicio.HaciendaConfiguracionException;
+import cr.ac.fractall.facturacion.servicio.ComprobanteHaciendaEnvioService.ResultadoConsultaReenvio;
 
 /**
  * Prueba unitaria (sin contexto de Spring, mismo enfoque que
@@ -475,5 +478,187 @@ class ComprobanteHaciendaEnvioServiceTest {
         verify(comprobanteElectronicoRepository).save(captor.capture());
         assertThat(captor.getValue().getUltimoResultadoConsulta()).isEqualTo("ERROR_COMUNICACION");
         assertThat(captor.getValue().getFechaUltimaConsultaHacienda()).isNotNull();
+    }
+
+    // ========== reenvío manual (T-004, ADR-055/ADR-056) ==========
+
+    private ComprobanteElectronico comprobanteEnErrorConArrendamiento(UUID empresaId) {
+        ComprobanteElectronico comprobante = nuevoComprobante(empresaId, "SANDBOX", "clave-reenvio");
+        comprobante.setEstado("ERROR");
+        comprobante.setReenvioReclamadoHasta(LocalDateTime.now().plusMinutes(10));
+        when(credencialHaciendaRepository.findByEmpresaIdAndAmbiente(empresaId, "SANDBOX"))
+                .thenReturn(Optional.of(nuevaCredencial(empresaId, "SANDBOX")));
+        return comprobante;
+    }
+
+    @Test
+    void consultarParaReenvioConVeredictoDeHaciendaAplicaLaRespuestaYLiberaElArrendamiento() {
+        Object[][] casos = {
+                {MensajeHacienda.ACEPTADO, true, false, "ACEPTADO"},
+                {MensajeHacienda.RECHAZADO, false, false, "RECHAZADO"},
+                {MensajeHacienda.PROCESANDO, false, true, "ENVIADO"},
+        };
+        for (Object[] caso : casos) {
+            configurar();
+            UUID empresaId = UUID.randomUUID();
+            ComprobanteElectronico comprobante = comprobanteEnErrorConArrendamiento(empresaId);
+            when(haciendaComprobanteApiService.consultarComprobante(eq("clave-reenvio"), any()))
+                    .thenReturn(respuesta((MensajeHacienda) caso[0], (boolean) caso[1], (boolean) caso[2]));
+
+            ResultadoConsultaReenvio resultado = servicio.consultarParaReenvio(comprobante);
+
+            assertThat(resultado).as("caso %s", caso[0]).isEqualTo(ResultadoConsultaReenvio.APLICADA);
+            assertThat(comprobante.getEstado()).as("caso %s", caso[0]).isEqualTo(caso[3]);
+            assertThat(comprobante.getReenvioReclamadoHasta()).as("caso %s", caso[0]).isNull();
+            verify(comprobanteElectronicoRepository).save(comprobante);
+            verify(haciendaComprobanteApiService, never()).enviarComprobante(any(), any(), any());
+        }
+    }
+
+    @Test
+    void consultarParaReenvioConClaveDesconocidaNoEscribeYPideElPost() {
+        UUID empresaId = UUID.randomUUID();
+        ComprobanteElectronico comprobante = comprobanteEnErrorConArrendamiento(empresaId);
+        when(haciendaComprobanteApiService.consultarComprobante(eq("clave-reenvio"), any()))
+                .thenThrow(new HaciendaClaveDesconocidaException("no ha sido recibido", null));
+
+        assertThat(servicio.consultarParaReenvio(comprobante)).isEqualTo(ResultadoConsultaReenvio.CLAVE_DESCONOCIDA);
+        assertThat(comprobante.getEstado()).isEqualTo("ERROR");
+        verify(comprobanteElectronicoRepository, never()).save(any());
+        verify(haciendaComprobanteApiService, never()).enviarComprobante(any(), any(), any());
+    }
+
+    @Test
+    void consultarParaReenvioConFalloDeComunicacionORespuestaAmbiguaNoAplicaNada() {
+        RespuestaHaciendaDTO noEncontrado = respuesta(MensajeHacienda.PROCESANDO, false, true);
+        noEncontrado.setCodigoHttp(404);
+        RespuestaHaciendaDTO circuitoAbierto = respuesta(MensajeHacienda.PROCESANDO, false, true);
+        circuitoAbierto.setCodigoHttp(503);
+        RespuestaHaciendaDTO errorDeParseo = respuesta(MensajeHacienda.ERROR, false, false);
+        Object[] casos = {
+                new HaciendaComunicacionException("timeout", null),
+                new HaciendaConfiguracionException("400 sin causa conocida"),
+                noEncontrado, circuitoAbierto, errorDeParseo,
+        };
+        for (Object caso : casos) {
+            configurar();
+            UUID empresaId = UUID.randomUUID();
+            ComprobanteElectronico comprobante = comprobanteEnErrorConArrendamiento(empresaId);
+            if (caso instanceof RuntimeException excepcion) {
+                when(haciendaComprobanteApiService.consultarComprobante(any(), any())).thenThrow(excepcion);
+            } else {
+                when(haciendaComprobanteApiService.consultarComprobante(any(), any()))
+                        .thenReturn((RespuestaHaciendaDTO) caso);
+            }
+
+            assertThat(servicio.consultarParaReenvio(comprobante)).as("caso %s", caso)
+                    .isEqualTo(ResultadoConsultaReenvio.AMBIGUA);
+            assertThat(comprobante.getEstado()).as("caso %s", caso).isEqualTo("ERROR");
+            verify(comprobanteElectronicoRepository, never()).save(any());
+            verify(haciendaComprobanteApiService, never()).enviarComprobante(any(), any(), any());
+        }
+    }
+
+    @Test
+    void reenviarComprobanteHaceElPostYLiberaElArrendamiento() {
+        UUID empresaId = UUID.randomUUID();
+        ComprobanteElectronico comprobante = comprobanteEnErrorConArrendamiento(empresaId);
+        comprobante.setEstado("FIRMADO");
+        when(haciendaComprobanteApiService.enviarComprobante(eq("<xml/>"), eq("clave-reenvio"), any()))
+                .thenReturn(respuesta(MensajeHacienda.PROCESANDO, false, false));
+
+        servicio.reenviarComprobante("<xml/>", comprobante);
+
+        assertThat(comprobante.getEstado()).isEqualTo("ENVIADO");
+        assertThat(comprobante.getReenvioReclamadoHasta()).isNull();
+        verify(comprobanteElectronicoRepository).save(comprobante);
+    }
+
+    // ========== POST del reenvío con clave ya recibida (T-004, review 1) ==========
+
+    private static final String CAUSA_YA_RECIBIDO = "El comprobante [clave-reenvio] ya fue recibido anteriormente.";
+
+    private static RespuestaHaciendaDTO error400(String causa, boolean claveYaRecibida) {
+        return RespuestaHaciendaDTO.builder()
+                .claveNumerica("clave-reenvio")
+                .fechaRespuesta(LocalDateTime.now())
+                .codigoMensaje(MensajeHacienda.ERROR)
+                .mensaje("Error HTTP: 400 BAD_REQUEST")
+                .exitoso(false)
+                .debeReintentar(false)
+                .codigoHttp(400)
+                .causaError(causa)
+                .claveYaRecibida(claveYaRecibida)
+                .build();
+    }
+
+    private void verificarQuedaEnviadoParaElPolling(ComprobanteElectronico comprobante) {
+        assertThat(comprobante.getEstado()).isEqualTo("ENVIADO");
+        assertThat(comprobante.getUltimoResultadoConsulta()).isEqualTo("PENDIENTE");
+        assertThat(comprobante.getReenvioReclamadoHasta()).isNull();
+        assertThat(comprobante.getMensajeRespuesta()).isEqualTo(CAUSA_YA_RECIBIDO);
+        assertThat(comprobante.getIntentosEnvio()).isLessThan(ComprobanteHaciendaPollingScheduledJob.MAX_INTENTOS - 1);
+        verify(comprobanteElectronicoRepository).save(comprobante);
+        verifyNoInteractions(comprobanteEntregaService);
+    }
+
+    @Test
+    void reenviarFirmadoConPost400ClaveYaRecibidaQuedaEnviadoNuncaRechazado() {
+        UUID empresaId = UUID.randomUUID();
+        ComprobanteElectronico comprobante = comprobanteEnErrorConArrendamiento(empresaId);
+        comprobante.setEstado("FIRMADO");
+        comprobante.setIntentosEnvio(0);
+        when(haciendaComprobanteApiService.enviarComprobante(eq("<xml/>"), eq("clave-reenvio"), any()))
+                .thenReturn(error400(CAUSA_YA_RECIBIDO, true));
+
+        servicio.reenviarComprobante("<xml/>", comprobante);
+
+        verificarQuedaEnviadoParaElPolling(comprobante);
+    }
+
+    @Test
+    void reenviarErrorConClaveDesconocidaYPost400ClaveYaRecibidaQuedaEnviado() {
+        UUID empresaId = UUID.randomUUID();
+        ComprobanteElectronico comprobante = comprobanteEnErrorConArrendamiento(empresaId);
+        comprobante.setIntentosEnvio(0);
+        when(haciendaComprobanteApiService.consultarComprobante(eq("clave-reenvio"), any()))
+                .thenThrow(new HaciendaClaveDesconocidaException("no ha sido recibido", null));
+        when(haciendaComprobanteApiService.enviarComprobante(eq("<xml/>"), eq("clave-reenvio"), any()))
+                .thenReturn(error400(CAUSA_YA_RECIBIDO, true));
+
+        assertThat(servicio.consultarParaReenvio(comprobante)).isEqualTo(ResultadoConsultaReenvio.CLAVE_DESCONOCIDA);
+        servicio.reenviarComprobante("<xml/>", comprobante);
+
+        verificarQuedaEnviadoParaElPolling(comprobante);
+    }
+
+    @Test
+    void reenviarConPost400SinCausaDeClaveYaRecibidaSigueQuedandoRechazado() {
+        UUID empresaId = UUID.randomUUID();
+        ComprobanteElectronico comprobante = comprobanteEnErrorConArrendamiento(empresaId);
+        comprobante.setEstado("FIRMADO");
+        when(haciendaComprobanteApiService.enviarComprobante(eq("<xml/>"), eq("clave-reenvio"), any()))
+                .thenReturn(error400("La firma del comprobante no es válida", false));
+
+        servicio.reenviarComprobante("<xml/>", comprobante);
+
+        assertThat(comprobante.getEstado()).isEqualTo("RECHAZADO");
+        assertThat(comprobante.getReenvioReclamadoHasta()).isNull();
+    }
+
+    @Test
+    void envioInicialConPost400ClaveYaRecibidaMantieneSuComportamientoActual() {
+        UUID empresaId = UUID.randomUUID();
+        ComprobanteElectronico comprobante = nuevoComprobante(empresaId, "SANDBOX", "clave-reenvio");
+        when(credencialHaciendaRepository.findByEmpresaIdAndAmbiente(empresaId, "SANDBOX"))
+                .thenReturn(Optional.of(nuevaCredencial(empresaId, "SANDBOX")));
+        when(haciendaComprobanteApiService.enviarComprobante(eq("<xml/>"), eq("clave-reenvio"), any()))
+                .thenReturn(error400(CAUSA_YA_RECIBIDO, true));
+
+        servicio.enviarComprobante("<xml/>", comprobante);
+
+        assertThat(comprobante.getEstado()).isEqualTo("RECHAZADO");
+        assertThat(comprobante.getMensajeRespuesta()).isEqualTo("Error HTTP: 400 BAD_REQUEST");
+        assertThat(comprobante.getUltimoResultadoConsulta()).isEqualTo("ERROR_COMUNICACION");
     }
 }

@@ -12,6 +12,7 @@ import cr.ac.fractall.facturacion.modelo.ComprobanteElectronico;
 import cr.ac.fractall.facturacion.repositorio.ComprobanteElectronicoRepository;
 import cr.ac.fractall.hacienda.dto.MensajeHacienda;
 import cr.ac.fractall.hacienda.dto.RespuestaHaciendaDTO;
+import cr.ac.fractall.hacienda.servicio.HaciendaClaveDesconocidaException;
 import cr.ac.fractall.hacienda.servicio.HaciendaComprobanteApiService;
 import lombok.extern.slf4j.Slf4j;
 
@@ -145,6 +146,106 @@ public class ComprobanteHaciendaEnvioService {
         comprobanteElectronicoRepository.save(comprobante);
         entregarSiAceptado(comprobante);
         return respuesta;
+    }
+
+    /** Resultado de {@link #consultarParaReenvio}. */
+    public enum ResultadoConsultaReenvio {
+        /** Hacienda conoce la clave: su respuesta ya se aplicó y se guardó; no hay que hacer POST. */
+        APLICADA,
+        /** Hacienda nunca recibió la clave (evidencia de P-018): hay que hacer el POST. */
+        CLAVE_DESCONOCIDA,
+        /** Fallo de comunicación o respuesta no clasificable: no se hace POST ni se toca el estado. */
+        AMBIGUA
+    }
+
+    /**
+     * POST del reenvío manual (ADR-055): mismo flujo que {@link #enviarComprobante}, pero la
+     * escritura final también libera el arrendamiento del reclamo (ADR-056). {@code comprobante}
+     * debe ser la entidad recargada DESPUÉS del reclamo, para no pisar sus columnas.
+     *
+     * <p><b>Clave ya recibida:</b> si el POST responde que Hacienda ya tiene esa clave
+     * ({@link RespuestaHaciendaDTO#getClaveYaRecibida()}, evidencia de P-018), el comprobante NO
+     * se marca RECHAZADO: Hacienda lo tiene y su veredicto real lo obtiene el job de polling
+     * (ADR-049), así que queda {@value #ESTADO_ENVIADO} con {@code ultimoResultadoConsulta}
+     * PENDIENTE y la causa de Hacienda en {@code mensajeRespuesta}. Pasa con un FIRMADO cuyo POST
+     * original llegó a Hacienda sin que se guardara el resultado, o si la clave llega a Hacienda
+     * entre la consulta previa y el POST de un ERROR. Sin entrega al cliente: no hay veredicto.
+     */
+    public void reenviarComprobante(String xmlFirmado, ComprobanteElectronico comprobante) {
+        CredencialHacienda credencial = obtenerCredencial(comprobante);
+        RespuestaHaciendaDTO respuesta = haciendaComprobanteApiService.enviarComprobante(
+                xmlFirmado, comprobante.getClaveNumerica(), credencial.getId());
+        if (Boolean.TRUE.equals(respuesta.getClaveYaRecibida())) {
+            marcarYaRecibidoPendienteDeVeredicto(comprobante, respuesta);
+            comprobante.setReenvioReclamadoHasta(null);
+            comprobanteElectronicoRepository.save(comprobante);
+            return;
+        }
+        aplicarRespuesta(comprobante, respuesta);
+        comprobante.setReenvioReclamadoHasta(null);
+        comprobanteElectronicoRepository.save(comprobante);
+        entregarSiAceptado(comprobante);
+    }
+
+    private static void marcarYaRecibidoPendienteDeVeredicto(
+            ComprobanteElectronico comprobante, RespuestaHaciendaDTO respuesta) {
+        String causa = respuesta.getCausaError() != null ? respuesta.getCausaError() : respuesta.getMensaje();
+        comprobante.setEstado(ESTADO_ENVIADO);
+        comprobante.setCodigoRespuesta(MensajeHacienda.PROCESANDO.getCodigo());
+        comprobante.setMensajeRespuesta(truncar(causa, LONGITUD_MAXIMA_MENSAJE_RESPUESTA));
+        comprobante.setFechaRespuesta(respuesta.getFechaRespuesta());
+        comprobante.setIntentosEnvio(comprobante.getIntentosEnvio() + 1);
+        comprobante.setUltimoResultadoConsulta(mapearResultadoConsulta(MensajeHacienda.PROCESANDO));
+        comprobante.setFechaUltimaConsultaHacienda(LocalDateTime.now());
+    }
+
+    /**
+     * Consulta previa del reenvío manual de un comprobante en ERROR (ADR-055 punto 2). Solo
+     * aplica la respuesta cuando Hacienda devolvió un veredicto clasificable sobre la clave
+     * (aceptado, rechazado o procesando con una respuesta 2xx); en ese caso la escritura final
+     * libera el arrendamiento. En los otros dos resultados no escribe nada: el llamador decide.
+     *
+     * <p>Un 404 o el fallback del circuito abierto también llegan como {@code PROCESANDO}, pero
+     * sin un 2xx: no prueban que Hacienda conozca la clave y se clasifican como
+     * {@link ResultadoConsultaReenvio#AMBIGUA}. Tampoco se aplica una respuesta {@code ERROR}:
+     * {@link #aplicarRespuesta} la convertiría en RECHAZADO.
+     *
+     * @throws CredencialHaciendaNoEncontradaException si la empresa no tiene credencial
+     *     configurada para {@code comprobante.getAmbienteHacienda()}
+     */
+    public ResultadoConsultaReenvio consultarParaReenvio(ComprobanteElectronico comprobante) {
+        CredencialHacienda credencial = obtenerCredencial(comprobante);
+        RespuestaHaciendaDTO respuesta;
+        try {
+            respuesta = haciendaComprobanteApiService.consultarComprobante(
+                    comprobante.getClaveNumerica(), credencial.getId());
+        } catch (HaciendaClaveDesconocidaException e) {
+            return ResultadoConsultaReenvio.CLAVE_DESCONOCIDA;
+        } catch (RuntimeException e) {
+            log.warn("Consulta previa al reenvío del comprobante {} sin respuesta clasificable: {}",
+                    comprobante.getId(), e.getMessage());
+            return ResultadoConsultaReenvio.AMBIGUA;
+        }
+        if (!esVeredictoDeHacienda(respuesta)) {
+            return ResultadoConsultaReenvio.AMBIGUA;
+        }
+        aplicarRespuesta(comprobante, respuesta);
+        comprobante.setReenvioReclamadoHasta(null);
+        comprobanteElectronicoRepository.save(comprobante);
+        entregarSiAceptado(comprobante);
+        return ResultadoConsultaReenvio.APLICADA;
+    }
+
+    private static boolean esVeredictoDeHacienda(RespuestaHaciendaDTO respuesta) {
+        Integer codigoHttp = respuesta.getCodigoHttp();
+        if (codigoHttp == null || codigoHttp < 200 || codigoHttp >= 300) {
+            return false;
+        }
+        MensajeHacienda codigo = respuesta.getCodigoMensaje();
+        return codigo == MensajeHacienda.ACEPTADO
+                || codigo == MensajeHacienda.RECHAZADO
+                || codigo == MensajeHacienda.RECHAZADO_PARCIAL
+                || codigo == MensajeHacienda.PROCESANDO;
     }
 
     /**

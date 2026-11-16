@@ -169,7 +169,10 @@ public class FacturaController {
     }
 
     /**
-     * Reenvía a Hacienda un comprobante atascado en FIRMADO, RECHAZADO o ERROR.
+     * Reenvío manual a Hacienda (ADR-055, ADR-056): solo comprobantes en FIRMADO o ERROR, con XML
+     * firmado persistido y sin otro reenvío en curso ({@code FacturaResponse.reenviable}). FIRMADO
+     * hace el POST; ERROR consulta primero a Hacienda y solo hace POST si Hacienda no conoce la
+     * clave. RECHAZADO, ENVIADO y el resto de estados responden 409.
      * {@code ComprobanteNoReenviableException} → 409; {@code FacturaNoEncontradaException} → 404.
      * Ambas se propagan al {@code GlobalExceptionHandler} sin try/catch aquí.
      */

@@ -951,24 +951,70 @@ class FacturaControllerTest {
         UUID facturaId = crearFactura(ctx);
 
         // After crearFactura, the comprobante estado is ENVIADO (mocked Hacienda returns PROCESANDO).
-        // Force it to RECHAZADO so it is reenvíable, while keeping xmlComprobanteReferencia.
+        // Force it to FIRMADO (ADR-055: reenviable) while keeping xmlComprobanteReferencia.
+        forzarEstadoComprobante(ctx, facturaId, "FIRMADO");
+
+        mockMvc.perform(get("/facturas/" + facturaId)
+                        .header("Authorization", "Bearer " + ctx.accessToken()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.reenviable").value(true));
+
+        // Replay the encrypted blob so descargar succeeds during reenviar decryption
+        when(objectStorageService.descargar(xmlRef)).thenReturn(blobCapturado.get());
+        org.mockito.Mockito.clearInvocations(haciendaComprobanteApiService);
+
+        // FIRMADO hace POST directo (sin consulta previa); Hacienda mockeada responde PROCESANDO →
+        // ENVIADO, que ya no es reenviable.
+        mockMvc.perform(post("/facturas/" + facturaId + "/reenviar")
+                        .header("Authorization", "Bearer " + ctx.accessToken()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(facturaId.toString()))
+                .andExpect(jsonPath("$.reenviable").value(false));
+        org.mockito.Mockito.verify(haciendaComprobanteApiService, org.mockito.Mockito.times(1))
+                .enviarComprobante(any(), any(), any());
+        org.mockito.Mockito.verify(haciendaComprobanteApiService, org.mockito.Mockito.never())
+                .consultarComprobante(any(), any());
+    }
+
+    @Test
+    void postReenviarConComprobanteRechazadoDevuelve409SinLlamarAHacienda() throws Exception {
+        ContextoDePrueba ctx = crearContextoCompleto();
+        when(objectStorageService.subir(any(byte[].class), anyString()))
+                .thenReturn("empresas/" + ctx.empresaId() + "/comprobantes/rechazado.xml.enc");
+        UUID facturaId = crearFactura(ctx);
+        forzarEstadoComprobante(ctx, facturaId, "RECHAZADO");
+        org.mockito.Mockito.clearInvocations(haciendaComprobanteApiService, objectStorageService);
+
+        mockMvc.perform(get("/facturas/" + facturaId)
+                        .header("Authorization", "Bearer " + ctx.accessToken()))
+                .andExpect(jsonPath("$.reenviable").value(false));
+        mockMvc.perform(post("/facturas/" + facturaId + "/reenviar")
+                        .header("Authorization", "Bearer " + ctx.accessToken()))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.mensaje").isString());
+
+        org.mockito.Mockito.verifyNoInteractions(haciendaComprobanteApiService);
+        org.mockito.Mockito.verify(objectStorageService, org.mockito.Mockito.never()).descargar(anyString());
+    }
+
+    @Test
+    void apiDocsExponeElCampoReenviableDeFacturaResponse() throws Exception {
+        mockMvc.perform(get("/v3/api-docs"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.components.schemas.FacturaResponse.properties.reenviable.type")
+                        .value("boolean"));
+    }
+
+    private void forzarEstadoComprobante(ContextoDePrueba ctx, UUID facturaId, String estado) {
         TenantContext.set(ctx.empresaId());
         try {
             ComprobanteElectronico comprobante = comprobanteElectronicoRepository
                     .findByFacturaId(facturaId).orElseThrow();
-            comprobante.setEstado("RECHAZADO");
+            comprobante.setEstado(estado);
             comprobanteElectronicoRepository.save(comprobante);
         } finally {
             TenantContext.clear();
         }
-
-        // Replay the encrypted blob so descargar succeeds during reenviar decryption
-        when(objectStorageService.descargar(xmlRef)).thenReturn(blobCapturado.get());
-
-        mockMvc.perform(post("/facturas/" + facturaId + "/reenviar")
-                        .header("Authorization", "Bearer " + ctx.accessToken()))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.id").value(facturaId.toString()));
     }
 
     @Test

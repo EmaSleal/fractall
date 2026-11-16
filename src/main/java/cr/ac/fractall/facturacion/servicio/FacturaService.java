@@ -269,14 +269,16 @@ public class FacturaService {
     }
 
     /**
-     * Reenvía a Hacienda un comprobante atascado en un estado terminal/inalcanzable (FIRMADO,
-     * RECHAZADO, ERROR). Delegado a {@link ComprobanteEmisionService#reenviar} (Fase B, ver el
-     * javadoc de la clase) -- {@code FacturaService} sigue siendo el dueño de la proyección
-     * {@link FacturaResponse} devuelta al cliente HTTP, vía {@link #obtener}.
+     * Reenvío manual a Hacienda (ADR-055, ADR-056) de un comprobante en FIRMADO o ERROR con XML
+     * firmado persistido. RECHAZADO, ENVIADO y el resto de estados no se reenvían. FIRMADO hace el
+     * POST; ERROR consulta antes a Hacienda y solo hace POST si Hacienda no conoce la clave. Un
+     * segundo reenvío mientras el primero está en curso también responde 409. Delegado a
+     * {@link ComprobanteEmisionService#reenviar}; aquí solo se arma la {@link FacturaResponse}
+     * vía {@link #obtener}.
      *
      * @throws FacturaNoEncontradaException si no existe comprobante para {@code facturaId}
-     * @throws ComprobanteNoReenviableException si el estado no es FIRMADO/RECHAZADO/ERROR, o si
-     *     {@code xmlComprobanteReferencia} es null
+     * @throws ComprobanteNoReenviableException si el estado no es FIRMADO/ERROR, si
+     *     {@code xmlComprobanteReferencia} es null o si ya hay un reenvío manual en curso
      */
     public FacturaResponse reenviar(UUID facturaId) {
         comprobanteEmisionService.reenviar(facturaId);

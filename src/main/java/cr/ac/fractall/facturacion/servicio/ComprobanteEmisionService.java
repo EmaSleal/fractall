@@ -5,6 +5,7 @@ import java.time.ZonedDateTime;
 import java.util.Set;
 import java.util.UUID;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -42,25 +43,32 @@ import cr.ac.fractall.facturacion.repositorio.ComprobanteElectronicoRepository;
 public class ComprobanteEmisionService {
 
     private static final String ESTADO_GENERADO = "GENERADO";
-    private static final Set<String> ESTADOS_REENVIABLES = Set.of("FIRMADO", "RECHAZADO", "ERROR");
+    private static final String ESTADO_ERROR = "ERROR";
+    /** ADR-055 punto 1: RECHAZADO (veredicto funcional) y ENVIADO (lo gestiona el job) quedan fuera. */
+    static final Set<String> ESTADOS_REENVIABLES = Set.of("FIRMADO", ESTADO_ERROR);
+    static final String MENSAJE_CONSULTA_AMBIGUA =
+            "Reenvío manual: no se pudo confirmar el estado en Hacienda; no se reenvió el comprobante.";
 
     private final ConsecutivoService consecutivoService;
     private final ComprobanteElectronicoRepository comprobanteElectronicoRepository;
     private final ComprobanteXmlPersistenceService comprobanteXmlPersistenceService;
     private final ComprobanteXmlCifradoDescargador comprobanteXmlCifradoDescargador;
     private final ComprobanteHaciendaEnvioService comprobanteHaciendaEnvioService;
+    private final long arrendamientoSegundos;
 
     public ComprobanteEmisionService(
             ConsecutivoService consecutivoService,
             ComprobanteElectronicoRepository comprobanteElectronicoRepository,
             ComprobanteXmlPersistenceService comprobanteXmlPersistenceService,
             ComprobanteXmlCifradoDescargador comprobanteXmlCifradoDescargador,
-            ComprobanteHaciendaEnvioService comprobanteHaciendaEnvioService) {
+            ComprobanteHaciendaEnvioService comprobanteHaciendaEnvioService,
+            @Value("${application.hacienda.reenvio-arrendamiento-segundos:600}") long arrendamientoSegundos) {
         this.consecutivoService = consecutivoService;
         this.comprobanteElectronicoRepository = comprobanteElectronicoRepository;
         this.comprobanteXmlPersistenceService = comprobanteXmlPersistenceService;
         this.comprobanteXmlCifradoDescargador = comprobanteXmlCifradoDescargador;
         this.comprobanteHaciendaEnvioService = comprobanteHaciendaEnvioService;
+        this.arrendamientoSegundos = arrendamientoSegundos;
     }
 
     /**
@@ -112,36 +120,94 @@ public class ComprobanteEmisionService {
     }
 
     /**
-     * Cuerpo verbatim de {@code FacturaService.java:301-321} -- reenvía a Hacienda un comprobante
-     * atascado en un estado terminal/inalcanzable (FIRMADO, RECHAZADO, ERROR). A diferencia del
-     * original, devuelve la entidad {@link ComprobanteElectronico}, no {@code FacturaResponse} --
-     * esa proyección sigue siendo responsabilidad de {@code FacturaService}, que envuelve esta
-     * llamada y hace {@code obtener(facturaId)} después.
+     * Regla única de "se puede reenviar manualmente" (ADR-055 punto 1 y ADR-056 punto 6): estado
+     * FIRMADO o ERROR, XML firmado persistido y sin arrendamiento de reenvío vigente. La usa
+     * {@code FacturaResponse#reenviable} para que los clientes no repliquen la regla.
+     */
+    public static boolean esReenviable(ComprobanteElectronico comprobante) {
+        return ESTADOS_REENVIABLES.contains(comprobante.getEstado())
+                && comprobante.getXmlComprobanteReferencia() != null
+                && !comprobante.tieneReenvioReclamadoVigente();
+    }
+
+    /**
+     * Reenvío manual a Hacienda (ADR-055, con el reclamo de ADR-056). Solo para comprobantes en
+     * FIRMADO o ERROR con XML firmado persistido; RECHAZADO, ENVIADO y cualquier otro estado
+     * responden 409. Devuelve la entidad; la proyección a {@code FacturaResponse} la hace
+     * {@code FacturaService}.
+     *
+     * <ol>
+     *   <li>Reclamo atómico en transacción corta ({@code ComprobanteElectronicoRepository#reclamarReenvio}):
+     *       fija el arrendamiento con el reloj de la base, incrementa {@code reenviosManuales} y
+     *       reinicia {@code intentosEnvio}. Si afecta 0 filas (otro reenvío en curso o el estado
+     *       cambió), 409. No cambia {@code estado}.
+     *   <li>Se recarga la entidad, para que la escritura final no pise las columnas del reclamo.
+     *   <li>FIRMADO: descarga el XML firmado y hace el POST. ERROR: consulta primero el estado en
+     *       Hacienda por clave; si Hacienda la conoce aplica esa respuesta sin POST, si no la conoce
+     *       hace el POST, y si la consulta falla o es ambigua no hace POST y deja el estado intacto.
+     *   <li>La escritura final libera el arrendamiento, sea cual sea el estado resultante. Si algo
+     *       lanza antes de esa escritura, se libera con un UPDATE puntual; si la aplicación se cae,
+     *       el arrendamiento vence solo.
+     * </ol>
+     *
+     * <p>Sin {@code @Transactional} (ver el javadoc de la clase): la red (Object Storage, Vault
+     * Transit, Hacienda) corre fuera de transacción y no se usa {@code SELECT ... FOR UPDATE}.
      *
      * @throws FacturaNoEncontradaException si no existe comprobante para {@code facturaId}
-     * @throws ComprobanteNoReenviableException si el estado no es FIRMADO/RECHAZADO/ERROR, o si
-     *     {@code xmlComprobanteReferencia} es null
+     * @throws ComprobanteNoReenviableException si el estado no es FIRMADO/ERROR, si
+     *     {@code xmlComprobanteReferencia} es null o si el reclamo no afectó ninguna fila
      */
     public ComprobanteElectronico reenviar(UUID facturaId) {
         ComprobanteElectronico comprobante = comprobanteElectronicoRepository.findByFacturaId(facturaId)
                 .orElseThrow(() -> new FacturaNoEncontradaException(facturaId));
 
-        if (!ESTADOS_REENVIABLES.contains(comprobante.getEstado())) {
-            throw new ComprobanteNoReenviableException(facturaId, comprobante.getEstado());
-        }
-        if (comprobante.getXmlComprobanteReferencia() == null) {
+        if (!ESTADOS_REENVIABLES.contains(comprobante.getEstado())
+                || comprobante.getXmlComprobanteReferencia() == null) {
             throw new ComprobanteNoReenviableException(facturaId, comprobante.getEstado());
         }
 
+        UUID comprobanteId = comprobante.getId();
+        UUID empresaId = comprobante.getEmpresaId();
+        int filas = comprobanteElectronicoRepository.reclamarReenvio(
+                comprobanteId, empresaId, arrendamientoSegundos);
+        if (filas == 0) {
+            throw new ComprobanteNoReenviableException(facturaId, comprobante.getEstado());
+        }
+
+        boolean liberado = false;
+        try {
+            ComprobanteElectronico reclamado = comprobanteElectronicoRepository.findById(comprobanteId)
+                    .orElseThrow(() -> new FacturaNoEncontradaException(facturaId));
+            if (ESTADO_ERROR.equals(reclamado.getEstado())) {
+                reenviarDesdeError(reclamado);
+            } else {
+                comprobanteHaciendaEnvioService.reenviarComprobante(descargarXmlFirmado(reclamado), reclamado);
+            }
+            liberado = true;
+            return reclamado;
+        } finally {
+            if (!liberado) {
+                comprobanteElectronicoRepository.liberarReenvio(comprobanteId, empresaId);
+            }
+        }
+    }
+
+    private void reenviarDesdeError(ComprobanteElectronico reclamado) {
+        switch (comprobanteHaciendaEnvioService.consultarParaReenvio(reclamado)) {
+            case APLICADA -> { }
+            case CLAVE_DESCONOCIDA ->
+                    comprobanteHaciendaEnvioService.reenviarComprobante(descargarXmlFirmado(reclamado), reclamado);
+            case AMBIGUA -> {
+                reclamado.setMensajeRespuesta(MENSAJE_CONSULTA_AMBIGUA);
+                reclamado.setReenvioReclamadoHasta(null);
+                comprobanteElectronicoRepository.save(reclamado);
+            }
+        }
+    }
+
+    private String descargarXmlFirmado(ComprobanteElectronico comprobante) {
         byte[] xmlBytes = comprobanteXmlCifradoDescargador.descargarYDescifrar(
                 comprobante.getXmlComprobanteReferencia());
-        String xmlFirmado = new String(xmlBytes, StandardCharsets.UTF_8);
-
-        comprobante.setIntentosEnvio(0);
-        comprobanteElectronicoRepository.save(comprobante);
-
-        comprobanteHaciendaEnvioService.enviarComprobante(xmlFirmado, comprobante);
-
-        return comprobante;
+        return new String(xmlBytes, StandardCharsets.UTF_8);
     }
 }

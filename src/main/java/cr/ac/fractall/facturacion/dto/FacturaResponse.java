@@ -12,6 +12,8 @@ import cr.ac.fractall.facturacion.modelo.Factura;
 import cr.ac.fractall.facturacion.modelo.FacturaInformacionReferencia;
 import cr.ac.fractall.facturacion.modelo.FacturaMedioPago;
 import cr.ac.fractall.facturacion.modelo.FacturaOtrosCargos;
+import cr.ac.fractall.facturacion.servicio.ComprobanteEmisionService;
+import io.swagger.v3.oas.annotations.media.Schema;
 
 public record FacturaResponse(
         UUID id,
@@ -39,7 +41,10 @@ public record FacturaResponse(
         String mensajeRespuesta,
         Instant fechaRespuesta,
         String ultimoResultadoConsulta,
-        Integer intentosEnvio) {
+        Integer intentosEnvio,
+        @Schema(description = "true si el comprobante admite POST /facturas/{id}/reenviar: estado FIRMADO o ERROR, "
+                + "XML firmado persistido y sin un reenvío manual en curso (ADR-055, ADR-056). Calculado en backend.")
+        boolean reenviable) {
 
     public static FacturaResponse desde(
             Factura factura, ComprobanteElectronico comprobante, List<LineaFacturaResponse> lineas) {
@@ -80,7 +85,8 @@ public record FacturaResponse(
                 comprobante.getMensajeRespuesta(),
                 aInstanteUtc(comprobante.getFechaRespuesta()),
                 comprobante.getUltimoResultadoConsulta(),
-                comprobante.getIntentosEnvio());
+                comprobante.getIntentosEnvio(),
+                ComprobanteEmisionService.esReenviable(comprobante));
     }
 
     /**

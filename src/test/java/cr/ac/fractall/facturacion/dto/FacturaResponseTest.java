@@ -9,6 +9,9 @@ import java.util.UUID;
 
 import org.junit.jupiter.api.Test;
 
+import cr.ac.fractall.facturacion.modelo.ComprobanteElectronico;
+import cr.ac.fractall.facturacion.modelo.Factura;
+
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
@@ -38,11 +41,38 @@ class FacturaResponseTest {
                 "50601010100011010000000001000000001100000000001", null,
                 "GENERADO", Instant.parse("2026-08-23T14:32:10Z"), null, null, BigDecimal.ZERO,
                 List.of(), List.of(), List.of(), "00", "aceptado",
-                Instant.parse("2026-08-23T14:35:00Z"), null, 0);
+                Instant.parse("2026-08-23T14:35:00Z"), null, 0, false);
 
         String json = objectMapper.writeValueAsString(respuesta);
 
         assertThat(json).contains("\"fechaEmision\":\"2026-08-23T14:32:10Z\"");
         assertThat(json).contains("\"fechaRespuesta\":\"2026-08-23T14:35:00Z\"");
+    }
+
+    // ========== reenviable (T-004, ADR-055 punto 5 y ADR-056 punto 6) ==========
+
+    private static boolean reenviable(String estado, String xmlReferencia, java.time.LocalDateTime arrendamiento) {
+        ComprobanteElectronico comprobante = new ComprobanteElectronico();
+        comprobante.setEstado(estado);
+        comprobante.setXmlComprobanteReferencia(xmlReferencia);
+        comprobante.setReenvioReclamadoHasta(arrendamiento);
+        return FacturaResponse.desde(new Factura(), comprobante, List.of()).reenviable();
+    }
+
+    @Test
+    void reenviableEsTrueSoloParaFirmadoYErrorConXmlPersistido() {
+        assertThat(reenviable("FIRMADO", "ref.xml.enc", null)).isTrue();
+        assertThat(reenviable("ERROR", "ref.xml.enc", null)).isTrue();
+        assertThat(reenviable("FIRMADO", null, null)).isFalse();
+        assertThat(reenviable("ERROR", null, null)).isFalse();
+        for (String estado : new String[] {"GENERADO", "ENVIADO", "ACEPTADO", "RECHAZADO"}) {
+            assertThat(reenviable(estado, "ref.xml.enc", null)).as("estado %s", estado).isFalse();
+        }
+    }
+
+    @Test
+    void reenviableEsFalseMientrasElArrendamientoDelReenvioEsteVigente() {
+        assertThat(reenviable("ERROR", "ref.xml.enc", java.time.LocalDateTime.now().plusMinutes(5))).isFalse();
+        assertThat(reenviable("ERROR", "ref.xml.enc", java.time.LocalDateTime.now().minusMinutes(5))).isTrue();
     }
 }

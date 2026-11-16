@@ -5,8 +5,10 @@ import java.util.Optional;
 import java.util.UUID;
 
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
+import org.springframework.transaction.annotation.Transactional;
 
 import cr.ac.fractall.facturacion.modelo.ComprobanteElectronico;
 
@@ -66,4 +68,51 @@ public interface ComprobanteElectronicoRepository extends JpaRepository<Comproba
      */
     @Query(value = "SELECT DISTINCT empresa_id FROM comprobante_electronico WHERE estado = :estado", nativeQuery = true)
     List<UUID> findEmpresaIdsConEstado(@Param("estado") String estado);
+
+    /**
+     * Reclamo atómico del reenvío manual (ADR-055 punto 3, precisado por ADR-056). En su propia
+     * transacción corta, antes de cualquier llamada de red: fija el arrendamiento
+     * {@code reenvio_reclamado_hasta = now() + segundos}, incrementa {@code reenvios_manuales} y
+     * reinicia {@code intentos_envio} (presupuesto del ciclo automático, ADR-049) solo si el
+     * comprobante está en FIRMADO o ERROR y no tiene un arrendamiento vigente. No cambia
+     * {@code estado} y no usa {@code SELECT ... FOR UPDATE}: la atomicidad la da el propio UPDATE
+     * condicional, que PostgreSQL serializa por fila.
+     *
+     * <p>SQL nativo por dos motivos: el vencimiento se calcula con el reloj de la base
+     * ({@code now()} + {@code make_interval}) y la aritmética de intervalos no tiene equivalente
+     * portable en JPQL. Como el SQL nativo no pasa por el filtro de {@code @TenantId} (ADR-002, ver
+     * {@link #findEmpresaIdsConEstado}), la condición {@code empresa_id = :empresaId} es
+     * obligatoria y el llamador la toma del {@code TenantContext}.
+     *
+     * @return filas afectadas: 1 si se reclamó, 0 si el estado no es reenviable, el comprobante no
+     *     es de la empresa o ya hay un reenvío en curso
+     */
+    @Transactional
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
+    @Query(value = """
+            UPDATE comprobante_electronico
+            SET reenvio_reclamado_hasta = now() + make_interval(secs => :segundos),
+                reenvios_manuales = reenvios_manuales + 1,
+                intentos_envio = 0
+            WHERE id = :id
+              AND empresa_id = :empresaId
+              AND estado IN ('FIRMADO', 'ERROR')
+              AND (reenvio_reclamado_hasta IS NULL OR reenvio_reclamado_hasta < now())
+            """, nativeQuery = true)
+    int reclamarReenvio(@Param("id") UUID id, @Param("empresaId") UUID empresaId, @Param("segundos") long segundos);
+
+    /**
+     * Libera el arrendamiento sin tocar ninguna otra columna. Solo para la salida por excepción del
+     * reenvío, cuando no llegó a ocurrir la escritura final de la entidad (que ya lo deja en
+     * {@code NULL}). Mismo motivo que {@link #reclamarReenvio} para la condición explícita de
+     * {@code empresa_id}.
+     */
+    @Transactional
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
+    @Query(value = """
+            UPDATE comprobante_electronico
+            SET reenvio_reclamado_hasta = NULL
+            WHERE id = :id AND empresa_id = :empresaId
+            """, nativeQuery = true)
+    int liberarReenvio(@Param("id") UUID id, @Param("empresaId") UUID empresaId);
 }

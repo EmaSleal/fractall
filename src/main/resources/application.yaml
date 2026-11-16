@@ -75,6 +75,15 @@ application:
       fallback-cron: ${HACIENDA_TIPO_CAMBIO_FALLBACK_CRON:0 0 19 * * *}
     timeout: ${HACIENDA_API_TIMEOUT:10}
     polling-delay-minutes: ${HACIENDA_POLLING_DELAY_MINUTES:5}
+    # Arrendamiento del reclamo del reenvío manual (ADR-056), en segundos. Debe superar la peor
+    # duración de la cadena del reenvío. Timeouts vigentes: Hacienda 10 s de conexión + 10 s de
+    # lectura por petición (timeout de arriba), con @Retry por defecto de Resilience4j (3 intentos,
+    # 500 ms de espera); Vault con ClientOptions por defecto de Spring Vault (5 s + 15 s); OCI
+    # Object Storage con ClientConfiguration por defecto del SDK (10 s + 60 s). Suma simple
+    # (consulta 20 + POST 20 + Vault 20 + Object Storage 70) = 130 s. Peor caso con reintentos y
+    # obtención de token: descarga del XML (70 + 20) + consulta 3 x (Vault 20 + token 20 + GET 20)
+    # + POST 3 x (20 + 20 + 20) + subida del XML de respuesta (20 + 70) + esperas ~ 543 s.
+    reenvio-arrendamiento-segundos: ${HACIENDA_REENVIO_ARRENDAMIENTO_SEGUNDOS:600}
     # Cliente OAuth2 + recepción de comprobantes de Hacienda (Fase 8, Categoría A portada de
     # HaciendaApiServiceImpl del ERP de referencia). client-id/secret de sandbox son públicos
     # (documentados por Hacienda para el ambiente de pruebas, sin autenticación adicional) -- por

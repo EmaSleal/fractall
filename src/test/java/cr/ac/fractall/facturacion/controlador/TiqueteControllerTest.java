@@ -36,7 +36,7 @@ class TiqueteControllerTest {
                 UUID.randomUUID(), "SANDBOX", "04", "00100001040000000001",
                 "50601010100011010000000001000000001199999999", null,
                 "GENERADO", Instant.now(), null, null, BigDecimal.ZERO,
-                List.of(), List.of(), List.of(), null, null, null, null, 0);
+                List.of(), List.of(), List.of(), null, null, null, null, 0, false);
     }
 
     private MockMvc mockMvc(TiqueteService servicio) {
