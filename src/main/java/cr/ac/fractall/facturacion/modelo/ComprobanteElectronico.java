@@ -77,4 +77,29 @@ public class ComprobanteElectronico extends TenantAwareEntity {
     /** Número de intentos de consulta realizados a Hacienda (V12). Inicia en 0. */
     @Column(name = "intentos_consulta", columnDefinition = "integer default 0", nullable = false)
     private int intentosConsulta;
+
+    /**
+     * Reenvíos manuales reclamados (V26, ADR-055). Lo incrementa solo el UPDATE condicional
+     * {@code ComprobanteElectronicoRepository#reclamarReenvio}; a diferencia de
+     * {@link #intentosEnvio}, nunca se reinicia.
+     */
+    @Column(name = "reenvios_manuales", nullable = false)
+    private int reenviosManuales;
+
+    /**
+     * Arrendamiento del reclamo de reenvío manual (V26, ADR-056): instante, según el reloj de la
+     * base, hasta el que el comprobante está reclamado. {@code null} = libre.
+     */
+    @Column(name = "reenvio_reclamado_hasta")
+    private LocalDateTime reenvioReclamadoHasta;
+
+    /**
+     * {@code true} mientras el arrendamiento del reenvío manual sigue vigente. El valor se
+     * escribió con {@code now()} de la base y se compara con el reloj de la aplicación: la
+     * columna es {@code TIMESTAMP} sin zona y el driver usa la zona de la JVM como zona de sesión,
+     * así que ambos lados quedan en la misma zona.
+     */
+    public boolean tieneReenvioReclamadoVigente() {
+        return reenvioReclamadoHasta != null && reenvioReclamadoHasta.isAfter(LocalDateTime.now());
+    }
 }

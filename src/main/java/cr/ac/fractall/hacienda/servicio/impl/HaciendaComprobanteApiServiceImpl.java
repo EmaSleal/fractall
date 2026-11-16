@@ -39,6 +39,7 @@ import cr.ac.fractall.hacienda.dto.MensajeHacienda;
 import cr.ac.fractall.hacienda.dto.MensajeHaciendaDTO;
 import cr.ac.fractall.hacienda.dto.RespuestaHaciendaDTO;
 import cr.ac.fractall.hacienda.dto.TokenHaciendaDTO;
+import cr.ac.fractall.hacienda.servicio.HaciendaClaveDesconocidaException;
 import cr.ac.fractall.hacienda.servicio.HaciendaComprobanteApiService;
 import cr.ac.fractall.hacienda.servicio.HaciendaComunicacionException;
 import cr.ac.fractall.hacienda.servicio.HaciendaConfiguracionException;
@@ -112,6 +113,8 @@ public class HaciendaComprobanteApiServiceImpl implements HaciendaComprobanteApi
     private static final String GRANT_TYPE_REFRESH = "refresh_token";
     private static final String AMBIENTE_PRODUCCION = "PRODUCCION";
     private static final String SUBRUTA_PASSWORD_SUFIJO = "/password";
+    private static final String CABECERA_CAUSA_ERROR = "x-error-cause";
+    private static final String CAUSA_CLAVE_NO_RECIBIDA = "no ha sido recibido";
 
     private final CredencialHaciendaRepository credencialHaciendaRepository;
     private final EmpresaRepository empresaRepository;
@@ -406,6 +409,11 @@ public class HaciendaComprobanteApiServiceImpl implements HaciendaComprobanteApi
                     .build();
 
         } catch (HttpStatusCodeException e) {
+            if (esClaveDesconocidaPorHacienda(e)) {
+                log.info("Hacienda no ha recibido el comprobante {}", claveNumerica);
+                throw new HaciendaClaveDesconocidaException(
+                        "Hacienda no ha recibido el comprobante " + claveNumerica, e);
+            }
             log.error("Error HTTP al consultar: {} - {}", e.getStatusCode(), e.getResponseBodyAsString());
             if (e.getStatusCode().is5xxServerError()) {
                 throw new HaciendaComunicacionException(
@@ -420,6 +428,27 @@ public class HaciendaComprobanteApiServiceImpl implements HaciendaComprobanteApi
             log.error("Error al consultar comprobante: {}", e.getMessage(), e);
             throw new HaciendaComunicacionException("Error de comunicación en consulta: " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * Único punto que decide si una respuesta de error de la consulta
+     * {@code GET /recepcion/v1/recepcion/{clave}} significa que Hacienda nunca recibió esa clave.
+     *
+     * <p>Evidencia (P-018, sandbox de Hacienda, 2026-11-16): el GET de una clave nunca enviada
+     * respondió HTTP 400 con cuerpo vacío y la cabecera
+     * {@code x-error-cause: El comprobante [<clave>] no ha sido recibido.}
+     * ({@code x-amzn-requestid a54566dd-b60e-41b8-9c56-87c3c46572c0}); la misma consulta sobre una
+     * clave aceptada respondió 200 con {@code ind-estado}. Por eso exige las dos señales juntas: un
+     * 400 sin esa causa (u otro código) no prueba que Hacienda desconozca la clave y se trata como
+     * respuesta ambigua. El 404 tampoco se clasifica aquí: no hay evidencia de que Hacienda lo use
+     * para claves desconocidas.
+     */
+    static boolean esClaveDesconocidaPorHacienda(HttpStatusCodeException e) {
+        if (e.getStatusCode().value() != HttpStatus.BAD_REQUEST.value() || e.getResponseHeaders() == null) {
+            return false;
+        }
+        String causa = e.getResponseHeaders().getFirst(CABECERA_CAUSA_ERROR);
+        return causa != null && causa.toLowerCase(Locale.ROOT).contains(CAUSA_CLAVE_NO_RECIBIDA);
     }
 
     @Override

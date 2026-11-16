@@ -38,6 +38,7 @@ import cr.ac.fractall.hacienda.dto.MensajeHaciendaDTO;
 import cr.ac.fractall.hacienda.dto.RespuestaHaciendaDTO;
 import cr.ac.fractall.hacienda.dto.TokenHaciendaDTO;
 import cr.ac.fractall.hacienda.servicio.HaciendaComunicacionException;
+import cr.ac.fractall.hacienda.servicio.HaciendaClaveDesconocidaException;
 import cr.ac.fractall.hacienda.servicio.HaciendaConfiguracionException;
 import cr.ac.fractall.secretos.SecretosKvService;
 import tools.jackson.databind.ObjectMapper;
@@ -481,6 +482,61 @@ class HaciendaComprobanteApiServiceImplTest {
 
         assertThatThrownBy(() -> servicio.consultarComprobante("clave-403", credencialId))
                 .isInstanceOf(HaciendaConfiguracionException.class);
+        servidorMock.verify();
+    }
+
+    /**
+     * P-018 (sandbox, 2026-11-16): el GET de una clave nunca recibida responde 400 con cuerpo vacío
+     * y {@code x-error-cause: El comprobante [<clave>] no ha sido recibido.}
+     */
+    @Test
+    void consultarComprobanteConClaveNoRecibidaPorHaciendaLanzaHaciendaClaveDesconocidaException() {
+        UUID credencialId = UUID.randomUUID();
+        UUID empresaId = UUID.randomUUID();
+        when(credencialHaciendaRepository.findById(credencialId))
+                .thenReturn(Optional.of(credencialSandbox(credencialId, empresaId)));
+        when(secretosKvService.leerSecreto(empresaId, "hacienda/sandbox/password"))
+                .thenReturn(Optional.of("clave-secreta"));
+
+        servidorMock.expect(requestTo(SANDBOX_TOKEN_URL))
+                .andRespond(withSuccess(
+                        """
+                        {"access_token":"AT","refresh_token":"RT","expires_in":3600,"token_type":"Bearer"}
+                        """,
+                        MediaType.APPLICATION_JSON));
+        servidorMock.expect(requestTo(SANDBOX_API_URL + "/recepcion/v1/recepcion/clave-nueva"))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(withStatus(HttpStatus.BAD_REQUEST)
+                        .header("x-error-cause", "El comprobante [clave-nueva] no ha sido recibido."));
+
+        assertThatThrownBy(() -> servicio.consultarComprobante("clave-nueva", credencialId))
+                .isInstanceOf(HaciendaClaveDesconocidaException.class);
+        servidorMock.verify();
+    }
+
+    @Test
+    void consultarComprobanteCon400SinCausaDeClaveNoRecibidaNoSeClasificaComoDesconocida() {
+        UUID credencialId = UUID.randomUUID();
+        UUID empresaId = UUID.randomUUID();
+        when(credencialHaciendaRepository.findById(credencialId))
+                .thenReturn(Optional.of(credencialSandbox(credencialId, empresaId)));
+        when(secretosKvService.leerSecreto(empresaId, "hacienda/sandbox/password"))
+                .thenReturn(Optional.of("clave-secreta"));
+
+        servidorMock.expect(requestTo(SANDBOX_TOKEN_URL))
+                .andRespond(withSuccess(
+                        """
+                        {"access_token":"AT","refresh_token":"RT","expires_in":3600,"token_type":"Bearer"}
+                        """,
+                        MediaType.APPLICATION_JSON));
+        servidorMock.expect(requestTo(SANDBOX_API_URL + "/recepcion/v1/recepcion/clave-400"))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(withStatus(HttpStatus.BAD_REQUEST)
+                        .header("x-error-cause", "Clave con formato inválido"));
+
+        assertThatThrownBy(() -> servicio.consultarComprobante("clave-400", credencialId))
+                .isInstanceOf(HaciendaConfiguracionException.class)
+                .isNotInstanceOf(HaciendaClaveDesconocidaException.class);
         servidorMock.verify();
     }
 
