@@ -46,4 +46,14 @@ public class RespuestaHaciendaDTO {
     private Long tiempoRespuestaMs;
 
     private Boolean debeReintentar;
+
+    /** Cabecera {@code x-error-cause} de una respuesta de error HTTP de Hacienda, si vino. */
+    private String causaError;
+
+    /**
+     * {@code true} si el POST respondió que Hacienda ya recibió esta clave (ver
+     * {@code HaciendaComprobanteApiServiceImpl#esClaveYaRecibidaPorHacienda}). Solo lo usa el
+     * reenvío manual; el envío inicial lo ignora.
+     */
+    private Boolean claveYaRecibida;
 }

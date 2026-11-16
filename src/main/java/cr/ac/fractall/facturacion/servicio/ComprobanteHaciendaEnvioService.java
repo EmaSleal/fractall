@@ -162,15 +162,41 @@ public class ComprobanteHaciendaEnvioService {
      * POST del reenvío manual (ADR-055): mismo flujo que {@link #enviarComprobante}, pero la
      * escritura final también libera el arrendamiento del reclamo (ADR-056). {@code comprobante}
      * debe ser la entidad recargada DESPUÉS del reclamo, para no pisar sus columnas.
+     *
+     * <p><b>Clave ya recibida:</b> si el POST responde que Hacienda ya tiene esa clave
+     * ({@link RespuestaHaciendaDTO#getClaveYaRecibida()}, evidencia de P-018), el comprobante NO
+     * se marca RECHAZADO: Hacienda lo tiene y su veredicto real lo obtiene el job de polling
+     * (ADR-049), así que queda {@value #ESTADO_ENVIADO} con {@code ultimoResultadoConsulta}
+     * PENDIENTE y la causa de Hacienda en {@code mensajeRespuesta}. Pasa con un FIRMADO cuyo POST
+     * original llegó a Hacienda sin que se guardara el resultado, o si la clave llega a Hacienda
+     * entre la consulta previa y el POST de un ERROR. Sin entrega al cliente: no hay veredicto.
      */
     public void reenviarComprobante(String xmlFirmado, ComprobanteElectronico comprobante) {
         CredencialHacienda credencial = obtenerCredencial(comprobante);
         RespuestaHaciendaDTO respuesta = haciendaComprobanteApiService.enviarComprobante(
                 xmlFirmado, comprobante.getClaveNumerica(), credencial.getId());
+        if (Boolean.TRUE.equals(respuesta.getClaveYaRecibida())) {
+            marcarYaRecibidoPendienteDeVeredicto(comprobante, respuesta);
+            comprobante.setReenvioReclamadoHasta(null);
+            comprobanteElectronicoRepository.save(comprobante);
+            return;
+        }
         aplicarRespuesta(comprobante, respuesta);
         comprobante.setReenvioReclamadoHasta(null);
         comprobanteElectronicoRepository.save(comprobante);
         entregarSiAceptado(comprobante);
+    }
+
+    private static void marcarYaRecibidoPendienteDeVeredicto(
+            ComprobanteElectronico comprobante, RespuestaHaciendaDTO respuesta) {
+        String causa = respuesta.getCausaError() != null ? respuesta.getCausaError() : respuesta.getMensaje();
+        comprobante.setEstado(ESTADO_ENVIADO);
+        comprobante.setCodigoRespuesta(MensajeHacienda.PROCESANDO.getCodigo());
+        comprobante.setMensajeRespuesta(truncar(causa, LONGITUD_MAXIMA_MENSAJE_RESPUESTA));
+        comprobante.setFechaRespuesta(respuesta.getFechaRespuesta());
+        comprobante.setIntentosEnvio(comprobante.getIntentosEnvio() + 1);
+        comprobante.setUltimoResultadoConsulta(mapearResultadoConsulta(MensajeHacienda.PROCESANDO));
+        comprobante.setFechaUltimaConsultaHacienda(LocalDateTime.now());
     }
 
     /**

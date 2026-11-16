@@ -115,6 +115,7 @@ public class HaciendaComprobanteApiServiceImpl implements HaciendaComprobanteApi
     private static final String SUBRUTA_PASSWORD_SUFIJO = "/password";
     private static final String CABECERA_CAUSA_ERROR = "x-error-cause";
     private static final String CAUSA_CLAVE_NO_RECIBIDA = "no ha sido recibido";
+    private static final String CAUSA_CLAVE_YA_RECIBIDA = "ya fue recibido";
 
     private final CredencialHaciendaRepository credencialHaciendaRepository;
     private final EmpresaRepository empresaRepository;
@@ -342,6 +343,9 @@ public class HaciendaComprobanteApiServiceImpl implements HaciendaComprobanteApi
                     .detalles(e.getResponseBodyAsString())
                     .codigoHttp(e.getStatusCode().value())
                     .debeReintentar(e.getStatusCode().is5xxServerError())
+                    .causaError(e.getResponseHeaders() != null
+                            ? e.getResponseHeaders().getFirst(CABECERA_CAUSA_ERROR) : null)
+                    .claveYaRecibida(esClaveYaRecibidaPorHacienda(e))
                     .build();
 
         } catch (Exception e) {
@@ -449,6 +453,29 @@ public class HaciendaComprobanteApiServiceImpl implements HaciendaComprobanteApi
         }
         String causa = e.getResponseHeaders().getFirst(CABECERA_CAUSA_ERROR);
         return causa != null && causa.toLowerCase(Locale.ROOT).contains(CAUSA_CLAVE_NO_RECIBIDA);
+    }
+
+    /**
+     * Único punto que decide si una respuesta de error del POST {@code /recepcion/v1/recepcion}
+     * significa que Hacienda ya recibió esa clave.
+     *
+     * <p>Evidencia (P-018, sandbox de Hacienda, 2026-11-16): el POST de una clave ya aceptada
+     * respondió HTTP 400 con cuerpo vacío, la cabecera
+     * {@code x-error-cause: El comprobante [<clave>] ya fue recibido anteriormente.} y
+     * {@code location} apuntando a la consulta de esa clave
+     * ({@code x-amzn-requestid a34beb32-0210-4dd0-bbfb-8e59b6d1420a}); Hacienda valida la clave
+     * duplicada antes que el XML. Exige el 400 y la causa juntos (sin distinguir mayúsculas):
+     * cualquier otro 4xx o 400 con otra causa sigue siendo un rechazo del envío.
+     *
+     * <p>Solo el reenvío manual actúa sobre este resultado (ADR-055); el envío inicial conserva su
+     * mapeo de 4xx.
+     */
+    static boolean esClaveYaRecibidaPorHacienda(HttpStatusCodeException e) {
+        if (e.getStatusCode().value() != HttpStatus.BAD_REQUEST.value() || e.getResponseHeaders() == null) {
+            return false;
+        }
+        String causa = e.getResponseHeaders().getFirst(CABECERA_CAUSA_ERROR);
+        return causa != null && causa.toLowerCase(Locale.ROOT).contains(CAUSA_CLAVE_YA_RECIBIDA);
     }
 
     @Override

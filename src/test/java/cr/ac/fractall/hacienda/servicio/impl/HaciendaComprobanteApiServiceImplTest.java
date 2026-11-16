@@ -14,6 +14,7 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.nio.charset.StandardCharsets;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -537,6 +538,74 @@ class HaciendaComprobanteApiServiceImplTest {
         assertThatThrownBy(() -> servicio.consultarComprobante("clave-400", credencialId))
                 .isInstanceOf(HaciendaConfiguracionException.class)
                 .isNotInstanceOf(HaciendaClaveDesconocidaException.class);
+        servidorMock.verify();
+    }
+
+    // ========== clave ya recibida en el POST (T-004, review 1) ==========
+
+    private static org.springframework.web.client.HttpStatusCodeException errorHttp(HttpStatus estado, String causa) {
+        org.springframework.http.HttpHeaders cabeceras = new org.springframework.http.HttpHeaders();
+        if (causa != null) {
+            cabeceras.add("x-error-cause", causa);
+        }
+        return org.springframework.web.client.HttpClientErrorException.create(
+                estado, estado.getReasonPhrase(), cabeceras, new byte[0], StandardCharsets.UTF_8);
+    }
+
+    private static org.springframework.web.client.HttpStatusCodeException errorServidor(String causa) {
+        org.springframework.http.HttpHeaders cabeceras = new org.springframework.http.HttpHeaders();
+        cabeceras.add("x-error-cause", causa);
+        return org.springframework.web.client.HttpServerErrorException.create(
+                HttpStatus.INTERNAL_SERVER_ERROR, "error", cabeceras, new byte[0], StandardCharsets.UTF_8);
+    }
+
+    /** Evidencia de P-018: 400 + {@code x-error-cause: El comprobante [<clave>] ya fue recibido anteriormente.} */
+    @Test
+    void esClaveYaRecibidaPorHaciendaExige400YCausaYaFueRecibido() {
+        assertThat(HaciendaComprobanteApiServiceImpl.esClaveYaRecibidaPorHacienda(errorHttp(HttpStatus.BAD_REQUEST,
+                "El comprobante [506123] ya fue recibido anteriormente."))).isTrue();
+        assertThat(HaciendaComprobanteApiServiceImpl.esClaveYaRecibidaPorHacienda(errorHttp(HttpStatus.BAD_REQUEST,
+                "EL COMPROBANTE [506123] YA FUE RECIBIDO ANTERIORMENTE."))).isTrue();
+
+        assertThat(HaciendaComprobanteApiServiceImpl.esClaveYaRecibidaPorHacienda(
+                errorHttp(HttpStatus.BAD_REQUEST, null))).as("400 sin causa").isFalse();
+        assertThat(HaciendaComprobanteApiServiceImpl.esClaveYaRecibidaPorHacienda(errorHttp(HttpStatus.BAD_REQUEST,
+                "La firma del comprobante no es válida"))).as("400 con otra causa").isFalse();
+        assertThat(HaciendaComprobanteApiServiceImpl.esClaveYaRecibidaPorHacienda(errorHttp(HttpStatus.CONFLICT,
+                "El comprobante [506123] ya fue recibido anteriormente."))).as("409").isFalse();
+        assertThat(HaciendaComprobanteApiServiceImpl.esClaveYaRecibidaPorHacienda(errorHttp(HttpStatus.FORBIDDEN,
+                "El comprobante [506123] ya fue recibido anteriormente."))).as("403").isFalse();
+        assertThat(HaciendaComprobanteApiServiceImpl.esClaveYaRecibidaPorHacienda(
+                errorServidor("El comprobante [506123] ya fue recibido anteriormente."))).as("500").isFalse();
+    }
+
+    @Test
+    void enviarComprobanteCon400ClaveYaRecibidaLoMarcaEnLaRespuestaConLaCausa() {
+        UUID credencialId = UUID.randomUUID();
+        UUID empresaId = UUID.randomUUID();
+        when(credencialHaciendaRepository.findById(credencialId))
+                .thenReturn(Optional.of(credencialSandbox(credencialId, empresaId)));
+        when(secretosKvService.leerSecreto(empresaId, "hacienda/sandbox/password"))
+                .thenReturn(Optional.of("clave-secreta"));
+        when(empresaRepository.findById(empresaId)).thenReturn(Optional.of(empresaConIdentificacion("3101123456", "02")));
+
+        servidorMock.expect(requestTo(SANDBOX_TOKEN_URL))
+                .andRespond(withSuccess(
+                        """
+                        {"access_token":"AT","refresh_token":"RT","expires_in":3600,"token_type":"Bearer"}
+                        """,
+                        MediaType.APPLICATION_JSON));
+        servidorMock.expect(requestTo(SANDBOX_API_URL + "/recepcion/v1/recepcion"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withStatus(HttpStatus.BAD_REQUEST)
+                        .header("x-error-cause", "El comprobante [clave-dup] ya fue recibido anteriormente."));
+
+        RespuestaHaciendaDTO respuesta = servicio.enviarComprobante("<xml/>", "clave-dup", credencialId);
+
+        assertThat(respuesta.getCodigoHttp()).isEqualTo(400);
+        assertThat(respuesta.getClaveYaRecibida()).isTrue();
+        assertThat(respuesta.getCausaError()).isEqualTo("El comprobante [clave-dup] ya fue recibido anteriormente.");
+        assertThat(respuesta.getDebeReintentar()).isFalse();
         servidorMock.verify();
     }
 
