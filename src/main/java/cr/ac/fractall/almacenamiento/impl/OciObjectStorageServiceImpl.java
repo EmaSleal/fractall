@@ -5,8 +5,8 @@ import java.io.ByteArrayInputStream;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
-import com.oracle.bmc.Region;
 import com.oracle.bmc.auth.InstancePrincipalsAuthenticationDetailsProvider;
+import com.oracle.bmc.objectstorage.ObjectStorage;
 import com.oracle.bmc.objectstorage.ObjectStorageClient;
 import com.oracle.bmc.objectstorage.requests.GetObjectRequest;
 import com.oracle.bmc.objectstorage.requests.PutObjectRequest;
@@ -28,11 +28,14 @@ import lombok.extern.slf4j.Slf4j;
  * constructor o vía {@code @PostConstruct}, ESE intento de red fallaría durante el arranque del
  * contexto de Spring, y CUALQUIER {@code @SpringBootTest} de este proyecto (incluyendo pruebas que
  * nunca tocan facturación) dejaría de arrancar. En cambio, el cliente se construye la primera vez
- * que {@link #subir} se invoca de verdad -- ningún test de este proyecto invoca {@code subir()}
- * contra la implementación real (ver el javadoc de
- * {@code cr.ac.fractall.facturacion.servicio.ComprobanteXmlPersistenceService} y su prueba: el
- * colaborador se reemplaza con {@code @MockitoBean}), así que esa ruta nunca se ejercita fuera de
- * una VM de OCI real.
+ * que {@link #subir}/{@link #descargar} se invocan de verdad.
+ *
+ * <p><b>Quién crea el cliente (T-007, P-017):</b> la construcción vive en
+ * {@link OciObjectStorageClienteFactory}; en producción es
+ * {@link InstancePrincipalObjectStorageClienteFactory}, con el mismo código que antes vivía aquí.
+ * El contexto de test la sustituye por un cliente en memoria, porque algunas rutas de prueba sí
+ * llegan a {@code subir()} (p. ej. la entrega de un comprobante ACEPTADO sube su PDF) y, fuera de
+ * una VM de OCI, el chequeo de IMDS del SDK colgaba la suite durante minutos.
  *
  * <p><b>Desviación deliberada de la convención de pruebas de este proyecto:</b> Vault (Fase 3) sí
  * se prueba contra una instancia real vía Testcontainers porque existe una imagen de contenedor
@@ -52,8 +55,10 @@ public class OciObjectStorageServiceImpl implements ObjectStorageService {
     private final String namespace;
     private final String region;
 
+    private final OciObjectStorageClienteFactory clienteFactory;
+
     private final Object candadoConstruccion = new Object();
-    private volatile ObjectStorageClient cliente;
+    private volatile ObjectStorage cliente;
 
     // bucket/region llevan su default explícito EN el propio @Value, no solo en application.yaml
     // -- src/test/resources/application.yaml es un archivo de propiedades de prueba completo y
@@ -66,10 +71,12 @@ public class OciObjectStorageServiceImpl implements ObjectStorageService {
     public OciObjectStorageServiceImpl(
             @Value("${application.almacenamiento.oci.bucket:fractall-comprobantes}") String bucket,
             @Value("${application.almacenamiento.oci.namespace}") String namespace,
-            @Value("${application.almacenamiento.oci.region:mx-queretaro-1}") String region) {
+            @Value("${application.almacenamiento.oci.region:mx-queretaro-1}") String region,
+            OciObjectStorageClienteFactory clienteFactory) {
         this.bucket = bucket;
         this.namespace = namespace;
         this.region = region;
+        this.clienteFactory = clienteFactory;
     }
 
     @Override
@@ -111,17 +118,13 @@ public class OciObjectStorageServiceImpl implements ObjectStorageService {
      * {@link #subir}, solo la primera. Ver el javadoc de la clase sobre por qué esta construcción
      * NO puede ocurrir antes de la primera invocación real.
      */
-    private ObjectStorageClient obtenerCliente() {
-        ObjectStorageClient resultado = cliente;
+    private ObjectStorage obtenerCliente() {
+        ObjectStorage resultado = cliente;
         if (resultado == null) {
             synchronized (candadoConstruccion) {
                 resultado = cliente;
                 if (resultado == null) {
-                    InstancePrincipalsAuthenticationDetailsProvider proveedor =
-                            InstancePrincipalsAuthenticationDetailsProvider.builder().build();
-                    resultado = ObjectStorageClient.builder()
-                            .region(Region.fromRegionCodeOrId(region))
-                            .build(proveedor);
+                    resultado = clienteFactory.crear(region);
                     cliente = resultado;
                 }
             }

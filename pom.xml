@@ -33,6 +33,8 @@
 		     workflow_dispatch (ver .github/workflows/nc-nd-sandbox.yml). No se declara `groups` acá
 		     a propósito: sin `-Dgroups=sandbox`, el default de surefire ya no filtra por tag. -->
 		<excludedGroups>sandbox</excludedGroups>
+		<!-- T-007: tope en segundos del proceso de tests de surefire; ver el comentario en el plugin. -->
+		<surefire.timeout>1200</surefire.timeout>
 	</properties>
 	<dependencies>
 		<dependency>
@@ -324,6 +326,14 @@
 					     valor (un literal XML estático ignora el override de CLI). Ver el comentario de
 					     la propiedad y el javadoc de NotaCreditoDebitoSandboxIT. -->
 					<excludedGroups>${excludedGroups}</excludedGroups>
+					<!-- T-007 (P-017): tiempo máximo del proceso de tests. Si se supera, surefire mata
+					     el fork y la ejecución FALLA en vez de quedar bloqueada (antes, un test que
+					     llegaba al chequeo de IMDS de OCI pasaba más de 14 minutos reintentando
+					     conexiones a 169.254.169.254). Con forkCount por defecto (1) es el tope de la
+					     suite completa: 1200 s ≈ 3,5 veces la línea base medida (5:36 min con las dos
+					     clases excluidas), margen para una máquina más lenta o la primera descarga de
+					     imágenes de Testcontainers. Se puede ajustar con -Dsurefire.timeout=<segundos>. -->
+					<forkedProcessTimeoutInSeconds>${surefire.timeout}</forkedProcessTimeoutInSeconds>
 				</configuration>
 			</plugin>
 			<plugin>

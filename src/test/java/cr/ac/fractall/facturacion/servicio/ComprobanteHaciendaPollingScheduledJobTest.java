@@ -66,10 +66,16 @@ import cr.ac.fractall.tenant.TenantContext;
  *
  * <p>{@link HaciendaComprobanteApiService} se reemplaza con {@code @MockitoBean} -- evita una
  * llamada HTTP real a Hacienda, mismo motivo que {@code CatalogoControllerTest} mockea
- * {@code HaciendaApiService}. Ninguna respuesta simulada trae {@code xmlRespuesta}, así que este
- * escenario nunca ejercita el camino de cifrado/subida a Object Storage (cubierto por separado en
- * {@code ComprobanteHaciendaEnvioServiceTest}) -- evita necesitar también un
- * {@code @MockitoBean} de {@code ObjectStorageService} aquí.
+ * {@code HaciendaApiService}.
+ *
+ * <p>{@link ComprobanteEntregaService} también se reemplaza (T-007, P-017): una respuesta ACEPTADO
+ * dispara la entrega al cliente, que genera y sube el PDF a Object Storage y manda el correo por
+ * Resend. Antes de T-007 este test daba por hecho que ninguna ruta llegaba a Object Storage, y esa
+ * subida construía el proveedor de Instance Principal real y colgaba la suite durante minutos en
+ * el chequeo de IMDS del SDK de OCI. La entrega tiene sus propias pruebas
+ * ({@code ComprobanteEntregaServiceTest} y {@code ComprobanteEntregaServiceIntegrationTest}); aquí
+ * solo importa la transición de estado. Aun sin este mock, ningún test llega a OCI real: el
+ * contexto de test usa {@code ObjectStorageEnMemoriaTestConfig}.
  */
 @Testcontainers
 @SpringBootTest
@@ -184,6 +190,9 @@ class ComprobanteHaciendaPollingScheduledJobTest {
     // envío real vía Resend e insertaría una fila en cola_reintento_email.
     @MockitoBean
     private EmailNotificacionService emailNotificacionService;
+
+    @MockitoBean
+    private ComprobanteEntregaService comprobanteEntregaService;
 
     private Empresa empresaA;
     private Empresa empresaB;

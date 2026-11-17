@@ -1,8 +1,13 @@
 package cr.ac.fractall.almacenamiento.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+import java.nio.charset.StandardCharsets;
+import java.util.UUID;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.context.ApplicationContext;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -13,17 +18,22 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.vault.VaultContainer;
 
+import com.oracle.bmc.model.BmcException;
+
 import cr.ac.fractall.almacenamiento.ObjectStorageService;
 
 /**
  * Prueba dedicada a la afirmación central del requisito de construcción perezosa documentado en
- * {@link OciObjectStorageServiceImpl}: el contexto COMPLETO de Spring (incluyendo este bean
- * OCI-backed real, sin ningún perfil/stub que lo reemplace) arranca sin problema fuera de una VM
- * de OCI real -- esta máquina de pruebas/CI no tiene acceso al servicio de metadata de instancia
- * que Instance Principal necesita. La prueba NUNCA invoca {@link ObjectStorageService#subir}
- * (eso sí requeriría una VM de OCI real) -- solo confirma que el bean existe y es del tipo
- * concreto esperado, lo que ya demuestra que el constructor no intentó autenticarse contra OCI de
- * forma ansiosa.
+ * {@link OciObjectStorageServiceImpl}: el contexto COMPLETO de Spring, con el bean OCI-backed real
+ * de {@link ObjectStorageService}, arranca fuera de una VM de OCI (sin acceso al servicio de
+ * metadatos de instancia que Instance Principal necesita).
+ *
+ * <p>Desde T-007 (P-017) el cliente del SDK lo crea {@link OciObjectStorageClienteFactory}, y en
+ * todo contexto de test esa fábrica es la de {@link ObjectStorageEnMemoriaTestConfig}. Esta clase
+ * comprueba además ese aislamiento: la fábrica de producción sigue registrada pero no es la que se
+ * inyecta, y una subida/descarga por el bean real funciona sin red. Antes de T-007 esta clase se
+ * excluía de la verificación junto con el test del job de polling, aunque nunca llegaba a OCI: el
+ * cuelgue de P-017 era solo de ese otro test.
  */
 @Testcontainers
 @SpringBootTest
@@ -110,19 +120,37 @@ class OciObjectStorageServiceImplContextBootTest {
     @Autowired
     private ObjectStorageService objectStorageService;
 
+    @Autowired
+    private OciObjectStorageClienteFactory clienteFactory;
+
+    @Autowired
+    private ApplicationContext contexto;
+
     @Test
-    void elContextoCompletoArrancaConElBeanOciBackedRealSinInvocarOci() {
+    void elContextoCompletoArrancaConElBeanOciBackedReal() {
         assertThat(objectStorageService).isInstanceOf(OciObjectStorageServiceImpl.class);
     }
 
     @Test
-    void elBeanOciImplementaDescargar() {
-        // Confirma que OciObjectStorageServiceImpl implementa descargar() sin invocar OCI real.
-        // La construcción perezosa garantiza que la ausencia de metadata de instancia OCI
-        // no impide que el bean exista en el contexto (misma afirmación que la prueba anterior,
-        // extendida a la nueva operación de Fase 9).
-        assertThat(objectStorageService).isInstanceOf(OciObjectStorageServiceImpl.class);
-        OciObjectStorageServiceImpl impl = (OciObjectStorageServiceImpl) objectStorageService;
-        assertThat(impl).isNotNull();
+    void elContextoDeTestInyectaLaFabricaEnMemoriaYNoLaDeInstancePrincipal() {
+        assertThat(contexto.getBeansOfType(OciObjectStorageClienteFactory.class).values())
+                .as("la fábrica de producción sigue registrada")
+                .anySatisfy(fabrica -> assertThat(fabrica).isInstanceOf(InstancePrincipalObjectStorageClienteFactory.class));
+        assertThat(clienteFactory).isNotInstanceOf(InstancePrincipalObjectStorageClienteFactory.class);
+    }
+
+    @Test
+    void subirYDescargarPorElBeanRealUsanElClienteEnMemoriaSinRed() {
+        String ruta = "empresas/test/comprobantes/" + UUID.randomUUID() + ".xml.enc";
+        byte[] contenido = "contenido cifrado de prueba".getBytes(StandardCharsets.UTF_8);
+
+        assertThat(objectStorageService.subir(contenido, ruta)).isEqualTo(ruta);
+        assertThat(objectStorageService.descargar(ruta)).isEqualTo(contenido);
+    }
+
+    @Test
+    void descargarUnObjetoInexistenteRespondeComoElServicioReal() {
+        assertThatThrownBy(() -> objectStorageService.descargar("empresas/test/no-existe.xml.enc"))
+                .isInstanceOfSatisfying(BmcException.class, e -> assertThat(e.getStatusCode()).isEqualTo(404));
     }
 }
