@@ -41,7 +41,10 @@ import cr.ac.fractall.facturacion.repositorio.ComprobanteElectronicoRepository;
 import cr.ac.fractall.facturacion.repositorio.FacturaRepository;
 import cr.ac.fractall.hacienda.dto.MensajeHacienda;
 import cr.ac.fractall.hacienda.dto.RespuestaHaciendaDTO;
+import cr.ac.fractall.hacienda.servicio.HaciendaClaveDesconocidaException;
 import cr.ac.fractall.hacienda.servicio.HaciendaComprobanteApiService;
+import cr.ac.fractall.hacienda.servicio.HaciendaComunicacionException;
+import cr.ac.fractall.hacienda.servicio.HaciendaConfiguracionException;
 import cr.ac.fractall.notificaciones.servicio.EmailNotificacionService;
 import cr.ac.fractall.seguridad.modelo.Usuario;
 import cr.ac.fractall.seguridad.repositorio.UsuarioRepository;
@@ -179,6 +182,9 @@ class ComprobanteHaciendaPollingScheduledJobTest {
 
     @Autowired
     private ComprobanteHaciendaPollingScheduledJob job;
+
+    @Autowired
+    private ComprobanteXmlCifradoUploader comprobanteXmlCifradoUploader;
 
     @MockitoBean
     private HaciendaComprobanteApiService haciendaComprobanteApiService;
@@ -808,5 +814,372 @@ class ComprobanteHaciendaPollingScheduledJobTest {
                 .isEqualTo(ComprobanteHaciendaEnvioService.RESULTADO_ERROR_CONFIGURACION);
 
         verifyNoInteractions(emailNotificacionService);
+    }
+
+    // ========== T-008 (ADR-063): reenvío automático ante clave no recibida ==========
+
+    private static final String XML_FIRMADO = "<FacturaElectronica>firmado-T008</FacturaElectronica>";
+
+    /**
+     * Sube de verdad el XML firmado cifrado (Vault Transit + Object Storage en memoria) y fija su
+     * referencia, para que el job lo descargue por el camino real. Requiere el tenant de la empresa
+     * ya fijado por el llamador.
+     */
+    private ComprobanteElectronico conXmlFirmadoEnObjectStorage(ComprobanteElectronico comprobante) {
+        String referencia = comprobanteXmlCifradoUploader.cifrarYSubir(
+                XML_FIRMADO.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                "empresas/" + comprobante.getEmpresaId() + "/comprobantes/" + comprobante.getClaveNumerica()
+                        + ".xml.enc");
+        comprobante.setXmlComprobanteReferencia(referencia);
+        return comprobanteElectronicoRepository.saveAndFlush(comprobante);
+    }
+
+    private ComprobanteElectronico enviadoConXml(String sufijo, int intentos, String ambiente) {
+        ComprobanteElectronico comprobante = nuevoComprobanteEnviado(
+                empresaA.getId(), empresaA.getCreadoPor(), sufijo, intentos,
+                intentos == 0 ? null : LocalDateTime.now().minusHours(3), ambiente);
+        return conXmlFirmadoEnObjectStorage(comprobante);
+    }
+
+    private void claveNoRecibida(ComprobanteElectronico comprobante) {
+        when(haciendaComprobanteApiService.consultarComprobante(eq(comprobante.getClaveNumerica()), any()))
+                .thenThrow(new HaciendaClaveDesconocidaException("no ha sido recibido", null));
+    }
+
+    private ComprobanteElectronico recargar(ComprobanteElectronico comprobante) {
+        TenantContext.set(empresaA.getId());
+        return comprobanteElectronicoRepository.findById(comprobante.getId()).orElseThrow();
+    }
+
+    private static RespuestaHaciendaDTO post400(String causa, boolean claveYaRecibida) {
+        return RespuestaHaciendaDTO.builder()
+                .fechaRespuesta(LocalDateTime.now())
+                .codigoMensaje(MensajeHacienda.ERROR)
+                .mensaje("Error HTTP: 400 BAD_REQUEST")
+                .exitoso(false)
+                .debeReintentar(false)
+                .codigoHttp(400)
+                .causaError(causa)
+                .claveYaRecibida(claveYaRecibida)
+                .build();
+    }
+
+    private static RespuestaHaciendaDTO postFalloDeComunicacion() {
+        return RespuestaHaciendaDTO.builder()
+                .fechaRespuesta(LocalDateTime.now())
+                .codigoMensaje(MensajeHacienda.ERROR)
+                .mensaje("Error de comunicación: timeout")
+                .exitoso(false)
+                .debeReintentar(true)
+                .build();
+    }
+
+    private void correrElJob() {
+        TenantContext.clear();
+        job.consultarPendientes();
+    }
+
+    @Test
+    void claveNoRecibidaReenviaEnElMismoCicloConElXmlDescargadoYSumaUnSoloIntento() {
+        TenantContext.set(empresaA.getId());
+        ComprobanteElectronico comprobante = enviadoConXml("CLAVEREENV1", 3, "SANDBOX");
+        claveNoRecibida(comprobante);
+        when(haciendaComprobanteApiService.enviarComprobante(eq(XML_FIRMADO), eq(comprobante.getClaveNumerica()),
+                eq(credencialA.getId())))
+                .thenReturn(respuesta(MensajeHacienda.PROCESANDO, false, false));
+
+        correrElJob();
+
+        verify(haciendaComprobanteApiService, times(1)).consultarComprobante(any(), any());
+        verify(haciendaComprobanteApiService, times(1)).enviarComprobante(
+                XML_FIRMADO, comprobante.getClaveNumerica(), credencialA.getId());
+        ComprobanteElectronico recargado = recargar(comprobante);
+        assertThat(recargado.getEstado()).isEqualTo("ENVIADO");
+        assertThat(recargado.getIntentosEnvio()).as("consulta + reenvío = un solo intento").isEqualTo(4);
+        assertThat(recargado.getUltimoResultadoConsulta()).isEqualTo("PENDIENTE");
+        verifyNoInteractions(emailNotificacionService);
+    }
+
+    @Test
+    void claveNoRecibidaNoCortaElAmbienteYLosDemasComprobantesSeConsultanConNormalidad() {
+        TenantContext.set(empresaA.getId());
+        ComprobanteElectronico desconocido = enviadoConXml("CLAVEREENV2", 0, "SANDBOX");
+        ComprobanteElectronico procesando = nuevoComprobanteEnviado(
+                empresaA.getId(), empresaA.getCreadoPor(), "CLAVEREENV3", 0, null);
+        ComprobanteElectronico aceptado = nuevoComprobanteEnviado(
+                empresaA.getId(), empresaA.getCreadoPor(), "CLAVEREENV4", 0, null);
+        claveNoRecibida(desconocido);
+        when(haciendaComprobanteApiService.enviarComprobante(any(), eq(desconocido.getClaveNumerica()), any()))
+                .thenReturn(respuesta(MensajeHacienda.PROCESANDO, false, false));
+        when(haciendaComprobanteApiService.consultarComprobante(eq(procesando.getClaveNumerica()), any()))
+                .thenReturn(respuesta(MensajeHacienda.PROCESANDO, false, true));
+        when(haciendaComprobanteApiService.consultarComprobante(eq(aceptado.getClaveNumerica()), any()))
+                .thenReturn(respuesta(MensajeHacienda.ACEPTADO, true, false));
+
+        correrElJob();
+
+        verify(haciendaComprobanteApiService, times(3)).consultarComprobante(any(), any());
+        verify(haciendaComprobanteApiService, times(1)).enviarComprobante(any(), any(), any());
+        assertThat(recargar(desconocido).getEstado()).isEqualTo("ENVIADO");
+        assertThat(recargar(procesando).getEstado()).isEqualTo("ENVIADO");
+        assertThat(recargar(aceptado).getEstado()).isEqualTo("ACEPTADO");
+        verifyNoInteractions(emailNotificacionService);
+    }
+
+    @Test
+    void reenvioAceptadoParaProcesamientoDejaElComprobanteEnviado() {
+        TenantContext.set(empresaA.getId());
+        ComprobanteElectronico comprobante = enviadoConXml("CLAVEREENV5", 0, "SANDBOX");
+        claveNoRecibida(comprobante);
+        RespuestaHaciendaDTO acuse202 = respuesta(MensajeHacienda.PROCESANDO, false, false);
+        acuse202.setCodigoHttp(202);
+        when(haciendaComprobanteApiService.enviarComprobante(any(), any(), any())).thenReturn(acuse202);
+
+        correrElJob();
+
+        assertThat(recargar(comprobante).getEstado()).isEqualTo("ENVIADO");
+        verifyNoInteractions(comprobanteEntregaService);
+    }
+
+    @Test
+    void reenvioConVeredictoDeHaciendaLoAplicaYAceptadoDisparaLaEntrega() {
+        TenantContext.set(empresaA.getId());
+        ComprobanteElectronico comprobante = enviadoConXml("CLAVEREENV6", 0, "SANDBOX");
+        claveNoRecibida(comprobante);
+        when(haciendaComprobanteApiService.enviarComprobante(any(), any(), any()))
+                .thenReturn(respuesta(MensajeHacienda.ACEPTADO, true, false));
+
+        correrElJob();
+
+        ComprobanteElectronico recargado = recargar(comprobante);
+        assertThat(recargado.getEstado()).isEqualTo("ACEPTADO");
+        assertThat(recargado.getUltimoResultadoConsulta()).isEqualTo("ACEPTADO");
+        verify(comprobanteEntregaService, times(1)).entregar(comprobante.getId());
+    }
+
+    @Test
+    void reenvioQueRecibe400YaFueRecibidoDejaEnviadoPendienteNuncaRechazado() {
+        TenantContext.set(empresaA.getId());
+        ComprobanteElectronico comprobante = enviadoConXml("CLAVEREENV7", 0, "SANDBOX");
+        claveNoRecibida(comprobante);
+        when(haciendaComprobanteApiService.enviarComprobante(any(), any(), any()))
+                .thenReturn(post400("El comprobante [x] ya fue recibido anteriormente.", true));
+
+        correrElJob();
+
+        ComprobanteElectronico recargado = recargar(comprobante);
+        assertThat(recargado.getEstado()).isEqualTo("ENVIADO");
+        assertThat(recargado.getUltimoResultadoConsulta()).isEqualTo("PENDIENTE");
+        assertThat(recargado.getIntentosEnvio()).isEqualTo(1);
+        verifyNoInteractions(emailNotificacionService, comprobanteEntregaService);
+    }
+
+    @Test
+    void reenvioQueFallaPorComunicacionCuentaUnIntentoYSigueEnviado() {
+        TenantContext.set(empresaA.getId());
+        ComprobanteElectronico comprobante = enviadoConXml("CLAVEREENV8", 2, "SANDBOX");
+        claveNoRecibida(comprobante);
+        when(haciendaComprobanteApiService.enviarComprobante(any(), any(), any()))
+                .thenReturn(postFalloDeComunicacion());
+
+        correrElJob();
+
+        ComprobanteElectronico recargado = recargar(comprobante);
+        assertThat(recargado.getEstado()).isEqualTo("ENVIADO");
+        assertThat(recargado.getIntentosEnvio()).isEqualTo(3);
+        assertThat(recargado.getUltimoResultadoConsulta()).isEqualTo("ERROR_COMUNICACION");
+    }
+
+    @Test
+    void reenvioQueLanzaExcepcionDeComunicacionCuentaUnIntentoYSigueEnviado() {
+        TenantContext.set(empresaA.getId());
+        ComprobanteElectronico comprobante = enviadoConXml("CLAVEREENV9", 2, "SANDBOX");
+        claveNoRecibida(comprobante);
+        when(haciendaComprobanteApiService.enviarComprobante(any(), any(), any()))
+                .thenThrow(new HaciendaComunicacionException("timeout de prueba"));
+
+        correrElJob();
+
+        ComprobanteElectronico recargado = recargar(comprobante);
+        assertThat(recargado.getEstado()).isEqualTo("ENVIADO");
+        assertThat(recargado.getIntentosEnvio()).isEqualTo(3);
+        assertThat(recargado.getUltimoResultadoConsulta()).isEqualTo("ERROR_COMUNICACION");
+        verifyNoInteractions(emailNotificacionService);
+    }
+
+    @Test
+    void fallaLaDescargaDelXmlCuentaUnIntentoDeComunicacionYSigueEnviado() {
+        TenantContext.set(empresaA.getId());
+        ComprobanteElectronico comprobante = nuevoComprobanteEnviado(
+                empresaA.getId(), empresaA.getCreadoPor(), "CLAVEREENVX", 2, LocalDateTime.now().minusHours(3));
+        comprobante.setXmlComprobanteReferencia("empresas/inexistente/no-existe.xml.enc");
+        comprobanteElectronicoRepository.saveAndFlush(comprobante);
+        claveNoRecibida(comprobante);
+
+        correrElJob();
+
+        verify(haciendaComprobanteApiService, never()).enviarComprobante(any(), any(), any());
+        ComprobanteElectronico recargado = recargar(comprobante);
+        assertThat(recargado.getEstado()).isEqualTo("ENVIADO");
+        assertThat(recargado.getIntentosEnvio()).isEqualTo(3);
+        assertThat(recargado.getUltimoResultadoConsulta()).isEqualTo("ERROR_COMUNICACION");
+    }
+
+    @Test
+    void alAgotarElPresupuestoElReenvioFallidoEscalaAErrorConCausaDeComunicacion() {
+        TenantContext.set(empresaA.getId());
+        ComprobanteElectronico comprobante = enviadoConXml(
+                "CLAVEREENVY", ComprobanteHaciendaPollingScheduledJob.MAX_INTENTOS - 1, "SANDBOX");
+        claveNoRecibida(comprobante);
+        when(haciendaComprobanteApiService.enviarComprobante(any(), any(), any()))
+                .thenReturn(postFalloDeComunicacion());
+
+        correrElJob();
+
+        ComprobanteElectronico recargado = recargar(comprobante);
+        assertThat(recargado.getEstado()).isEqualTo(ComprobanteHaciendaPollingScheduledJob.ESTADO_ERROR);
+        assertThat(recargado.getIntentosEnvio()).isEqualTo(ComprobanteHaciendaPollingScheduledJob.MAX_INTENTOS);
+        assertThat(recargado.getUltimoResultadoConsulta()).isEqualTo("ERROR_COMUNICACION");
+    }
+
+    @Test
+    void alAgotarElPresupuestoLaFallaDeDescargaEscalaAErrorConCausaDeComunicacion() {
+        TenantContext.set(empresaA.getId());
+        ComprobanteElectronico comprobante = nuevoComprobanteEnviado(
+                empresaA.getId(), empresaA.getCreadoPor(), "CLAVEREENVZ",
+                ComprobanteHaciendaPollingScheduledJob.MAX_INTENTOS - 1, LocalDateTime.now().minusHours(3));
+        comprobante.setXmlComprobanteReferencia("empresas/inexistente/no-existe.xml.enc");
+        comprobanteElectronicoRepository.saveAndFlush(comprobante);
+        claveNoRecibida(comprobante);
+
+        correrElJob();
+
+        ComprobanteElectronico recargado = recargar(comprobante);
+        assertThat(recargado.getEstado()).isEqualTo(ComprobanteHaciendaPollingScheduledJob.ESTADO_ERROR);
+        assertThat(recargado.getUltimoResultadoConsulta()).isEqualTo("ERROR_COMUNICACION");
+    }
+
+    /**
+     * ADR-063 punto 4: 401 persistente tras renovar, 403, contraseña/certificado inválidos (todas
+     * llegan al job como {@code HaciendaConfiguracionException}) escalan en un intento y cortan el
+     * ambiente: el segundo comprobante no se consulta.
+     */
+    @Test
+    void fallasRealesDeCredencialEscalanEnUnIntentoYCortanElAmbiente() {
+        String[] causas = {
+                "Hacienda sigue rechazando el token (401) tras renovarlo",
+                "Hacienda rechazó la consulta (403 FORBIDDEN)",
+                "Contraseña de Hacienda no encontrada en Vault",
+        };
+        for (int i = 0; i < causas.length; i++) {
+            org.mockito.Mockito.reset(haciendaComprobanteApiService, emailNotificacionService);
+            TenantContext.set(empresaA.getId());
+            ComprobanteElectronico primero = nuevoComprobanteEnviado(
+                    empresaA.getId(), empresaA.getCreadoPor(), "CLAVECFG" + i + "A", 0, null);
+            ComprobanteElectronico segundo = nuevoComprobanteEnviado(
+                    empresaA.getId(), empresaA.getCreadoPor(), "CLAVECFG" + i + "B", 0, null);
+            when(haciendaComprobanteApiService.consultarComprobante(any(), any()))
+                    .thenThrow(new HaciendaConfiguracionException(causas[i]));
+
+            correrElJob();
+
+            verify(haciendaComprobanteApiService, times(1)).consultarComprobante(any(), any());
+            for (ComprobanteElectronico original : List.of(primero, segundo)) {
+                ComprobanteElectronico recargado = recargar(original);
+                assertThat(recargado.getEstado()).as(causas[i])
+                        .isEqualTo(ComprobanteHaciendaPollingScheduledJob.ESTADO_ERROR);
+                assertThat(recargado.getUltimoResultadoConsulta()).as(causas[i]).isEqualTo("ERROR_CONFIGURACION");
+            }
+            assertThat(recargar(primero).getIntentosEnvio()).as(causas[i]).isEqualTo(1);
+        }
+    }
+
+    @Test
+    void credencialDeHaciendaNoEncontradaEscalaEnUnIntentoYCortaElAmbiente() {
+        TenantContext.set(empresaA.getId());
+        ComprobanteElectronico primero = nuevoComprobanteEnviado(
+                empresaA.getId(), empresaA.getCreadoPor(), "CLAVENOCRED2A", 0, null);
+        ComprobanteElectronico segundo = nuevoComprobanteEnviado(
+                empresaA.getId(), empresaA.getCreadoPor(), "CLAVENOCRED2B", 0, null);
+        credencialHaciendaRepository.delete(credencialA);
+
+        correrElJob();
+
+        verifyNoInteractions(haciendaComprobanteApiService);
+        for (ComprobanteElectronico original : List.of(primero, segundo)) {
+            ComprobanteElectronico recargado = recargar(original);
+            assertThat(recargado.getEstado()).isEqualTo(ComprobanteHaciendaPollingScheduledJob.ESTADO_ERROR);
+            assertThat(recargado.getUltimoResultadoConsulta()).isEqualTo("ERROR_CONFIGURACION");
+        }
+    }
+
+    /** ADR-063 punto 5: 429 y 400 sin causa reconocida llegan como comunicación y no cortan. */
+    @Test
+    void consultaConFallaDeComunicacionPorRateLimitOPor400SinCausaNoCortaElAmbiente() {
+        String[] causas = {"Error de Hacienda (429 TOO_MANY_REQUESTS) consultando comprobante",
+                "Hacienda rechazó la consulta (400 BAD_REQUEST) sin causa reconocida"};
+        for (int i = 0; i < causas.length; i++) {
+            org.mockito.Mockito.reset(haciendaComprobanteApiService, emailNotificacionService);
+            TenantContext.set(empresaA.getId());
+            ComprobanteElectronico primero = nuevoComprobanteEnviado(
+                    empresaA.getId(), empresaA.getCreadoPor(), "CLAVE4XX" + i + "A", 0, null);
+            ComprobanteElectronico segundo = nuevoComprobanteEnviado(
+                    empresaA.getId(), empresaA.getCreadoPor(), "CLAVE4XX" + i + "B", 0, null);
+            when(haciendaComprobanteApiService.consultarComprobante(any(), any()))
+                    .thenThrow(new HaciendaComunicacionException(causas[i]));
+
+            correrElJob();
+
+            verify(haciendaComprobanteApiService, times(2)).consultarComprobante(any(), any());
+            for (ComprobanteElectronico original : List.of(primero, segundo)) {
+                ComprobanteElectronico recargado = recargar(original);
+                assertThat(recargado.getEstado()).as(causas[i]).isEqualTo("ENVIADO");
+                assertThat(recargado.getIntentosEnvio()).as(causas[i]).isEqualTo(1);
+                assertThat(recargado.getUltimoResultadoConsulta()).as(causas[i]).isEqualTo("ERROR_COMUNICACION");
+            }
+            verifyNoInteractions(emailNotificacionService);
+        }
+    }
+
+    @Test
+    void elDigestSoloAtribuyeErrorConfiguracionALasFallasRealesDeCredencial() {
+        TenantContext.set(empresaA.getId());
+        ComprobanteElectronico credencialRota = nuevoComprobanteEnviado(
+                empresaA.getId(), empresaA.getCreadoPor(), "CLAVEDIGT8C", 0, null, "SANDBOX");
+        credencialHaciendaRepository.save(nuevaCredencial(empresaA.getId(), empresaA.getCreadoPor(), "PRODUCCION"));
+        ComprobanteElectronico desconocido = enviadoConXml("CLAVEDIGT8D", 0, "PRODUCCION");
+        when(haciendaComprobanteApiService.consultarComprobante(eq(credencialRota.getClaveNumerica()), any()))
+                .thenThrow(new HaciendaConfiguracionException("403 de prueba"));
+        claveNoRecibida(desconocido);
+        when(haciendaComprobanteApiService.enviarComprobante(any(), eq(desconocido.getClaveNumerica()), any()))
+                .thenReturn(respuesta(MensajeHacienda.PROCESANDO, false, false));
+
+        correrElJob();
+
+        ArgumentCaptor<String> cuerpo = ArgumentCaptor.forClass(String.class);
+        verify(emailNotificacionService, times(1)).enviarConReintento(
+                eq(empresaA.getEmail()), any(), cuerpo.capture());
+        assertThat(cuerpo.getValue()).contains(credencialRota.getClaveNumerica());
+        assertThat(cuerpo.getValue()).doesNotContain(desconocido.getClaveNumerica());
+        assertThat(cuerpo.getValue().split("-- causa: ERROR_CONFIGURACION", -1)).hasSize(2);
+        assertThat(recargar(desconocido).getEstado()).isEqualTo("ENVIADO");
+    }
+
+    @Test
+    void elDigestDeUnaEscalacionPorComunicacionNoAtribuyeErrorConfiguracion() {
+        TenantContext.set(empresaA.getId());
+        ComprobanteElectronico comprobante = enviadoConXml(
+                "CLAVEDIGT8E", ComprobanteHaciendaPollingScheduledJob.MAX_INTENTOS - 1, "SANDBOX");
+        claveNoRecibida(comprobante);
+        when(haciendaComprobanteApiService.enviarComprobante(any(), any(), any()))
+                .thenReturn(postFalloDeComunicacion());
+
+        correrElJob();
+
+        ArgumentCaptor<String> cuerpo = ArgumentCaptor.forClass(String.class);
+        verify(emailNotificacionService, times(1)).enviarConReintento(
+                eq(empresaA.getEmail()), any(), cuerpo.capture());
+        assertThat(cuerpo.getValue()).contains("causa: ERROR_COMUNICACION");
+        assertThat(cuerpo.getValue()).doesNotContain("ERROR_CONFIGURACION");
     }
 }

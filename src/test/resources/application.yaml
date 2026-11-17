@@ -62,3 +62,18 @@ application:
       # contra OCI real, solo evita que namespace (sin fallback en producción a propósito) rompa
       # el arranque de CUALQUIER @SpringBootTest.
       namespace: ${OCI_OBJECT_STORAGE_NAMESPACE:test-namespace-placeholder}
+
+# ADR-063 (T-008): una clave que Hacienda no recibió no es un fallo de la API: no se reintenta con
+# @Retry ni cuenta como fallo del circuit breaker "haciendaAPI". El resto de la configuración de
+# Resilience4j queda en sus valores por defecto.
+resilience4j:
+  retry:
+    instances:
+      haciendaAPI:
+        ignore-exceptions:
+          - cr.ac.fractall.hacienda.servicio.HaciendaClaveDesconocidaException
+  circuitbreaker:
+    instances:
+      haciendaAPI:
+        ignore-exceptions:
+          - cr.ac.fractall.hacienda.servicio.HaciendaClaveDesconocidaException

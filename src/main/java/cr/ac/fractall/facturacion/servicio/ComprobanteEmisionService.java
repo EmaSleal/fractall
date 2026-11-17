@@ -193,15 +193,15 @@ public class ComprobanteEmisionService {
     }
 
     private void reenviarDesdeError(ComprobanteElectronico reclamado) {
-        switch (comprobanteHaciendaEnvioService.consultarParaReenvio(reclamado)) {
-            case APLICADA -> { }
-            case CLAVE_DESCONOCIDA ->
-                    comprobanteHaciendaEnvioService.reenviarComprobante(descargarXmlFirmado(reclamado), reclamado);
-            case AMBIGUA -> {
-                reclamado.setMensajeRespuesta(MENSAJE_CONSULTA_AMBIGUA);
-                reclamado.setReenvioReclamadoHasta(null);
-                comprobanteElectronicoRepository.save(reclamado);
-            }
+        // Secuencia única compartida con el job de polling (ADR-063 punto 7); aquí solo se decide
+        // qué hacer ante una consulta ambigua (ADR-055): mensaje, liberar el arrendamiento y guardar.
+        ComprobanteHaciendaEnvioService.ResultadoConsultaYReenvio resultado =
+                comprobanteHaciendaEnvioService.consultarYReenviarSiClaveNoRecibida(
+                        reclamado, () -> descargarXmlFirmado(reclamado));
+        if (resultado.tipo() == ComprobanteHaciendaEnvioService.ResultadoConsultaYReenvio.Tipo.AMBIGUA) {
+            reclamado.setMensajeRespuesta(MENSAJE_CONSULTA_AMBIGUA);
+            reclamado.setReenvioReclamadoHasta(null);
+            comprobanteElectronicoRepository.save(reclamado);
         }
     }
 

@@ -536,8 +536,34 @@ class HaciendaComprobanteApiServiceImplTest {
                         .header("x-error-cause", "Clave con formato inválido"));
 
         assertThatThrownBy(() -> servicio.consultarComprobante("clave-400", credencialId))
-                .isInstanceOf(HaciendaConfiguracionException.class)
+                .isInstanceOf(HaciendaComunicacionException.class)
                 .isNotInstanceOf(HaciendaClaveDesconocidaException.class);
+        servidorMock.verify();
+    }
+
+    /** ADR-063 punto 5: un 429 es comunicación (reintentable), nunca una falla de credencial. */
+    @Test
+    void consultarComprobanteCon429LanzaHaciendaComunicacionException() {
+        UUID credencialId = UUID.randomUUID();
+        UUID empresaId = UUID.randomUUID();
+        when(credencialHaciendaRepository.findById(credencialId))
+                .thenReturn(Optional.of(credencialSandbox(credencialId, empresaId)));
+        when(secretosKvService.leerSecreto(empresaId, "hacienda/sandbox/password"))
+                .thenReturn(Optional.of("clave-secreta"));
+
+        servidorMock.expect(requestTo(SANDBOX_TOKEN_URL))
+                .andRespond(withSuccess(
+                        """
+                        {"access_token":"AT","refresh_token":"RT","expires_in":3600,"token_type":"Bearer"}
+                        """,
+                        MediaType.APPLICATION_JSON));
+        servidorMock.expect(requestTo(SANDBOX_API_URL + "/recepcion/v1/recepcion/clave-429"))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(withStatus(HttpStatus.TOO_MANY_REQUESTS));
+
+        assertThatThrownBy(() -> servicio.consultarComprobante("clave-429", credencialId))
+                .isInstanceOf(HaciendaComunicacionException.class)
+                .isNotInstanceOf(HaciendaConfiguracionException.class);
         servidorMock.verify();
     }
 

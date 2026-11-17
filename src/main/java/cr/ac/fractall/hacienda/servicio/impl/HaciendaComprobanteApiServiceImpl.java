@@ -423,10 +423,16 @@ public class HaciendaComprobanteApiServiceImpl implements HaciendaComprobanteApi
                 throw new HaciendaComunicacionException(
                         "Error de Hacienda (" + e.getStatusCode() + ") consultando comprobante", e);
             }
-            throw new HaciendaConfiguracionException(
-                    "Hacienda rechazó la consulta (" + e.getStatusCode()
-                            + "), posible credencial o certificado inválido",
-                    e);
+            if (e.getStatusCode().value() == HttpStatus.FORBIDDEN.value()) {
+                throw new HaciendaConfiguracionException(
+                        "Hacienda rechazó la consulta (" + e.getStatusCode()
+                                + "), posible credencial o certificado inválido",
+                        e);
+            }
+            // ADR-063 punto 5: cualquier otro 4xx (429, 400 sin causa reconocida, ...) es
+            // comunicación; solo 401 persistente y 403 son falla real de credencial.
+            throw new HaciendaComunicacionException(
+                    "Hacienda respondió " + e.getStatusCode() + " a la consulta del comprobante " + claveNumerica, e);
 
         } catch (Exception e) {
             log.error("Error al consultar comprobante: {}", e.getMessage(), e);

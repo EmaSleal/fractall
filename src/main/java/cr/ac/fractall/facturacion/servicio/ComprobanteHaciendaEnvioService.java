@@ -3,6 +3,7 @@ package cr.ac.fractall.facturacion.servicio;
 import java.time.LocalDateTime;
 import java.util.Base64;
 import java.util.UUID;
+import java.util.function.Supplier;
 
 import org.springframework.stereotype.Service;
 
@@ -52,8 +53,8 @@ import lombok.extern.slf4j.Slf4j;
  * {@link ComprobanteXmlCifradoUploader} (misma DEK-por-operación que el XML firmado, ver su
  * javadoc) y se persiste su referencia en {@code xmlRespuestaReferencia}.
  *
- * <p><b>Consulta que nunca llega a Hacienda:</b> si {@link #consultarYActualizar} lanza ANTES de
- * llegar a {@code aplicarRespuesta} (p. ej. {@link CredencialHaciendaNoEncontradaException}),
+ * <p><b>Consulta que nunca llega a Hacienda:</b> si la consulta lanza ANTES de llegar a
+ * {@code aplicarRespuesta} (p. ej. {@link CredencialHaciendaNoEncontradaException}),
  * ninguno de los campos de arriba se toca aquí -- es
  * {@code ComprobanteHaciendaPollingScheduledJob#registrarIntentoFallidoYGuardar} quien, en su
  * propio {@code catch}, deja igualmente {@code ultimoResultadoConsulta} en
@@ -62,15 +63,29 @@ import lombok.extern.slf4j.Slf4j;
  * comprobante que jamás logra hablar con Hacienda (bug corregido en esta misma sub-tarea; ver su
  * javadoc para el detalle completo).
  *
+ * <p><b>Consulta y reenvío ante clave no recibida (ADR-063):</b>
+ * {@link #consultarYReenviarSiClaveNoRecibida} es el único punto de la secuencia "consultar,
+ * clasificar y reenviar si Hacienda no conoce la clave", compartido por
+ * {@code ComprobanteHaciendaPollingScheduledJob} (comprobantes {@code ENVIADO} cuyo POST inicial
+ * nunca llegó a Hacienda) y por el reenvío manual de un comprobante en ERROR
+ * ({@code ComprobanteEmisionService}, ADR-055). Una clave no recibida ya no es una falla de
+ * configuración: se reenvía el XML firmado. Si el POST responde 400 "ya fue recibido anteriormente",
+ * el comprobante queda {@value #ESTADO_ENVIADO} con {@code ultimoResultadoConsulta} PENDIENTE
+ * ({@link #reenviarComprobante}), nunca RECHAZADO. Un 429 o un 400 sin causa reconocida en la
+ * consulta llegan como {@code HaciendaComunicacionException} (ver
+ * {@code HaciendaComprobanteApiServiceImpl}); solo las fallas reales de credencial
+ * ({@code HaciendaConfiguracionException}) escalan de inmediato (ADR-049).
+ *
  * <p>Deliberadamente SIN {@code @Transactional} a nivel de clase/método: ambos métodos públicos
  * hacen una llamada de red real (a Hacienda, y opcionalmente a Vault Transit/Object Storage) antes
  * de la única escritura final, que se apoya -- igual que
  * {@link ComprobanteXmlPersistenceService#generarYPersistirXml}, ver su javadoc para el porqué
- * completo -- en que {@code SimpleJpaRepository#save} ya es transaccional por sí mismo. Ninguno de
- * {@link HaciendaComprobanteApiService#enviarComprobante}/{@code #consultarComprobante} lanza
- * excepción (ambos capturan todo internamente y devuelven un DTO con {@code codigoMensaje=ERROR}
- * si algo falla, ver su javadoc), así que no hace falta ningún {@code try/catch} defensivo
- * alrededor de esas llamadas aquí.
+ * completo -- en que {@code SimpleJpaRepository#save} ya es transaccional por sí mismo.
+ * {@link HaciendaComprobanteApiService#enviarComprobante} no lanza por fallas de Hacienda (devuelve
+ * un DTO con {@code codigoMensaje=ERROR}); {@code #consultarComprobante} sí lanza excepciones
+ * tipadas ({@code HaciendaConfiguracionException}, {@code HaciendaComunicacionException},
+ * {@link HaciendaClaveDesconocidaException}), que {@link #consultarYReenviarSiClaveNoRecibida}
+ * clasifica y que el llamador propaga o maneja.
  */
 @Service
 @Slf4j
@@ -82,12 +97,11 @@ public class ComprobanteHaciendaEnvioService {
 
     // Valores de ultimo_resultado_consulta (CHECK ampliado en V21) para las ramas de fallo que no
     // llegan a obtener una respuesta clasificable de Hacienda. RESULTADO_ERROR_COMUNICACION es el
-    // valor genérico usado hoy tanto por mapearResultadoConsulta como por
-    // ComprobanteHaciendaPollingScheduledJob#registrarIntentoFallidoYGuardar.
-    // RESULTADO_ERROR_CONFIGURACION todavía no se escribe en ningún lado -- lo consume recién la
-    // clasificación por causa de una sub-tarea posterior, que distingue "Hacienda no respondió" de
-    // "esta empresa no tiene credencial/certificado configurado" -- se declara ya para que ambos
-    // valores del CHECK vivan documentados juntos en un solo lugar.
+    // valor genérico usado por mapearResultadoConsulta y por
+    // ComprobanteHaciendaPollingScheduledJob#registrarIntentoFallidoYGuardar (causa COMUNICACIÓN).
+    // RESULTADO_ERROR_CONFIGURACION lo escribe solo ComprobanteHaciendaPollingScheduledJob, y solo
+    // para fallas reales de credencial (ADR-049 punto 4 / ADR-063 punto 4); una clave no recibida
+    // por Hacienda NO es configuración, el job la reenvía (ADR-063).
     static final String RESULTADO_ERROR_COMUNICACION = "ERROR_COMUNICACION";
     static final String RESULTADO_ERROR_CONFIGURACION = "ERROR_CONFIGURACION";
 
@@ -214,26 +228,129 @@ public class ComprobanteHaciendaEnvioService {
      *     configurada para {@code comprobante.getAmbienteHacienda()}
      */
     public ResultadoConsultaReenvio consultarParaReenvio(ComprobanteElectronico comprobante) {
+        Clasificacion clasificacion = consultarYClasificar(comprobante);
+        return switch (clasificacion.tipo()) {
+            case CLAVE_DESCONOCIDA -> ResultadoConsultaReenvio.CLAVE_DESCONOCIDA;
+            case AMBIGUA -> ResultadoConsultaReenvio.AMBIGUA;
+            case VEREDICTO -> {
+                aplicarVeredictoYGuardar(comprobante, clasificacion.respuesta());
+                yield ResultadoConsultaReenvio.APLICADA;
+            }
+        };
+    }
+
+    /**
+     * Resultado de {@link #consultarYReenviarSiClaveNoRecibida} (ADR-063 punto 7).
+     *
+     * @param tipo qué pasó: ver {@link Tipo}
+     * @param respuesta la respuesta cruda de la consulta cuando fue {@link Tipo#AMBIGUA} por una
+     *     respuesta no clasificable (404, circuito abierto, error de parseo); {@code null} en los
+     *     demás casos
+     * @param falloConsulta la excepción de la consulta cuando fue {@link Tipo#AMBIGUA} porque la
+     *     consulta lanzó; {@code null} en los demás casos
+     */
+    public record ResultadoConsultaYReenvio(Tipo tipo, RespuestaHaciendaDTO respuesta, RuntimeException falloConsulta) {
+
+        public enum Tipo {
+            /** Hacienda conoce la clave y dio un veredicto: ya se aplicó, guardó y (si ACEPTADO) se entregó. */
+            VEREDICTO_APLICADO,
+            /** Hacienda nunca recibió la clave: ya se hizo el POST y se aplicó su respuesta. */
+            REENVIADO,
+            /**
+             * La consulta falló o no es clasificable: no se hizo POST ni se escribió nada. Qué hacer
+             * lo decide cada llamador (el reenvío manual libera su arrendamiento; el job cuenta un
+             * intento de comunicación o escala por configuración).
+             */
+            AMBIGUA
+        }
+    }
+
+    /**
+     * Único punto de la secuencia "consultar, clasificar y reenviar si Hacienda no conoce la clave"
+     * (ADR-063 punto 7), usado por {@code ComprobanteHaciendaPollingScheduledJob} y por el reenvío
+     * manual de un comprobante en ERROR ({@code ComprobanteEmisionService}, ADR-055). Comparte la
+     * clasificación con {@link #consultarParaReenvio}, de modo que hay una sola.
+     *
+     * <ul>
+     *   <li>Veredicto 2xx (aceptado, rechazado, procesando): se aplica, guarda y entrega como en
+     *       {@link #consultarYActualizar} -&gt; {@link ResultadoConsultaYReenvio.Tipo#VEREDICTO_APLICADO}.
+     *   <li>Clave no recibida ({@link HaciendaClaveDesconocidaException}): se pide el XML firmado a
+     *       {@code xmlFirmado} y se hace el POST con {@link #reenviarComprobante} -&gt;
+     *       {@link ResultadoConsultaYReenvio.Tipo#REENVIADO}. Un fallo del proveedor del XML (p. ej. la
+     *       descarga de Object Storage) se propaga: no es una consulta ambigua. La consulta no
+     *       escribe nada, así que el ciclo completo suma exactamente un intento en
+     *       {@code intentosEnvio} (el del POST).
+     *   <li>Cualquier otra excepción o respuesta no clasificable -&gt;
+     *       {@link ResultadoConsultaYReenvio.Tipo#AMBIGUA}, sin POST ni escritura.
+     * </ul>
+     *
+     * <p>Sin {@code @Transactional}: toda la red (Hacienda, Vault, Object Storage) queda fuera de
+     * transacción. No agrega lógica de arrendamiento (ADR-056): solo limpia
+     * {@code reenvioReclamadoHasta} al escribir, igual que {@link #reenviarComprobante}, lo que es
+     * inocuo para el job (un {@code ENVIADO} nunca tiene arrendamiento).
+     *
+     * @throws CredencialHaciendaNoEncontradaException si la empresa no tiene credencial configurada
+     *     para {@code comprobante.getAmbienteHacienda()}
+     */
+    public ResultadoConsultaYReenvio consultarYReenviarSiClaveNoRecibida(
+            ComprobanteElectronico comprobante, Supplier<String> xmlFirmado) {
+        Clasificacion clasificacion = consultarYClasificar(comprobante);
+        return switch (clasificacion.tipo()) {
+            case VEREDICTO -> {
+                aplicarVeredictoYGuardar(comprobante, clasificacion.respuesta());
+                yield new ResultadoConsultaYReenvio(
+                        ResultadoConsultaYReenvio.Tipo.VEREDICTO_APLICADO, null, null);
+            }
+            case CLAVE_DESCONOCIDA -> {
+                reenviarComprobante(xmlFirmado.get(), comprobante);
+                yield new ResultadoConsultaYReenvio(ResultadoConsultaYReenvio.Tipo.REENVIADO, null, null);
+            }
+            case AMBIGUA -> new ResultadoConsultaYReenvio(
+                    ResultadoConsultaYReenvio.Tipo.AMBIGUA, clasificacion.respuesta(), clasificacion.fallo());
+        };
+    }
+
+    /**
+     * Aplica, guarda y entrega una respuesta de consulta que no es un veredicto 2xx (404 aún en
+     * proceso, circuito abierto, error de parseo): el mismo tratamiento que
+     * {@link #consultarYActualizar} le da a cualquier respuesta. Lo usa el job cuando
+     * {@link #consultarYReenviarSiClaveNoRecibida} devuelve {@code AMBIGUA} con una respuesta.
+     */
+    public void aplicarRespuestaDeConsulta(ComprobanteElectronico comprobante, RespuestaHaciendaDTO respuesta) {
+        aplicarRespuesta(comprobante, respuesta);
+        comprobanteElectronicoRepository.save(comprobante);
+        entregarSiAceptado(comprobante);
+    }
+
+    private enum TipoClasificacion { VEREDICTO, CLAVE_DESCONOCIDA, AMBIGUA }
+
+    private record Clasificacion(TipoClasificacion tipo, RespuestaHaciendaDTO respuesta, RuntimeException fallo) { }
+
+    /** Consulta y clasifica sin escribir nada; la única clasificación de la consulta previa al reenvío. */
+    private Clasificacion consultarYClasificar(ComprobanteElectronico comprobante) {
         CredencialHacienda credencial = obtenerCredencial(comprobante);
         RespuestaHaciendaDTO respuesta;
         try {
             respuesta = haciendaComprobanteApiService.consultarComprobante(
                     comprobante.getClaveNumerica(), credencial.getId());
         } catch (HaciendaClaveDesconocidaException e) {
-            return ResultadoConsultaReenvio.CLAVE_DESCONOCIDA;
+            return new Clasificacion(TipoClasificacion.CLAVE_DESCONOCIDA, null, null);
         } catch (RuntimeException e) {
             log.warn("Consulta previa al reenvío del comprobante {} sin respuesta clasificable: {}",
                     comprobante.getId(), e.getMessage());
-            return ResultadoConsultaReenvio.AMBIGUA;
+            return new Clasificacion(TipoClasificacion.AMBIGUA, null, e);
         }
         if (!esVeredictoDeHacienda(respuesta)) {
-            return ResultadoConsultaReenvio.AMBIGUA;
+            return new Clasificacion(TipoClasificacion.AMBIGUA, respuesta, null);
         }
+        return new Clasificacion(TipoClasificacion.VEREDICTO, respuesta, null);
+    }
+
+    private void aplicarVeredictoYGuardar(ComprobanteElectronico comprobante, RespuestaHaciendaDTO respuesta) {
         aplicarRespuesta(comprobante, respuesta);
         comprobante.setReenvioReclamadoHasta(null);
         comprobanteElectronicoRepository.save(comprobante);
         entregarSiAceptado(comprobante);
-        return ResultadoConsultaReenvio.APLICADA;
     }
 
     private static boolean esVeredictoDeHacienda(RespuestaHaciendaDTO respuesta) {
