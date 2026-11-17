@@ -1,5 +1,6 @@
 package cr.ac.fractall.facturacion.servicio;
 
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -69,6 +70,32 @@ import cr.ac.fractall.tenant.TenantContextDescartable;
  * actualizan en cada intento de todos modos (ver su javadoc). Tras {@value #MAX_INTENTOS} intentos
  * sin respuesta terminal, el comprobante pasa a {@value #ESTADO_ERROR} en lugar de seguir
  * sondeando para siempre.
+ *
+ * <p><b>Clasificación por causa (ADR-049, acotada por ADR-063):</b>
+ *
+ * <ul>
+ *   <li><b>Clave no recibida:</b> si el POST inicial falló por timeout o 5xx, Hacienda responde a la
+ *       primera consulta que nunca recibió la clave ({@code HaciendaClaveDesconocidaException}). El
+ *       job NO lo trata como credencial rota: reenvía el comprobante en el mismo ciclo con el XML
+ *       firmado descargado de Object Storage, vía
+ *       {@link ComprobanteHaciendaEnvioService#consultarYReenviarSiClaveNoRecibida} (la misma
+ *       secuencia que usa el reenvío manual de un ERROR). Consulta + reenvío suman un solo intento;
+ *       el comprobante sigue {@value #ESTADO_ENVIADO} (o toma el veredicto, o queda PENDIENTE si
+ *       Hacienda responde "ya fue recibido anteriormente") y no se activa ningún corte.
+ *   <li><b>CONFIGURACIÓN:</b> solo una falla real de credencial ({@code HaciendaConfiguracionException}:
+ *       401 persistente tras renovar el token, 403, credencial de Hacienda no encontrada,
+ *       contraseña/certificado inválidos) escala a {@value #ESTADO_ERROR} en un intento con
+ *       {@code ERROR_CONFIGURACION} y corta el resto de comprobantes de la misma empresa+ambiente en
+ *       el ciclo.
+ *   <li><b>COMUNICACIÓN:</b> todo lo demás (timeout, 5xx, 429, cualquier otro 4xx, fallo de la
+ *       descarga del XML o del POST del reenvío) cuenta contra {@value #MAX_INTENTOS} con el backoff
+ *       de arriba y deja {@code ERROR_COMUNICACION}.
+ * </ul>
+ *
+ * <p>El digest de cada ciclo atribuye {@code ERROR_CONFIGURACION} solo a las escalaciones por falla
+ * real de credencial. El job solo procesa {@value #ESTADO_ENVIADO}, nunca FIRMADO ni ERROR, así que
+ * no usa el arrendamiento del reenvío manual (ADR-056). Ninguna llamada de red (Hacienda, Vault,
+ * Object Storage) corre dentro de una transacción.
  */
 @Component
 public class ComprobanteHaciendaPollingScheduledJob {
@@ -88,12 +115,15 @@ public class ComprobanteHaciendaPollingScheduledJob {
     private final ComprobanteHaciendaEnvioService comprobanteHaciendaEnvioService;
     private final EmpresaRepository empresaRepository;
     private final EmailNotificacionService emailNotificacionService;
+    private final ComprobanteXmlCifradoDescargador comprobanteXmlCifradoDescargador;
 
     public ComprobanteHaciendaPollingScheduledJob(
             ComprobanteElectronicoRepository comprobanteElectronicoRepository,
             ComprobanteHaciendaEnvioService comprobanteHaciendaEnvioService,
             EmpresaRepository empresaRepository,
-            EmailNotificacionService emailNotificacionService) {
+            EmailNotificacionService emailNotificacionService,
+            ComprobanteXmlCifradoDescargador comprobanteXmlCifradoDescargador) {
+        this.comprobanteXmlCifradoDescargador = comprobanteXmlCifradoDescargador;
         this.comprobanteElectronicoRepository = comprobanteElectronicoRepository;
         this.comprobanteHaciendaEnvioService = comprobanteHaciendaEnvioService;
         this.empresaRepository = empresaRepository;
@@ -159,7 +189,7 @@ public class ComprobanteHaciendaPollingScheduledJob {
 
             try {
                 comprobante.setIntentosConsulta(comprobante.getIntentosConsulta() + 1);
-                comprobanteHaciendaEnvioService.consultarYActualizar(comprobante);
+                consultarYReenviarSiClaveNoRecibida(comprobante);
                 escalarSiAgotoIntentos(comprobante, escaladosEnEsteCiclo);
             } catch (HaciendaConfiguracionException excepcion) {
                 // Causa CONFIGURACIÓN (credencial/certificado/password ausente, 401 persistente):
@@ -189,6 +219,33 @@ public class ComprobanteHaciendaPollingScheduledJob {
         }
 
         enviarDigestSiHayEscalados(empresaId, escaladosEnEsteCiclo);
+    }
+
+    /**
+     * Consulta el comprobante y, si Hacienda nunca recibió la clave, lo reenvía en este mismo ciclo
+     * (ADR-063): usa el punto único {@link ComprobanteHaciendaEnvioService
+     * #consultarYReenviarSiClaveNoRecibida}, con el XML firmado descargado de Object Storage dentro
+     * del {@link TenantContext} actual. La consulta + el reenvío suman exactamente un intento en
+     * {@code intentosEnvio}. Una consulta ambigua con excepción se relanza para que los
+     * {@code catch} de {@link #procesarEmpresa} la clasifiquen por causa; una respuesta no
+     * clasificable (404 aún en proceso, circuito abierto) se aplica como siempre.
+     */
+    private void consultarYReenviarSiClaveNoRecibida(ComprobanteElectronico comprobante) {
+        ComprobanteHaciendaEnvioService.ResultadoConsultaYReenvio resultado =
+                comprobanteHaciendaEnvioService.consultarYReenviarSiClaveNoRecibida(
+                        comprobante, () -> descargarXmlFirmado(comprobante));
+        if (resultado.tipo() == ComprobanteHaciendaEnvioService.ResultadoConsultaYReenvio.Tipo.AMBIGUA) {
+            if (resultado.falloConsulta() != null) {
+                throw resultado.falloConsulta();
+            }
+            comprobanteHaciendaEnvioService.aplicarRespuestaDeConsulta(comprobante, resultado.respuesta());
+        }
+    }
+
+    private String descargarXmlFirmado(ComprobanteElectronico comprobante) {
+        byte[] xmlBytes = comprobanteXmlCifradoDescargador.descargarYDescifrar(
+                comprobante.getXmlComprobanteReferencia());
+        return new String(xmlBytes, StandardCharsets.UTF_8);
     }
 
     private void escalarSiAgotoIntentos(ComprobanteElectronico comprobante, List<ComprobanteElectronico> escalados) {
@@ -319,10 +376,18 @@ public class ComprobanteHaciendaPollingScheduledJob {
                     .append(comprobante.getFechaUltimaConsultaHacienda())
                     .append("</li>");
         }
-        cuerpo.append("</ul><p>Los comprobantes con causa ")
-                .append(ComprobanteHaciendaEnvioService.RESULTADO_ERROR_CONFIGURACION)
-                .append(" requieren corregir la credencial/certificado de Hacienda antes de usar ")
-                .append("POST /facturas/{id}/reenviar.</p>");
+        cuerpo.append("</ul>");
+        // ADR-063 punto 6: el consejo sobre la credencial solo aplica si hubo escalaciones por una
+        // falla real de credencial (causa ERROR_CONFIGURACION).
+        boolean hayFallaDeCredencial = escalados.stream().anyMatch(comprobante ->
+                ComprobanteHaciendaEnvioService.RESULTADO_ERROR_CONFIGURACION
+                        .equals(comprobante.getUltimoResultadoConsulta()));
+        if (hayFallaDeCredencial) {
+            cuerpo.append("<p>Los comprobantes con causa ")
+                    .append(ComprobanteHaciendaEnvioService.RESULTADO_ERROR_CONFIGURACION)
+                    .append(" requieren corregir la credencial/certificado de Hacienda antes de usar ")
+                    .append("POST /facturas/{id}/reenviar.</p>");
+        }
         return cuerpo.toString();
     }
 

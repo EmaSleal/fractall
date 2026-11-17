@@ -17,10 +17,12 @@ import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.util.UUID;
+import java.util.function.Supplier;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -295,12 +297,14 @@ class ComprobanteEmisionServiceTest {
     @Test
     void reenviarErrorConClaveConocidaPorHaciendaNoHaceElPost() {
         ComprobanteElectronico comprobante = comprobanteEnEstado("ERROR", "empresas/ref/error.xml.enc");
-        when(comprobanteHaciendaEnvioService.consultarParaReenvio(any()))
-                .thenReturn(ComprobanteHaciendaEnvioService.ResultadoConsultaReenvio.APLICADA);
+        when(comprobanteHaciendaEnvioService.consultarYReenviarSiClaveNoRecibida(any(), any()))
+                .thenReturn(new ComprobanteHaciendaEnvioService.ResultadoConsultaYReenvio(
+                        ComprobanteHaciendaEnvioService.ResultadoConsultaYReenvio.Tipo.VEREDICTO_APLICADO, null, null));
 
         comprobanteEmisionService.reenviar(comprobante.getFacturaId());
 
-        verify(comprobanteHaciendaEnvioService, times(1)).consultarParaReenvio(any(ComprobanteElectronico.class));
+        verify(comprobanteHaciendaEnvioService, times(1))
+                .consultarYReenviarSiClaveNoRecibida(any(ComprobanteElectronico.class), any());
         verify(comprobanteHaciendaEnvioService, never()).reenviarComprobante(anyString(), any());
         verifyNoInteractions(comprobanteXmlCifradoDescargador);
     }
@@ -309,20 +313,26 @@ class ComprobanteEmisionServiceTest {
     void reenviarErrorConClaveDesconocidaPorHaciendaHaceElPostUnaVez() {
         ComprobanteElectronico comprobante = comprobanteEnEstado("ERROR", "empresas/ref/error.xml.enc");
         stubXmlFirmado("<FacturaElectronica>error</FacturaElectronica>");
-        when(comprobanteHaciendaEnvioService.consultarParaReenvio(any()))
-                .thenReturn(ComprobanteHaciendaEnvioService.ResultadoConsultaReenvio.CLAVE_DESCONOCIDA);
+        when(comprobanteHaciendaEnvioService.consultarYReenviarSiClaveNoRecibida(any(), any()))
+                .thenReturn(new ComprobanteHaciendaEnvioService.ResultadoConsultaYReenvio(
+                        ComprobanteHaciendaEnvioService.ResultadoConsultaYReenvio.Tipo.REENVIADO, null, null));
 
         comprobanteEmisionService.reenviar(comprobante.getFacturaId());
 
-        verify(comprobanteHaciendaEnvioService, times(1)).reenviarComprobante(
-                eq("<FacturaElectronica>error</FacturaElectronica>"), any(ComprobanteElectronico.class));
+        // El POST lo hace el punto único; el llamador solo aporta el proveedor del XML firmado.
+        ArgumentCaptor<Supplier<String>> proveedorXml = ArgumentCaptor.forClass(Supplier.class);
+        verify(comprobanteHaciendaEnvioService, times(1))
+                .consultarYReenviarSiClaveNoRecibida(any(ComprobanteElectronico.class), proveedorXml.capture());
+        assertThat(proveedorXml.getValue().get()).isEqualTo("<FacturaElectronica>error</FacturaElectronica>");
+        verify(comprobanteHaciendaEnvioService, never()).reenviarComprobante(anyString(), any());
     }
 
     @Test
     void reenviarErrorConConsultaAmbiguaNoHaceElPostNiRechazaYLiberaElArrendamiento() {
         ComprobanteElectronico comprobante = comprobanteEnEstado("ERROR", "empresas/ref/error.xml.enc");
-        when(comprobanteHaciendaEnvioService.consultarParaReenvio(any()))
-                .thenReturn(ComprobanteHaciendaEnvioService.ResultadoConsultaReenvio.AMBIGUA);
+        when(comprobanteHaciendaEnvioService.consultarYReenviarSiClaveNoRecibida(any(), any()))
+                .thenReturn(new ComprobanteHaciendaEnvioService.ResultadoConsultaYReenvio(
+                        ComprobanteHaciendaEnvioService.ResultadoConsultaYReenvio.Tipo.AMBIGUA, null, null));
 
         comprobanteEmisionService.reenviar(comprobante.getFacturaId());
 
@@ -341,8 +351,9 @@ class ComprobanteEmisionServiceTest {
     @Test
     void cadaReenvioManualIncrementaReenviosManualesYElArrendamientoSeLiberaParaElSiguiente() {
         ComprobanteElectronico comprobante = comprobanteEnEstado("ERROR", "empresas/ref/error.xml.enc");
-        when(comprobanteHaciendaEnvioService.consultarParaReenvio(any()))
-                .thenReturn(ComprobanteHaciendaEnvioService.ResultadoConsultaReenvio.AMBIGUA);
+        when(comprobanteHaciendaEnvioService.consultarYReenviarSiClaveNoRecibida(any(), any()))
+                .thenReturn(new ComprobanteHaciendaEnvioService.ResultadoConsultaYReenvio(
+                        ComprobanteHaciendaEnvioService.ResultadoConsultaYReenvio.Tipo.AMBIGUA, null, null));
 
         comprobanteEmisionService.reenviar(comprobante.getFacturaId());
         comprobanteEmisionService.reenviar(comprobante.getFacturaId());
@@ -351,7 +362,7 @@ class ComprobanteEmisionServiceTest {
         assertThat(persistido.getReenviosManuales()).isEqualTo(2);
         assertThat(persistido.getIntentosEnvio()).isZero();
         assertThat(persistido.getReenvioReclamadoHasta()).isNull();
-        verify(comprobanteHaciendaEnvioService, times(2)).consultarParaReenvio(any());
+        verify(comprobanteHaciendaEnvioService, times(2)).consultarYReenviarSiClaveNoRecibida(any(), any());
     }
 
     @Test
@@ -374,12 +385,17 @@ class ComprobanteEmisionServiceTest {
             fijarArrendamiento(comprobante, LocalDateTime.now().minusMinutes(30));
             org.mockito.Mockito.reset(comprobanteXmlCifradoDescargador, comprobanteHaciendaEnvioService);
             stubXmlFirmado("<FacturaElectronica/>");
-            when(comprobanteHaciendaEnvioService.consultarParaReenvio(any()))
-                    .thenReturn(ComprobanteHaciendaEnvioService.ResultadoConsultaReenvio.CLAVE_DESCONOCIDA);
+            when(comprobanteHaciendaEnvioService.consultarYReenviarSiClaveNoRecibida(any(), any()))
+                    .thenReturn(new ComprobanteHaciendaEnvioService.ResultadoConsultaYReenvio(
+                        ComprobanteHaciendaEnvioService.ResultadoConsultaYReenvio.Tipo.REENVIADO, null, null));
 
             comprobanteEmisionService.reenviar(comprobante.getFacturaId());
 
-            verify(comprobanteHaciendaEnvioService, times(1)).reenviarComprobante(anyString(), any());
+            if ("ERROR".equals(estado)) {
+                verify(comprobanteHaciendaEnvioService, times(1)).consultarYReenviarSiClaveNoRecibida(any(), any());
+            } else {
+                verify(comprobanteHaciendaEnvioService, times(1)).reenviarComprobante(anyString(), any());
+            }
             assertThat(recargar(comprobante).getReenviosManuales()).as("estado %s", estado).isEqualTo(1);
         }
     }

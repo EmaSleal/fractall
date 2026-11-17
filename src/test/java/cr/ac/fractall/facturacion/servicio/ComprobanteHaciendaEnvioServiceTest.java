@@ -36,6 +36,7 @@ import cr.ac.fractall.hacienda.servicio.HaciendaClaveDesconocidaException;
 import cr.ac.fractall.hacienda.servicio.HaciendaComunicacionException;
 import cr.ac.fractall.hacienda.servicio.HaciendaConfiguracionException;
 import cr.ac.fractall.facturacion.servicio.ComprobanteHaciendaEnvioService.ResultadoConsultaReenvio;
+import cr.ac.fractall.facturacion.servicio.ComprobanteHaciendaEnvioService.ResultadoConsultaYReenvio;
 
 /**
  * Prueba unitaria (sin contexto de Spring, mismo enfoque que
@@ -660,5 +661,115 @@ class ComprobanteHaciendaEnvioServiceTest {
         assertThat(comprobante.getEstado()).isEqualTo("RECHAZADO");
         assertThat(comprobante.getMensajeRespuesta()).isEqualTo("Error HTTP: 400 BAD_REQUEST");
         assertThat(comprobante.getUltimoResultadoConsulta()).isEqualTo("ERROR_COMUNICACION");
+    }
+
+    // ========== Punto único consulta + clasificación + reenvío (T-008, ADR-063) ==========
+
+    @Test
+    void consultarYReenviarConClaveConocidaAplicaElVeredictoYNoHaceElPost() {
+        UUID empresaId = UUID.randomUUID();
+        ComprobanteElectronico comprobante = comprobanteEnErrorConArrendamiento(empresaId);
+        when(haciendaComprobanteApiService.consultarComprobante(eq("clave-reenvio"), any()))
+                .thenReturn(respuesta(MensajeHacienda.ACEPTADO, true, false));
+        java.util.function.Supplier<String> xml = mock(java.util.function.Supplier.class);
+
+        ResultadoConsultaYReenvio resultado = servicio.consultarYReenviarSiClaveNoRecibida(comprobante, xml);
+
+        assertThat(resultado.tipo()).isEqualTo(ResultadoConsultaYReenvio.Tipo.VEREDICTO_APLICADO);
+        assertThat(comprobante.getEstado()).isEqualTo("ACEPTADO");
+        verify(haciendaComprobanteApiService, never()).enviarComprobante(any(), any(), any());
+        verifyNoInteractions(xml);
+        verify(comprobanteElectronicoRepository).save(comprobante);
+        verify(comprobanteEntregaService).entregar(comprobante.getId());
+    }
+
+    @Test
+    void consultarYReenviarConClaveDesconocidaHaceExactamenteUnPostConElXmlFirmado() {
+        UUID empresaId = UUID.randomUUID();
+        ComprobanteElectronico comprobante = comprobanteEnErrorConArrendamiento(empresaId);
+        comprobante.setEstado("ENVIADO");
+        comprobante.setIntentosEnvio(2);
+        when(haciendaComprobanteApiService.consultarComprobante(eq("clave-reenvio"), any()))
+                .thenThrow(new HaciendaClaveDesconocidaException("no ha sido recibido", null));
+        when(haciendaComprobanteApiService.enviarComprobante(eq("<xml/>"), eq("clave-reenvio"), any()))
+                .thenReturn(respuesta(MensajeHacienda.PROCESANDO, false, false));
+
+        ResultadoConsultaYReenvio resultado = servicio.consultarYReenviarSiClaveNoRecibida(comprobante, () -> "<xml/>");
+
+        assertThat(resultado.tipo()).isEqualTo(ResultadoConsultaYReenvio.Tipo.REENVIADO);
+        verify(haciendaComprobanteApiService, org.mockito.Mockito.times(1))
+                .enviarComprobante(eq("<xml/>"), eq("clave-reenvio"), any());
+        assertThat(comprobante.getEstado()).isEqualTo("ENVIADO");
+        assertThat(comprobante.getIntentosEnvio()).as("la consulta no escribe; el POST suma 1").isEqualTo(3);
+    }
+
+    @Test
+    void consultarYReenviarConConsultaAmbiguaNoHaceElPostNiEscribe() {
+        RespuestaHaciendaDTO noEncontrado = respuesta(MensajeHacienda.PROCESANDO, false, true);
+        noEncontrado.setCodigoHttp(404);
+        Object[] casos = {new HaciendaComunicacionException("timeout", null),
+                new HaciendaConfiguracionException("403"), noEncontrado};
+        for (Object caso : casos) {
+            configurar();
+            ComprobanteElectronico comprobante = comprobanteEnErrorConArrendamiento(UUID.randomUUID());
+            if (caso instanceof RuntimeException excepcion) {
+                when(haciendaComprobanteApiService.consultarComprobante(any(), any())).thenThrow(excepcion);
+            } else {
+                when(haciendaComprobanteApiService.consultarComprobante(any(), any()))
+                        .thenReturn((RespuestaHaciendaDTO) caso);
+            }
+
+            ResultadoConsultaYReenvio resultado = servicio.consultarYReenviarSiClaveNoRecibida(
+                    comprobante, () -> { throw new AssertionError("no debe descargar el XML"); });
+
+            assertThat(resultado.tipo()).as("caso %s", caso).isEqualTo(ResultadoConsultaYReenvio.Tipo.AMBIGUA);
+            if (caso instanceof RuntimeException excepcion) {
+                assertThat(resultado.falloConsulta()).isSameAs(excepcion);
+                assertThat(resultado.respuesta()).isNull();
+            } else {
+                assertThat(resultado.respuesta()).isSameAs(caso);
+                assertThat(resultado.falloConsulta()).isNull();
+            }
+            verify(haciendaComprobanteApiService, never()).enviarComprobante(any(), any(), any());
+            verify(comprobanteElectronicoRepository, never()).save(any());
+        }
+    }
+
+    @Test
+    void consultarYReenviarConPost400YaRecibidoQuedaEnviadoPendienteNuncaRechazado() {
+        UUID empresaId = UUID.randomUUID();
+        ComprobanteElectronico comprobante = comprobanteEnErrorConArrendamiento(empresaId);
+        comprobante.setIntentosEnvio(0);
+        when(haciendaComprobanteApiService.consultarComprobante(eq("clave-reenvio"), any()))
+                .thenThrow(new HaciendaClaveDesconocidaException("no ha sido recibido", null));
+        when(haciendaComprobanteApiService.enviarComprobante(eq("<xml/>"), eq("clave-reenvio"), any()))
+                .thenReturn(error400(CAUSA_YA_RECIBIDO, true));
+
+        ResultadoConsultaYReenvio resultado = servicio.consultarYReenviarSiClaveNoRecibida(comprobante, () -> "<xml/>");
+
+        assertThat(resultado.tipo()).isEqualTo(ResultadoConsultaYReenvio.Tipo.REENVIADO);
+        verificarQuedaEnviadoParaElPolling(comprobante);
+    }
+
+    @Test
+    void consultarYReenviarSinCredencialPropagaYNoConsulta() {
+        ComprobanteElectronico comprobante = nuevoComprobante(UUID.randomUUID(), "SANDBOX", "clave-reenvio");
+
+        assertThatThrownBy(() -> servicio.consultarYReenviarSiClaveNoRecibida(comprobante, () -> "<xml/>"))
+                .isInstanceOf(CredencialHaciendaNoEncontradaException.class);
+        verifyNoInteractions(haciendaComprobanteApiService);
+    }
+
+    @Test
+    void consultarYReenviarPropagaElFalloDeDescargaDelXmlSinHacerElPost() {
+        ComprobanteElectronico comprobante = comprobanteEnErrorConArrendamiento(UUID.randomUUID());
+        when(haciendaComprobanteApiService.consultarComprobante(eq("clave-reenvio"), any()))
+                .thenThrow(new HaciendaClaveDesconocidaException("no ha sido recibido", null));
+
+        assertThatThrownBy(() -> servicio.consultarYReenviarSiClaveNoRecibida(
+                comprobante, () -> { throw new IllegalStateException("Object Storage no disponible"); }))
+                .isInstanceOf(IllegalStateException.class);
+        verify(haciendaComprobanteApiService, never()).enviarComprobante(any(), any(), any());
+        verify(comprobanteElectronicoRepository, never()).save(any());
     }
 }
